@@ -78,3 +78,8 @@ void ADCDual_SetCalibration(float v_gain, float v_offset, float i_gain, float i_
     s_i_gain   = i_gain;
     s_i_offset = i_offset;
 }
+
+const uint16_t *ADCDual_GetRawBuffer(void)
+{
+    return (const uint16_t *)s_dma_buf;
+}

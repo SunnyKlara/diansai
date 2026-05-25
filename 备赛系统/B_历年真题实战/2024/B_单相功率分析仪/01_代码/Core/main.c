@@ -29,9 +29,15 @@
 #include "../Drivers/lcd_ht1621.h"
 #include "../Drivers/button.h"
 #include "../Drivers/led.h"
+#include "../Drivers/calibration.h"
+#include "../Drivers/uart_dbg.h"
 
 #include "../Algorithm/power_calc.h"
 #include "../Algorithm/dft_harmonic.h"
+
+/* uart_dbg.c 中的内部接口，main.c 在测完一轮后通知它 */
+extern void UART_UpdateLastResult(float v_rms, float i_rms,
+                                  float p, float pf, float thd);
 
 /* TODO_TI: #include <ti/devices/msp430fr5xx_6xx/driverlib/MSP430FR5xx_6xx/driverlib.h> */
 
@@ -104,7 +110,14 @@ static void on_key(KeyId k)
             update_display();
             break;
         case KEY_CALIB:
-            /* TODO: 进入校准模式：UART 接收"标准 V/I"值 → 计算 gain/offset → 存 FRAM */
+            /* 校准必须有"真实值"作为基准，按键无法提供；
+             * 这里只是把当前测量结果通过 UART 喷出来，提示 PC 端发送
+             *      CAL V=<真实值> I=<真实值>\r\n
+             * 完成校准。
+             */
+            UART_PutString("CAL_REQ: send 'CAL V=<real> I=<real>' from PC\r\n");
+            UART_Printf("       current measure: V=%.3f I=%.4f\r\n",
+                        (double)g_td.v_rms, (double)g_td.i_rms);
             break;
         default: break;
     }
@@ -138,6 +151,11 @@ static void run_measure_cycle(void)
 
     /* ---- 5. 显示 ---- */
     g_state = ST_DISPLAY;
+
+    /* 同步给 UART 模块（用于 STAT / CAL 命令）*/
+    UART_UpdateLastResult(g_td.v_rms, g_td.i_rms,
+                          g_td.p_active, g_td.pf,
+                          g_harm.thd_percent);
 
     /* 每 5 秒自动翻页 */
     if ((g_sec - g_page_change_sec) >= (uint32_t)DISP_ROTATE_PERIOD_S) {
@@ -185,6 +203,11 @@ int main(void)
     LCD_Init();
     ADCDual_Init();
     DFTHarm_Init();
+    UART_Init(115200u);
+
+    /* 加载 FRAM 校准数据；若无效则用 config.h 初值兜底 */
+    uint8_t cal_ok = Calib_Load();
+    UART_Printf("BOOT cal_loaded=%u\r\n", (unsigned)cal_ok);
 
     LCD_Clear();
     LED_On(LED_RUN);
@@ -194,6 +217,9 @@ int main(void)
     while (1) {
         /* 完整测量周期 */
         run_measure_cycle();
+
+        /* 处理 UART 命令（校准 / 数据导出 / 复位）*/
+        UART_PollCommands();
 
         /* 进入 LPM3 等下一秒 */
         g_state = ST_LPM;
