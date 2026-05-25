@@ -1,0 +1,11 @@
+# 占位文件
+# 硬件抽象层 —— 与 STM32 HAL/LL 直接打交道
+# 后续放入：
+#   adc_3phase.c/.h    —— 三相 ADC 同步采样 + DMA
+#   pwm_3phase.c/.h    —— TIM1 三相互补 PWM 启停 + 死区
+#   oled.c/.h          —— SSD1306 I2C 驱动
+#   button.c/.h        —— 4 按键扫描（去抖）
+#   led_buzzer.c/.h    —— LED + 蜂鸣器
+#   uart_log.c/.h      —— 调试串口 printf 重定向
+#
+# 规范：禁止在 Drivers 层写业务逻辑！
