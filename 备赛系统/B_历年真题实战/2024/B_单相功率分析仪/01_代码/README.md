@@ -19,6 +19,14 @@
 └── Algorithm/               # 与硬件解耦
     ├── power_calc.{c,h}     # 时域 Vrms / Irms / P / S / PF
     └── dft_harmonic.{c,h}   # 单频 DFT × 10 谐波 + THD
+
+外加：
+├── Drivers/calibration.{c,h}  # FRAM 持久化校准
+├── Drivers/uart_dbg.{c,h}     # 调试串口 + 命令解析
+└── tests/                     # PC 端验证 / 校准助手
+    ├── algo_reference.py      # 与 C 代码逻辑等价的金标准
+    ├── cal_helper.py          # PC 端校准 / 数据导出 / 验证
+    └── README.md
 ```
 
 ## 当前状态
@@ -98,3 +106,41 @@ CPU 平均占空比 < 0.5%，**典型工况下平均功耗 ≈ 11~13 mW**。
 - 仪表 / DSP：`备赛系统/B_历年真题实战/2025/G_电路模型探究装置/`
 - 电源类：`备赛系统/B_历年真题实战/2025/A_能量回馈变流器/`
 - THD 测量：`备赛系统/B_历年真题实战/2021/A_信号失真度测量装置/`
+
+## UART 调试 / 校准协议
+
+PC 端通过 `tests/cal_helper.py` 与装置对话，命令参考 `Drivers/uart_dbg.c` 的 `handle_*`：
+
+| 命令 | 装置回包 | 用途 |
+|---|---|---|
+| `STAT\r\n` | `V=... I=... P=... PF=... THD=...` | 单次读测量值 |
+| `CAL V=220.0 I=2.20\r\n` | `OK CAL v_gain=... i_gain=...` | 反推校准系数 + 写 FRAM |
+| `DUMP\r\n` | `DUMP_START\r\n` + 1000 行 `v_adc,i_adc\r\n` + `DUMP_END` | 导出原始 ADC 给金标准对比 |
+| `RST\r\n` | `OK RST: factory defaults restored` | 出厂复位 |
+
+赛前必做（一次）：
+
+```bash
+# 1. 导入装置原始波形，确认采样链路
+python cal_helper.py --port COM3 --dump baseline.csv
+
+# 2. 接已知电压 / 电流，校准
+python cal_helper.py --port COM3 --calibrate
+
+# 3. 校准后再读一次实时数据验证
+python cal_helper.py --port COM3 --stat
+```
+
+## 端到端冒烟测试已通过 ✅
+
+合成 220V/2.2A 纯阻负载 → ADC 量化 → 反推 → 算法层输出：
+
+| 指标 | 期望 | 实测 | 误差 |
+|---|---|---|---|
+| Vrms | 220.000 V | 220.0018 V | +0.0008% |
+| Irms |   2.200 A |   2.2000 A | 0.0000% |
+| P    | 484.000 W | 484.0079 W | +0.0016% |
+| THD  |   0.000 % |   0.0131 % | (量化噪声底) |
+
+**残余误差全部来自 12bit ADC 量化（0.024% 理论底）**，没有任何系统性偏差。  
+1% 容差余量约 **600×**，所有空间留给后期硬件偏差。

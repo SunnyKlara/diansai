@@ -38,4 +38,15 @@ void ADCDual_GetFrame(ADCConvertedFrame *frame);
 /** @brief 强制停止（故障 / 复位时调用）*/
 void ADCDual_Stop(void);
 
+/** @brief 设置校准系数（由 Drivers/calibration.c 调用）
+ *  @note  本接口在 ADC 转换"原始 ADC 值 → 物理量"时实时使用。
+ */
+void ADCDual_SetCalibration(float v_gain, float v_offset,
+                            float i_gain, float i_offset);
+
+/** @brief 暴露原始 DMA 缓冲（供 UART 导出用做"金标准对比"）
+ *  @return 指向 DFT_N×2 的 uint16_t 数组（V/I 交错），上层只读
+ */
+const uint16_t *ADCDual_GetRawBuffer(void);
+
 #endif /* __ADC_DUAL_H */
