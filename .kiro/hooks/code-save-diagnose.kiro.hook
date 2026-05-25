@@ -1,0 +1,17 @@
+{
+  "enabled": true,
+  "name": "代码保存自动诊断",
+  "description": "保存 .c / .h 文件时让 Agent 自动用 getDiagnostics 检查并修复明显错误",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "**/*.c",
+      "**/*.h"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "用户刚刚保存了一个 C/H 文件。请：\n1. 用 getDiagnostics 检查该文件的编译/类型错误\n2. 如果有错误：列出错误清单 + 给出最小修复方案，等待用户确认后再改\n3. 如果没错误：仅返回一行确认（\"诊断通过 ✓\"），不要做任何额外操作\n注意：本仓库的 Drivers/ 层很多函数留有 TODO_MSPM0 / TODO 占位（设计如此），未实现的 driverlib 调用不算错误，不要试图实现它们。"
+  }
+}
