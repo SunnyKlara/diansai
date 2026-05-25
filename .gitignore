@@ -1,0 +1,90 @@
+# ============================================================
+# 全国大学生电子设计竞赛备赛仓库 .gitignore
+# ============================================================
+
+# ---------- 操作系统 ----------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+._*
+
+# ---------- 编辑器 / IDE ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.history/
+
+# ---------- Keil MDK ----------
+Listings/
+Objects/
+*.uvguix.*
+*.uvopt
+*.bak
+*.dep
+*.crf
+*.d
+*.iex
+*.htm
+*.lnp
+*.plg
+*.scvd
+*.tra
+*.txt.~*
+
+# ---------- STM32CubeIDE / GCC ----------
+Debug/
+Release/
+build/
+*.elf
+*.map
+*.list
+
+# ---------- 通用编译产物 ----------
+*.o
+*.obj
+*.lib
+*.a
+*.exe
+*.out
+*.hex
+*.bin
+*.axf
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---------- 备赛仓库专属：不该入库的大文件/无关文件 ----------
+# 安卓安装包（不要把 VPN apk 提交到公开仓库）
+*.apk
+
+# 临时截图（如有需要保留请单独移到正式目录）
+Screenshot_*.jpg
+Screenshot_*.png
+
+# 大型二进制资料（pdf/docx 默认保留，确认要排除时取消下面注释）
+# *.pdf
+# *.docx
+
+# Altium / KiCad 临时
+*.PrjPcbStructure
+*.PcbDoc.htm
+*-cache.lib
+*-rescue.lib
+fp-info-cache
+
+# 仿真临时
+*.raw
+*.log
+*.net
+
+# ---------- 本仓库工具脚本临时输出 ----------
+tmp_*.txt
+*.tmp
