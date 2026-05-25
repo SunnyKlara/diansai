@@ -41,13 +41,12 @@
  * ============================================================
  */
 
-#include "stm32f4xx_hal.h"
 #include "config.h"
-#include "dds_ad9833.h"
-#include "adc_dual_sync.h"
-#include "dac_output.h"
-#include "freq_response.h"
-#include "signal_processor.h"
+#include "../Drivers/dds_ad9833.h"
+#include "../Drivers/adc_dual_sync.h"
+#include "../Drivers/dac_output.h"
+#include "../Algorithm/freq_response.h"
+#include "../Algorithm/signal_processor.h"
 #include <stdio.h>
 #include <string.h>
 

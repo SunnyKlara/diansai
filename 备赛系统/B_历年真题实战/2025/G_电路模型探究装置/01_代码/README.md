@@ -8,18 +8,25 @@
 - 学习阶段：扫频测量未知电路的频率响应（增益+相位），2分钟内完成
 - 推理阶段：对任意周期输入信号（正弦/矩形/三角等），实时生成与未知电路相同的输出
 
-## 文件结构
+## 文件结构（已升级为分层）
 
 ```
 01_代码/
-├── config.h              全局配置（引脚定义、系统参数）
-├── dds_ad9833.c/.h       DDS信号发生器驱动（学习阶段产生扫频信号）
-├── adc_dual_sync.c/.h    ADC双通道同步采样（精确测量增益和相位）
-├── dac_output.c/.h       DAC连续输出（双缓冲，无间断波形输出）
-├── freq_response.c/.h    频率响应测量与存储（扫频+DFT+查找表）
-├── signal_processor.c/.h 信号处理核心（FFT→查表→IFFT）
-├── main.c                系统集成（状态机+主循环）
-└── README.md             本文件
+├── README.md
+├── config.h                # 全局可调参数
+│
+├── Core/
+│   └── main.c              # 系统集成 + 4 状态机 + PA4 引脚切换
+│
+├── Drivers/                # 板级抽象（STM32 HAL）
+│   ├── dds_ad9833.{c,h}    # DDS 信号发生器（SPI1，学习阶段产生扫频信号）
+│   ├── adc_dual_sync.{c,h} # ADC1+ADC2 双通道同步采样（精确测增益/相位）
+│   ├── dac_output.{c,h}    # DAC1 连续输出（双缓冲，无间断波形）
+│   └── oled.{c,h}          # SSD1306 显示
+│
+└── Algorithm/              # 与硬件解耦
+    ├── freq_response.{c,h} # 频率响应测量 + 存储（扫频 + DFT + 查找表）
+    └── signal_processor.{c,h}  # 信号处理（FFT → 查表 → IFFT）
 ```
 
 ## 模块依赖关系

@@ -8,7 +8,7 @@
 #ifndef __FREQ_RESPONSE_H
 #define __FREQ_RESPONSE_H
 
-#include "config.h"
+#include "../config.h"
 
 /* 频率响应数据点 */
 typedef struct {

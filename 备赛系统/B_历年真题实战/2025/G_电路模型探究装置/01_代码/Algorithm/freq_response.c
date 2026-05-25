@@ -29,8 +29,8 @@
  */
 
 #include "freq_response.h"
-#include "dds_ad9833.h"
-#include "adc_dual_sync.h"
+#include "../Drivers/dds_ad9833.h"
+#include "../Drivers/adc_dual_sync.h"
 #include "arm_math.h"
 #include <math.h>
 #include <string.h>

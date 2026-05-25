@@ -30,7 +30,7 @@
  */
 
 #include "dds_ad9833.h"
-#include "config.h"
+#include "../config.h"
 
 static SPI_HandleTypeDef* p_hspi = NULL;
 
