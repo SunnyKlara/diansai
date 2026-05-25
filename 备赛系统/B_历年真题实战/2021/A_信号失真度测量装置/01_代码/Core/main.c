@@ -36,10 +36,10 @@
  * ============================================================
  */
 
-#include "config.h"
-#include "adc_capture.h"
-#include "freq_detect.h"
-#include "thd_measure.h"  // 已有的THD计算模块
+#include "../config.h"
+#include "../Drivers/adc_capture.h"
+#include "../Algorithm/freq_detect.h"
+#include "../Algorithm/thd_measure.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>

@@ -23,6 +23,7 @@
  */
 
 #include "freq_detect.h"
+#include "../config.h"
 #include <math.h>
 
 float FreqDetect_Measure(int16_t* data, uint16_t len, float fs)

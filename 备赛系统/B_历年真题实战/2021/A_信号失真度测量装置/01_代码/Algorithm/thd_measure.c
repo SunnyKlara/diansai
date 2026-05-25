@@ -34,10 +34,11 @@
  * ============================================================
  */
 
+#include "thd_measure.h"
+#include "../config.h"
 #include "arm_math.h"
 #include <math.h>
 
-#define FFT_SIZE 1024
 #define PI 3.14159265f
 
 static arm_cfft_instance_f32 fft_inst;
@@ -154,13 +155,7 @@ void init_flat_top_window(void)
 
 /* ========== 第四步：FFT + THD计算 ========== */
 
-typedef struct {
-    float thd_percent;          // THD (%)
-    float fundamental_vrms;     // 基波有效值 (V)
-    float harmonic_vrms[6];     // 各次谐波有效值 [1]=基波, [2]~[5]=谐波
-    float harmonic_norm[6];     // 归一化幅值 [1]=1.0, [2]~[5]=相对基波
-    float frequency;            // 基波频率 (Hz)
-} THDResult_t;
+/* THDResult_t 已在 thd_measure.h 中声明，本文件不再重复 */
 
 /**
  * 完整的THD测量

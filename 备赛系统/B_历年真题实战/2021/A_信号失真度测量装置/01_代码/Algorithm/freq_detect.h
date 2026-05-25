@@ -23,7 +23,7 @@
 #ifndef __FREQ_DETECT_H
 #define __FREQ_DETECT_H
 
-#include "config.h"
+#include "../config.h"
 
 /**
  * 过零检测法测量信号频率

@@ -22,7 +22,7 @@
 #ifndef __ADC_CAPTURE_H
 #define __ADC_CAPTURE_H
 
-#include "config.h"
+#include "../config.h"
 
 /**
  * 初始化ADC和DMA
