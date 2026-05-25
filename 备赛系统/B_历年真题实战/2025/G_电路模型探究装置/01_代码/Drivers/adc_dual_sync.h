@@ -23,7 +23,7 @@
 #define __ADC_DUAL_SYNC_H
 
 #include "stm32f4xx_hal.h"
-#include "config.h"
+#include "../config.h"
 
 /**
  * 初始化双ADC同步采样

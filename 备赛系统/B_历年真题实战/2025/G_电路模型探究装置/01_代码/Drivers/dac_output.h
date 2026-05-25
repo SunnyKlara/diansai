@@ -9,7 +9,7 @@
 #define __DAC_OUTPUT_H
 
 #include "stm32f4xx_hal.h"
-#include "config.h"
+#include "../config.h"
 
 /**
  * 初始化DAC输出

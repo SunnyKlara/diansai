@@ -8,7 +8,7 @@
 #ifndef __SIGNAL_PROCESSOR_H
 #define __SIGNAL_PROCESSOR_H
 
-#include "config.h"
+#include "../config.h"
 
 /**
  * 初始化信号处理模块（分配FFT实例等）
