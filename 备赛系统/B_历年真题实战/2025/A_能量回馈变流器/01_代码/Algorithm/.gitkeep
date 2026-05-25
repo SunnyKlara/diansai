@@ -1,0 +1,10 @@
+# 占位文件
+# 算法层 —— 与硬件解耦，纯数学运算
+# 后续放入 / 已有：
+#   svpwm_3phase.c/.h     —— 已有，待迁入
+#   voltage_loop.c/.h     —— 三相电压闭环 PI
+#   rms_meter.c/.h        —— RMS 计算（线电压、相电流）
+#   feedback_control.c/.h —— 能量回馈 / 同步整流时序（发挥 30 分核心）
+#   thd_estimator.c/.h    —— 可选：实时 THD 估算
+#
+# 规范：算法函数禁止直接读 HAL 寄存器，所有 IO 通过参数传入！
