@@ -5,16 +5,39 @@
 
 仓库地址：<https://github.com/SunnyKlara/diansai>
 
+[![Stars](https://img.shields.io/github/stars/SunnyKlara/diansai?style=social)](https://github.com/SunnyKlara/diansai/stargazers)
+[![Last Commit](https://img.shields.io/github/last-commit/SunnyKlara/diansai)](https://github.com/SunnyKlara/diansai/commits/main)
+![Topic](https://img.shields.io/badge/topic-NUEDC-blue)
+![Topic](https://img.shields.io/badge/topic-电赛-red)
+![Topic](https://img.shields.io/badge/MCU-STM32%20%7C%20MSPM0%20%7C%20MSP430-green)
+![Status](https://img.shields.io/badge/24题-100%25-brightgreen)
+![Status](https://img.shields.io/badge/S级题-5%2F5-gold)
+
 ---
 
 ## 🏆 当前状态（2026-05）
 
 - ✅ **近五年（2021–2025）24 道真题**全部完成"必备六件套"
-- ✅ **S 级 5 道标杆题**完成"完全可复刻包"（引脚表 / 接线表 / 采购单 / SysConfig / 故障树 / 复刻指南）
+- ✅ **S 级 5 道标杆题**完成"完全可复刻包"（**15 项资产 / 题**：引脚表 / 接线表 / **万用板布局图** / 采购单 / SysConfig / 故障树 / 复刻指南）
+- ✅ **A 级 5 道**升级到 + 引脚表 + 接线表
 - ✅ **5 题驱动**全部升级到真实 HAL / driverlib，0 错误编译
-- ✅ **第一梯队工具箱**：横向决策对照、PID 调参表、赛前 7 天脚本、工具箱清单、答辩 30 问、降级清单
-- ✅ **赛场实战模板**：答辩 PPT 16 页 + 设计报告八段式 docx 模板
-- ✅ **算法层 PC 验证**：Python 金标准 + 自动回归 hook
+- ✅ **5 题 PC 端 Python 金标准** 100% 覆盖（spwm / control / fft / dft / pid / svpwm 全部可 PC 跑通）
+- ✅ **第一梯队工具箱**：横向决策对照、PID 调参表、赛前 7 天脚本、工具箱清单、答辩 30 问、降级清单、**5 题 FAQ 高频踩坑**
+- ✅ **赛场实战模板**：答辩 PPT 16 页 + 设计报告八段式 docx 模板 + **评委隐性评分细则**
+- ✅ **算法层合规**：156 个 .c 文件 0 错误，0 处真违规（HAL/driverlib 不入算法层）
+
+## 🎯 数字化指标
+
+| 指标 | 数值 |
+|---|---|
+| 真题总数 | **24 道**（2021~2025 全覆盖）|
+| 标杆题 S 级 | **5 道** × 15 项资产 = 75 文件 |
+| A 级题 | **5 道** × 8 项 = 40 文件 |
+| .c 文件总数 | **156 个**（全部 0 错误）|
+| .h 文件总数 | **147 个**（全部 include guard）|
+| Python 金标准 | **10 个**（5 题 × 2 文件）|
+| 赛场工具箱 | **12 个 markdown** |
+| 总 markdown 数 | **300+ 个** |
 
 ---
 
@@ -53,7 +76,7 @@
 每题包含：
 - `00_深度审题与方案论证.md` / `00_做题指南.md`
 - `01_代码/`：config.h + Core/Drivers/Algorithm 三层 + **真实 HAL 0 错误** + 引脚分配表 + CubeMX/SysConfig 配置说明 + tests/ Python 金标准
-- `02_硬件/`：BOM + **可执行采购清单（含淘宝关键词）** + 电路设计说明 + **接线表（每根杜邦线一行）**
+- `02_硬件/`：BOM + **可执行采购清单（含淘宝关键词）** + 电路设计说明 + **接线表（每根杜邦线一行）** + **万用板布局图（板布局 + 接地策略 + 散热 + 走线）**
 - `03_报告/设计报告.md`（八段式）
 - `04_调试记录/`：调试清单 + 经验总结 + **故障决策树（5 分钟定位）**
 - `05_完整复刻指南.md`：4 周端到端 + 自评清单
@@ -160,6 +183,8 @@ diansai/
 - 📄 [设计报告八段式模板](备赛系统/E_赛场实战/设计报告八段式模板.md)
 - 🎤 [答辩 PPT 模板](备赛系统/E_赛场实战/答辩PPT模板.md)
 - ❓ [答辩 30 问速查卡](备赛系统/B_历年真题实战/_答辩30问速查卡.md)
+- 🎯 [评委隐性评分细则](备赛系统/E_赛场实战/评委隐性评分细则.md)
+- 📚 [5 题 FAQ 高频踩坑](备赛系统/B_历年真题实战/_5题FAQ高频踩坑.md)
 
 ### 流程 / 工作流
 - 🔁 [最高标准刷题工作流](备赛系统/E_赛场实战/最高标准刷题工作流.md)
