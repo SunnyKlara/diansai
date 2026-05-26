@@ -50,6 +50,51 @@
 #include <stdio.h>
 #include <string.h>
 
+/* ============================================================
+ * FreqResp 回调适配器（算法层 ←→ 硬件层 解耦）
+ * ============================================================ */
+
+static void freqresp_dds_set(float freq_hz)
+{
+    DDS_SetFreq(freq_hz);
+    DDS_SetWaveform(DDS_WAVE_SINE);
+    DDS_Start();
+}
+
+static void freqresp_delay_ms(uint32_t ms)
+{
+    HAL_Delay(ms);
+}
+
+static uint8_t freqresp_capture(float freq_hz,
+                                const int16_t **in_data,
+                                const int16_t **out_data,
+                                float *sample_rate,
+                                uint16_t *length)
+{
+    /* 设置采样率：让 10 个周期落在 N 点内 */
+    float ideal_rate = freq_hz * (float)DFT_SAMPLES_PER_POINT / 10.0f;
+    if (ideal_rate < 10000.0f)   ideal_rate = 10000.0f;
+    if (ideal_rate > 1000000.0f) ideal_rate = 1000000.0f;
+    *sample_rate = ADC_DualSync_SetRate(ideal_rate);
+
+    ADC_DualSync_StartCapture(DFT_SAMPLES_PER_POINT);
+    while (!ADC_DualSync_IsComplete()) { /* busy wait */ }
+
+    int16_t *ch1; int16_t *ch2; uint16_t len;
+    ADC_DualSync_GetData(&ch1, &ch2, &len);
+    *in_data = ch1;
+    *out_data = ch2;
+    *length = len;
+    return 1;
+}
+
+static const FreqResp_Callbacks_t s_freqresp_cb = {
+    .dds_set_freq = freqresp_dds_set,
+    .delay_ms     = freqresp_delay_ms,
+    .capture      = freqresp_capture,
+};
+
 /* -------- 外设句柄（CubeMX生成） -------- */
 extern SPI_HandleTypeDef hspi1;
 extern ADC_HandleTypeDef hadc1, hadc2;
@@ -132,6 +177,9 @@ int main(void)
     DAC_Out_Init();
     SigProc_Init();
     OLED_Init(&hi2c1);
+
+    // 注入算法层回调（FreqResp_Learn 内部用）
+    FreqResp_BindCallbacks(&s_freqresp_cb);
     
     // 显示启动信息
     OLED_Clear();

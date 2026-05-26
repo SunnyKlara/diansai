@@ -55,17 +55,60 @@
 
 #include "signal_processor.h"
 #include "freq_response.h"
-#include "arm_math.h"
 #include <math.h>
+#include <stdint.h>
 
 #define PI 3.14159265f
 
-static arm_cfft_instance_f32 fft_instance;
-static float fft_buf[FFT_SIZE * 2];  // 复数缓冲区（实部+虚部交替）
+/* 算法层不依赖 CMSIS-DSP，用手写 FFT/IFFT */
+static float fft_buf[FFT_SIZE * 2];
+
+/* 手写 Cooley-Tukey FFT
+ * @param  d  复数数组：实虚部交替，长度 = N*2
+ * @param  N  点数（必须 2 的幂）
+ * @param  inv 0=正变换，1=逆变换
+ */
+static void cfft_f32(float *d, uint32_t N, int inv)
+{
+    /* 位反转 */
+    uint32_t j = 0;
+    for (uint32_t i = 0; i < N - 1; i++) {
+        if (i < j) {
+            float tr = d[2*i], ti = d[2*i+1];
+            d[2*i]   = d[2*j];   d[2*i+1] = d[2*j+1];
+            d[2*j]   = tr;       d[2*j+1] = ti;
+        }
+        uint32_t k = N >> 1;
+        while (k <= j) { j -= k; k >>= 1; }
+        j += k;
+    }
+    /* 蝶形 */
+    float sign = inv ? 1.0f : -1.0f;
+    for (uint32_t s = 1; (1u << s) <= N; s++) {
+        uint32_t m = 1u << s, mh = m >> 1;
+        float th = sign * 2.0f * PI / (float)m;
+        float wr = cosf(th), wi = sinf(th);
+        for (uint32_t k = 0; k < N; k += m) {
+            float er = 1.0f, ei = 0.0f;
+            for (uint32_t n = 0; n < mh; n++) {
+                uint32_t a = (k + n) * 2;
+                uint32_t b = (k + n + mh) * 2;
+                float tr = er * d[b]   - ei * d[b+1];
+                float ti = er * d[b+1] + ei * d[b];
+                d[b]   = d[a]   - tr;
+                d[b+1] = d[a+1] - ti;
+                d[a]   += tr;   d[a+1] += ti;
+                float nr = er * wr - ei * wi;
+                float ni = er * wi + ei * wr;
+                er = nr; ei = ni;
+            }
+        }
+    }
+}
 
 void SigProc_Init(void)
 {
-    arm_cfft_init_f32(&fft_instance, FFT_SIZE);
+    /* naive FFT 无需预算实例 */
 }
 
 void SigProc_ProcessFrame(int16_t* input, uint16_t* output, uint16_t length, float fs)
@@ -86,7 +129,7 @@ void SigProc_ProcessFrame(int16_t* input, uint16_t* output, uint16_t length, flo
     }
     
     // ===== 2. FFT =====
-    arm_cfft_f32(&fft_instance, fft_buf, 0, 1);  // 0=正变换, 1=位反转
+    cfft_f32(fft_buf, FFT_SIZE, 0);  // 0=正变换
     
     // ===== 3. 频域处理：对每个bin应用频率响应 =====
     for (uint16_t k = 0; k <= FFT_SIZE / 2; k++) {
@@ -98,8 +141,8 @@ void SigProc_ProcessFrame(int16_t* input, uint16_t* output, uint16_t length, flo
         
         // 构造H(f)的复数形式
         // H = gain × exp(j × phase) = gain×cos(phase) + j×gain×sin(phase)
-        float hr = gain * arm_cos_f32(phase);
-        float hi = gain * arm_sin_f32(phase);
+        float hr = gain * cosf(phase);
+        float hi = gain * sinf(phase);
         
         // 读取X(f)
         float xr = fft_buf[2 * k];
@@ -122,7 +165,7 @@ void SigProc_ProcessFrame(int16_t* input, uint16_t* output, uint16_t length, flo
     }
     
     // ===== 4. IFFT =====
-    arm_cfft_f32(&fft_instance, fft_buf, 1, 1);  // 1=逆变换
+    cfft_f32(fft_buf, FFT_SIZE, 1);  // 1=逆变换
     
     // ===== 5. 输出数据转换：float → uint16 (DAC值) =====
     /*

@@ -324,7 +324,9 @@ void Inverter3Ph_OnTimerUpdate(void)
         (g_state != ST_RAMPUP)) {
         return;
     }
-    Inverter3Ph_Update();   /* 来自 svpwm_3phase.c：计算并写三相 CCR */
+    /* 算法层只算占空比，写硬件由 Core 完成（保持算法层不依赖 Drivers）*/
+    SVPWM_Out pwm = Inverter3Ph_Update();
+    PWM3Phase_SetDuty(pwm.Ta, pwm.Tb, pwm.Tc);
 }
 
 /* ============================================================

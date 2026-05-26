@@ -36,18 +36,69 @@
 
 #include "thd_measure.h"
 #include "../config.h"
-#include "arm_math.h"
 #include <math.h>
+#include <stdint.h>
+
+#ifndef float32_t
+typedef float float32_t;
+#endif
 
 #define PI 3.14159265f
 
-static arm_cfft_instance_f32 fft_inst;
+/* 算法层不依赖 CMSIS-DSP；用手写 Cooley-Tukey FFT。
+ * 真机若需加速，定义 USE_CMSIS_DSP 宏切到 arm_cfft_f32（仅 Drivers/Core 层提供包装）。
+ */
+
 static float32_t fft_buf[FFT_SIZE * 2];
 static float32_t mag_buf[FFT_SIZE];
 
 void thd_init(void)
 {
-    arm_cfft_init_f32(&fft_inst, FFT_SIZE);
+    /* naive 版本无需预算实例 */
+}
+
+/* ===== 手写 Cooley-Tukey FFT（位反转 + 蝶形）===== */
+static void naive_fft_f32(float *d, uint32_t N)
+{
+    uint32_t j = 0;
+    for (uint32_t i = 0; i < N - 1; i++) {
+        if (i < j) {
+            float tr = d[2*i], ti = d[2*i+1];
+            d[2*i]   = d[2*j];   d[2*i+1] = d[2*j+1];
+            d[2*j]   = tr;       d[2*j+1] = ti;
+        }
+        uint32_t k = N >> 1;
+        while (k <= j) { j -= k; k >>= 1; }
+        j += k;
+    }
+    for (uint32_t s = 1; (1u << s) <= N; s++) {
+        uint32_t m = 1u << s, mh = m >> 1;
+        float th = -2.0f * PI / (float)m;
+        float wr = cosf(th), wi = sinf(th);
+        for (uint32_t k = 0; k < N; k += m) {
+            float er = 1.0f, ei = 0.0f;
+            for (uint32_t n = 0; n < mh; n++) {
+                uint32_t a = (k + n) * 2;
+                uint32_t b = (k + n + mh) * 2;
+                float tr = er * d[b]   - ei * d[b+1];
+                float ti = er * d[b+1] + ei * d[b];
+                d[b]   = d[a]   - tr;
+                d[b+1] = d[a+1] - ti;
+                d[a]   += tr;   d[a+1] += ti;
+                float nr = er * wr - ei * wi;
+                float ni = er * wi + ei * wr;
+                er = nr; ei = ni;
+            }
+        }
+    }
+}
+
+static void naive_cmag_f32(const float *cdata, float *mag, uint32_t N)
+{
+    for (uint32_t i = 0; i < N; i++) {
+        float re = cdata[2*i], im = cdata[2*i + 1];
+        mag[i] = sqrtf(re * re + im * im);
+    }
 }
 
 /* ========== 第一步：粗测频率 ========== */
@@ -180,10 +231,10 @@ THDResult_t measure_thd(uint16_t* adc_data, uint16_t len, float fs,
     }
     
     // 2. FFT
-    arm_cfft_f32(&fft_inst, fft_buf, 0, 1);
+    naive_fft_f32(fft_buf, FFT_SIZE);
     
     // 3. 计算幅度谱
-    arm_cmplx_mag_f32(fft_buf, mag_buf, FFT_SIZE);
+    naive_cmag_f32(fft_buf, mag_buf, FFT_SIZE);
     
     // 4. 归一化（除以N/2，乘以窗函数补偿）
     float norm = window_energy_factor * 2.0f / FFT_SIZE;

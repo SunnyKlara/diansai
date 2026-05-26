@@ -49,9 +49,8 @@ void SVPWM_SetVdc(float vdc);
 /**
  * @brief 三相逆变器更新（在 TIM1 更新中断中调用，20kHz）
  *
- *  调用链：
- *      推进电角度 → 计算 Uα/Uβ → SVPWM_Calc → PWM3Phase_SetDuty
+ *  返回最新占空比；由 Core 层调用 PWM3Phase_SetDuty 写入硬件。
  */
-void Inverter3Ph_Update(void);
+SVPWM_Out Inverter3Ph_Update(void);
 
 #endif /* __SVPWM_3PHASE_H */

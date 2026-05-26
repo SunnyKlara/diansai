@@ -1,24 +1,21 @@
 /**
  * @file    svpwm_3phase.c
- * @brief   三相空间矢量调制（SVPWM）核心算法
+ * @brief   三相空间矢量调制（SVPWM）—— 纯算法层
  *
- *  设计：
- *      - 与硬件完全解耦（用 PWM3Phase_SetDuty 写占空比）
- *      - 不依赖 HAL 库 / arm_math.h（用 math.h 标准 sin/cos）
- *      - 七段式分配，谐波最优
+ * Steering 强制约束：
+ *   ✅ 不引入 HAL / driverlib / CMSIS-DSP
+ *   ✅ 不引入 Drivers/ 头
+ *   ✅ 仅依赖 stdint / math.h / config.h
  *
- *  扇区判断（标准方法）：
- *      U1 = Uβ
- *      U2 = (√3/2)·Uα - (1/2)·Uβ
- *      U3 = -(√3/2)·Uα - (1/2)·Uβ
- *      A=sign(U1), B=sign(U2), C=sign(U3)
- *      N = 4C + 2B + A → 查表得扇区 1~6
+ * 接口：
+ *   - SVPWM_Calc(Ualpha, Ubeta, Udc) 返回三相占空比，由 Core 层写入 PWM 驱动
+ *   - Inverter3Ph_Update() 推进电角度并返回最新占空比，**不直接写硬件**
+ *
+ * 七段式分配，扇区判断标准方法。
  */
 
 #include "svpwm_3phase.h"
 #include "../config.h"
-#include "../Drivers/pwm_3phase.h"
-
 #include <math.h>
 
 #define SQRT3      1.7320508f
@@ -27,9 +24,9 @@
 
 /* ---- 模块状态 ---- */
 static float s_theta      = 0.0f;
-static float s_omega      = TWO_PI * 50.0f;     /* 50Hz 默认 */
+static float s_omega      = TWO_PI * 50.0f;
 static float s_mod_index  = 0.80f;
-static float s_vdc        = VDC_NOMINAL_V;
+static float s_vdc        = (float)VDC_NOMINAL_V;
 
 /* ============================================================
  *  公开 API
@@ -58,7 +55,7 @@ void SVPWM_SetAmplitude(float mod_index)
 
 void SVPWM_SetVdc(float vdc)
 {
-    if (vdc < 5.0f) vdc = 5.0f;     /* 防 SVPWM_Calc 内部除零 */
+    if (vdc < 5.0f) vdc = 5.0f;
     s_vdc = vdc;
 }
 
@@ -86,9 +83,7 @@ SVPWM_Out SVPWM_Calc(float Ualpha, float Ubeta, float Udc)
     static const uint8_t kSectorTable[8] = {0, 2, 6, 1, 4, 3, 5, 0};
     out.sector = kSectorTable[N];
 
-    /* 2. 计算两个相邻基本矢量的作用时间（归一化到 [0, 1]）
-     *    K = √3 / Udc
-     */
+    /* 2. 计算两个相邻基本矢量的作用时间 */
     float K = SQRT3 / Udc;
     float T1 = 0.0f, T2 = 0.0f;
 
@@ -168,24 +163,21 @@ SVPWM_Out SVPWM_Calc(float Ualpha, float Ubeta, float Udc)
 
 /* ============================================================
  *  顶层逆变器更新（20kHz 中断中调用）
+ *
+ *  返回最新占空比，由 Core 层写入硬件 PWM 驱动。
  * ============================================================ */
-void Inverter3Ph_Update(void)
+SVPWM_Out Inverter3Ph_Update(void)
 {
     /* 1. 推进电角度 */
     s_theta += s_omega * (float)DT_PWM_S;
     if (s_theta >= TWO_PI) s_theta -= TWO_PI;
     if (s_theta < 0.0f)    s_theta += TWO_PI;
 
-    /* 2. 计算目标电压矢量 (αβ)
-     *    Vref_peak = m × Vdc / √3   （SVPWM 线性范围内）
-     */
+    /* 2. 计算目标电压矢量 (αβ) */
     float Vref = s_mod_index * s_vdc / SQRT3;
     float Ualpha = Vref * cosf(s_theta);
     float Ubeta  = Vref * sinf(s_theta);
 
     /* 3. SVPWM 计算 */
-    SVPWM_Out pwm = SVPWM_Calc(Ualpha, Ubeta, s_vdc);
-
-    /* 4. 写入 PWM（解耦：通过 driver 接口）*/
-    PWM3Phase_SetDuty(pwm.Ta, pwm.Tb, pwm.Tc);
+    return SVPWM_Calc(Ualpha, Ubeta, s_vdc);
 }
