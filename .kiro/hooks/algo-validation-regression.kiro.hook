@@ -1,0 +1,17 @@
+{
+  "enabled": true,
+  "name": "算法金标准回归自动跑",
+  "description": "监听任意题目的 algo_reference.py 被修改时自动跑全部 5 题回归测试，确保改一个不影响其他",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "**/tests/algo_reference.py"
+    ]
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "python 备赛系统/C_通用能力/算法层PC验证方法论/tools/run_all_validation.py",
+    "timeout": 60
+  }
+}

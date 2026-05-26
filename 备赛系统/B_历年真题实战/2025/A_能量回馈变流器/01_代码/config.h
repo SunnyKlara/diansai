@@ -34,6 +34,9 @@
 #define ADC_FS_HZ               20000U        /* ADC 采样率 = PWM 频率 */
 #define ADC_OVERSAMPLE_BITS         4U        /* 过采样位数（G474 16bit 增强分辨率）*/
 
+/* RMS 滑动窗口长度：覆盖最低输出频率 20Hz（一个周期 1000 点 @ 20kHz）*/
+#define RMS_BUFFER_LEN          1024U
+
 /* ADC 校准（实测后填入）*/
 #define ADC_VREF_V                  3.3f
 #define ADC_RESOLUTION_BITS        12U
