@@ -16,10 +16,33 @@
 │   ├── display.{c,h}           # SSD1306 OLED
 │   └── protection.{c,h}        # 软件保护（OVP / OCP / OTP）
 │
-└── Algorithm/                  # 与硬件解耦
-    ├── spwm.{c,h}              # SPWM 正弦表 + 角度推进（已去 HAL 依赖）
-    └── control.{c,h}           # 电压外环 PI（已去 HAL 依赖）
+├── Algorithm/                  # 与硬件解耦
+│   ├── spwm.{c,h}              # SPWM 正弦表 + 角度推进（已去 HAL 依赖）
+│   └── control.{c,h}           # 电压外环 PI（已去 HAL 依赖）
+│
+└── tests/                      # PC 端 Python 金标准（不参与 MCU 编译）
+    ├── algo_reference.py       # 镜像 spwm.c + control.c 的纯 Python 实现
+    └── cal_helper.py           # UART 调参 / 校准工具（含 --simulate 离线仿真）
 ```
+
+## PC 端 Python 测试
+
+```bash
+# 1. 算法金标准（无依赖，即可运行）
+python tests/algo_reference.py
+  # 验证：SPWM 表 ±1 / RMS 0.7071，PI 阶跃收敛，软启动 530ms 收敛到 0.0001%
+
+# 2. 调试当前 PI 参数（不需要硬件）
+python tests/cal_helper.py --simulate --kp 0.020 --ki 0.005
+
+# 3. 接 STM32 板子（需要 pyserial）
+python tests/cal_helper.py --port COM3 --stat
+python tests/cal_helper.py --port COM3 --tune-pi --kp 0.025 --ki 0.008
+python tests/cal_helper.py --port COM3 --calib   # 交互式 V/I 校准
+```
+
+**用途**：MCU 移植后，对相同输入数据，C 输出应与 Python 金标准的绝对差 < 1%。
+若不一致，先怀疑 MCU 端浮点精度 / 数据类型 / 累积溢出。
 
 ## 当前状态
 
