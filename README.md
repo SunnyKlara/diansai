@@ -7,6 +7,8 @@
 
 [![Stars](https://img.shields.io/github/stars/SunnyKlara/diansai?style=social)](https://github.com/SunnyKlara/diansai/stargazers)
 [![Last Commit](https://img.shields.io/github/last-commit/SunnyKlara/diansai)](https://github.com/SunnyKlara/diansai/commits/main)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Contribute](https://img.shields.io/badge/contributing-welcome-brightgreen)](CONTRIBUTING.md)
 ![Topic](https://img.shields.io/badge/topic-NUEDC-blue)
 ![Topic](https://img.shields.io/badge/topic-电赛-red)
 ![Topic](https://img.shields.io/badge/MCU-STM32%20%7C%20MSPM0%20%7C%20MSP430-green)
@@ -185,6 +187,15 @@ diansai/
 - ❓ [答辩 30 问速查卡](备赛系统/B_历年真题实战/_答辩30问速查卡.md)
 - 🎯 [评委隐性评分细则](备赛系统/E_赛场实战/评委隐性评分细则.md)
 - 📚 [5 题 FAQ 高频踩坑](备赛系统/B_历年真题实战/_5题FAQ高频踩坑.md)
+- 📊 [测试数据记录模板](备赛系统/E_赛场实战/测试数据记录模板.md)
+
+### 工程骨架（拿来即用）
+- 🧰 [STM32G4 工程骨架](备赛系统/C_通用能力/STM32开发/STM32G4_工程骨架.md)
+- 🧰 [MSPM0G3507 工程骨架](备赛系统/C_通用能力/TI_MSPM0开发/MSPM0G3507_工程骨架.md)
+
+### 赛中实战
+- 🕐 [赛中 4 天每小时排程](备赛系统/E_赛场实战/赛中4天每小时排程.md)
+- ✅ [赛前 24h 终检清单](备赛系统/E_赛场实战/赛前24h终检清单.md)
 
 ### 流程 / 工作流
 - 🔁 [最高标准刷题工作流](备赛系统/E_赛场实战/最高标准刷题工作流.md)

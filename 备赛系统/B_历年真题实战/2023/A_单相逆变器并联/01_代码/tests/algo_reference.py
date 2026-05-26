@@ -18,8 +18,15 @@ algo_reference.py
 """
 
 import math
+import sys
 from dataclasses import dataclass
 from typing import List, Tuple
+
+# Windows GBK 终端兼容（防止 Python 进程的 stdout 因为 ✓/⚠ 而崩溃）
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):
+    pass
 
 
 # ============================================================

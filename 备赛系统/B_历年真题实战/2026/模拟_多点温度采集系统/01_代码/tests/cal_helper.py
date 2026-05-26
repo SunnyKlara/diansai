@@ -14,6 +14,12 @@ PC 端校准 / 调试助手（与装置通过 UART 对话）。
 
 import argparse
 import sys
+
+# Windows GBK 终端兼容（防止 ✓/⚠ 等字符让 print 崩溃）
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):
+    pass
 import time
 from pathlib import Path
 

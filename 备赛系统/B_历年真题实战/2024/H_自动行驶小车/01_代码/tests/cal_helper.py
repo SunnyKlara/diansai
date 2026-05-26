@@ -21,6 +21,12 @@ UART 协议（装置端实现要点）：
 
 import argparse
 import sys
+
+# Windows GBK 终端兼容（防止 ✓/⚠ 等字符让 print 崩溃）
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):
+    pass
 import time
 from pathlib import Path
 

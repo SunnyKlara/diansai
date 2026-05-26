@@ -27,6 +27,12 @@ import sys
 import time
 from pathlib import Path
 
+# Windows GBK 终端兼容
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):
+    pass
+
 sys.path.insert(0, str(Path(__file__).parent))
 import algo_reference as alg
 

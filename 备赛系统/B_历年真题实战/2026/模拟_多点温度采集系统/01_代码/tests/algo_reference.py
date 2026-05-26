@@ -14,6 +14,13 @@ algo_reference.py
 """
 
 import math
+import sys
+
+# Windows GBK 终端兼容（防止 ✓/⚠ 等字符让 print 崩溃）
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):
+    pass
 import cmath
 from dataclasses import dataclass, field
 from typing import List, Tuple
