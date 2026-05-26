@@ -1,39 +1,64 @@
 /**
  * @file    pwm_3phase.c
- * @brief   三相互补 PWM 启停封装实现
+ * @brief   STM32G474 三相互补 PWM 启停封装实现（TIM1 + 死区 + BKIN）
+ *
+ * 资源映射：
+ *   TIM1_CH1  (PA8 ) → A 相上管
+ *   TIM1_CH1N (PB13) → A 相下管
+ *   TIM1_CH2  (PA9 ) → B 相上管
+ *   TIM1_CH2N (PB14) → B 相下管
+ *   TIM1_CH3  (PA10) → C 相上管
+ *   TIM1_CH3N (PB15) → C 相下管
+ *   TIM1_BKIN (PA12) → 硬件保护输入
+ *
+ *   死区：DEAD_TIME_DTG = 0x55（500ns @ 170MHz）
  */
 
 #include "pwm_3phase.h"
 #include "../config.h"
+#include "stm32g4xx_hal.h"
 
-/* TODO_HAL: #include "stm32g4xx_hal.h" */
-/* TODO_HAL: extern TIM_HandleTypeDef htim1; */
+extern TIM_HandleTypeDef htim1;
 
 void PWM3Phase_Init(void)
 {
-    /* TODO_HAL:
-     *   1) TIM1 中心对齐 PWM Mode 1，ARR=PWM_PERIOD
-     *   2) DTG=DEAD_TIME_DTG，对应 800 ns 死区
-     *   3) 三通道 + 三互补通道（CCxN）
-     *   4) BDTR.MOE 默认 0（关断），由 PWM3Phase_Start 拉高
-     *   5) 启用更新中断（用于 SVPWM 角度推进）
+    /* CubeMX 已配置：
+     *   TIM1 中心对齐 PWM Mode 1, ARR = PWM_PERIOD - 1
+     *   死区 DTG = 0x55, BDTR.MOE 默认 0
+     *   三通道 + 三互补通道
+     *   BKIN PA12 使能，触发后自动关 MOE
+     *   TRGO = Update Event（驱动 ADC + SVPWM 角度推进）
      */
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
+
+    /* 强制关 MOE 防上电误输出 */
+    __HAL_TIM_MOE_DISABLE(&htim1);
 }
 
 void PWM3Phase_Start(void)
 {
-    /* TODO_HAL:
-     *   __HAL_TIM_MOE_ENABLE(&htim1);
-     *   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-     *   HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);
-     *   ... 三通道
-     */
+    HAL_TIM_PWM_Start (&htim1, TIM_CHANNEL_1);
+    HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);
+    HAL_TIM_PWM_Start (&htim1, TIM_CHANNEL_2);
+    HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);
+    HAL_TIM_PWM_Start (&htim1, TIM_CHANNEL_3);
+    HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_3);
+
+    __HAL_TIM_MOE_ENABLE(&htim1);
 }
 
 void PWM3Phase_Stop(void)
 {
-    /* TODO_HAL: 立即关 MOE，所有 PWM 引脚拉低（含 N 通道）*/
-    /* __HAL_TIM_MOE_DISABLE(&htim1); */
+    __HAL_TIM_MOE_DISABLE(&htim1);
+
+    HAL_TIM_PWM_Stop (&htim1, TIM_CHANNEL_1);
+    HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_1);
+    HAL_TIM_PWM_Stop (&htim1, TIM_CHANNEL_2);
+    HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_2);
+    HAL_TIM_PWM_Stop (&htim1, TIM_CHANNEL_3);
+    HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_3);
 }
 
 void PWM3Phase_SetDuty(float Ta, float Tb, float Tc)
@@ -46,16 +71,13 @@ void PWM3Phase_SetDuty(float Ta, float Tb, float Tc)
     uint16_t ccr_b = (uint16_t)(Tb * (float)PWM_PERIOD);
     uint16_t ccr_c = (uint16_t)(Tc * (float)PWM_PERIOD);
 
-    /* TODO_HAL:
-     *   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, ccr_a);
-     *   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, ccr_b);
-     *   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, ccr_c);
-     */
-    (void)ccr_a; (void)ccr_b; (void)ccr_c;
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, ccr_a);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, ccr_b);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, ccr_c);
 }
 
 void PWM3Phase_EmergencyOff(void)
 {
-    /* TODO_HAL: 同 PWM3Phase_Stop，但要求中断中可调用（不能阻塞）*/
-    /* TIM1->BDTR &= ~TIM_BDTR_MOE; */
+    /* 紧急关断：直接寄存器清 MOE，1 个时钟周期内 6 路引脚拉低。 */
+    TIM1->BDTR &= ~TIM_BDTR_MOE;
 }

@@ -1,18 +1,26 @@
-#include "button.h"
-/* TODO_HAL: #include "stm32g4xx_hal.h" */
+/**
+ * @file    button.c
+ * @brief   STM32G474 5 按键扫描（PC0~PC4）
+ */
 
-static uint8_t s_last_state[5] = { 1, 1, 1, 1, 1 };
+#include "button.h"
+#include "stm32g4xx_hal.h"
+
+static uint8_t s_last_state[5] = {1, 1, 1, 1, 1};
+
+static const uint16_t s_pin_mask[5] = {
+    GPIO_PIN_0, GPIO_PIN_1, GPIO_PIN_2, GPIO_PIN_3, GPIO_PIN_4
+};
 
 static uint8_t read_pin(uint8_t idx)
 {
-    /* TODO_HAL: 根据 idx 返回 PC0~PC4 的电平 */
-    (void)idx;
-    return 1u;
+    if (idx >= 5u) return 1u;
+    return (HAL_GPIO_ReadPin(GPIOC, s_pin_mask[idx]) == GPIO_PIN_SET) ? 1u : 0u;
 }
 
 void Button_Init(void)
 {
-    /* TODO_HAL: PC0~PC4 → GPIO 输入 + 上拉 */
+    /* CubeMX 已配置 PC0~PC4 为输入 + 上拉。这里清状态。 */
     for (uint8_t i = 0; i < 5u; i++) s_last_state[i] = 1u;
 }
 
