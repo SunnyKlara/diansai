@@ -1,0 +1,28 @@
+# {{YEAR}} {{PROBLEM}} 集中配置
+# 所有"可能要调"的超参数都集中在这里
+
+experiment:
+  id: TODO
+  seed: 42
+  device: cuda
+
+data:
+  train_path: TODO
+  val_path: TODO
+  batch_size: 64
+  num_workers: 4
+
+model:
+  name: TODO
+  hidden_dim: 256
+  dropout: 0.1
+
+train:
+  epochs: 50
+  lr: 0.001
+  weight_decay: 0.0001
+  optimizer: adamw
+
+logging:
+  use_wandb: false
+  log_every_n_steps: 50
