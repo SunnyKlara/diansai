@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#0d1117" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>电赛备赛刷题</title>
+  <link rel="stylesheet" href="./assets/style.css" />
+</head>
+<body>
+  <!-- 顶部移动栏（移动端可见） -->
+  <header id="topbar">
+    <button id="btn-menu" aria-label="菜单">☰</button>
+    <div class="topbar-title" id="topbar-title">电赛备赛</div>
+    <button id="btn-side" aria-label="侧栏" style="display:none;">⋮</button>
+  </header>
+
+  <!-- 主导航（桌面侧栏 / 移动抽屉） -->
+  <aside id="sidebar">
+    <div class="brand">
+      <div class="logo">⚡</div>
+      <div>
+        <div class="brand-title">电赛备赛</div>
+        <div class="brand-sub">刷题 / 复习 / 速查</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <a href="#/" data-route="/" class="nav-item">
+        <span class="ico">🏠</span><span>仪表盘</span>
+      </a>
+      <a href="#/quiz" data-route="/quiz" class="nav-item">
+        <span class="ico">📝</span><span>刷题模式</span>
+      </a>
+      <a href="#/cards" data-route="/cards" class="nav-item">
+        <span class="ico">🃏</span><span>知识卡片</span>
+      </a>
+      <a href="#/problems" data-route="/problems" class="nav-item">
+        <span class="ico">📚</span><span>真题速查</span>
+      </a>
+      <a href="#/topics" data-route="/topics" class="nav-item">
+        <span class="ico">🌳</span><span>方向树</span>
+      </a>
+      <a href="#/wrong" data-route="/wrong" class="nav-item">
+        <span class="ico">❗</span><span>错题本</span>
+        <span class="badge" id="badge-wrong">0</span>
+      </a>
+      <a href="#/star" data-route="/star" class="nav-item">
+        <span class="ico">⭐</span><span>收藏夹</span>
+        <span class="badge" id="badge-star">0</span>
+      </a>
+      <a href="#/search" data-route="/search" class="nav-item">
+        <span class="ico">🔍</span><span>全局搜索</span>
+      </a>
+    </nav>
+
+    <div class="streak" id="streak-card">
+      <div class="streak-num">0</div>
+      <div class="streak-label">连续打卡（天）</div>
+    </div>
+
+    <div class="footer">
+      <button id="btn-reset">清空进度</button>
+    </div>
+  </aside>
+
+  <!-- 抽屉遮罩 -->
+  <div id="drawer-mask"></div>
+
+  <!-- 主区 -->
+  <main id="app">
+    <div class="loading">加载中…</div>
+  </main>
+
+  <!-- Toast -->
+  <div id="toast"></div>
+
+  <!-- 图片放大查看 -->
+  <div id="img-lightbox"><img alt="" /></div>
+
+  <script src="./assets/app.js"></script>
+</body>
+</html>

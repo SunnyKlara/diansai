@@ -1,0 +1,42 @@
+[
+  {
+    "name": "电源",
+    "desc": "电力电子、AC-DC / DC-DC、逆变并联、PFC、SVPWM 等强电方向",
+    "color": "#f0883e"
+  },
+  {
+    "name": "控制",
+    "desc": "智能车 / 飞行器 / 磁悬浮 / 视觉追踪，PID、状态机、循迹、IMU",
+    "color": "#7ee787"
+  },
+  {
+    "name": "仪表",
+    "desc": "信号测量、THD / 阻抗 / TDR / 功率分析仪，DSP + 高精度采样",
+    "color": "#58a6ff"
+  },
+  {
+    "name": "信号处理",
+    "desc": "FFT、DDS、滤波器、混沌信号、调制识别",
+    "color": "#bc8cff"
+  },
+  {
+    "name": "通信",
+    "desc": "射频、调制解调、信号识别、超外差接收机",
+    "color": "#ff7b72"
+  },
+  {
+    "name": "测控",
+    "desc": "声源定位、TDOA、多传感器融合、阵列信号",
+    "color": "#79c0ff"
+  },
+  {
+    "name": "综合",
+    "desc": "三子棋 / 龙门 / 视觉对弈等跨学科综合题",
+    "color": "#ffd33d"
+  },
+  {
+    "name": "通用",
+    "desc": "STM32 / MSPM0 / MSP430 平台、CubeMX、HAL 库、调试技巧",
+    "color": "#8b949e"
+  }
+]
