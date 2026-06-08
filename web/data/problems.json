@@ -307,8 +307,8 @@
   },
   {
     "year": 2026,
-    "problem": "校赛B",
-    "title": "智能球平衡控制装置",
+    "problem": "B",
+    "title": "智能球平衡控制装置（校赛）",
     "topic": "控制",
     "platform": "STM32H750",
     "tech": "前馈 + PID(D抑振) + 设定值ramp + TOF/超声测高",
