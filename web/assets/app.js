@@ -1351,7 +1351,31 @@ function resolveAssetUrl(src) {
   return '/' + base + '/' + rel;
 }
 
+function renderFrontMatterCard(yaml) {
+  // 轻量解析 key: value（每行一条，扁平），渲染成"速览卡"
+  const esc = v => String(v).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const rows = [];
+  yaml.split('\n').forEach(line => {
+    const m = line.match(/^([^:：#]+)[:：]\s*(.+)$/);
+    if (m) rows.push([m[1].trim(), m[2].trim()]);
+  });
+  if (!rows.length) return '';
+  let h = '<div class="fm-card" style="border:1px solid var(--border,#30363d);border-radius:10px;padding:12px 14px;margin:0 0 16px;background:var(--surface-2,#161b22);">';
+  h += '<div style="font-size:12px;color:var(--text-2,#8b949e);margin-bottom:8px;">📊 速览</div>';
+  h += '<div style="display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13px;">';
+  rows.forEach(([k, v]) => {
+    h += `<div style="color:var(--text-2,#8b949e);white-space:nowrap;">${esc(k)}</div><div style="color:var(--text,#e6edf3);">${esc(v)}</div>`;
+  });
+  h += '</div></div>';
+  return h;
+}
+
 function renderMarkdown(src) {
+  // 0. 提取并剥离 YAML front-matter（渲染成速览卡，避免原始 --- 显示成乱码）
+  let fmCard = '';
+  const fm = src.match(/^\uFEFF?---\n([\s\S]*?)\n---\n?/);
+  if (fm) { fmCard = renderFrontMatterCard(fm[1]); src = src.slice(fm[0].length); }
+
   // 0. 转义
   let s = src.replace(/\r\n/g, '\n');
 
@@ -1429,7 +1453,7 @@ function renderMarkdown(src) {
     return `<pre><code class="lang-${lang}">${safe}</code></pre>`;
   });
 
-  return s;
+  return fmCard + s;
 }
 
 /* ============================================================
