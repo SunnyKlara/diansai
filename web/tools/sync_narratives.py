@@ -1,111 +1,49 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-narratives 同步工具
+sync_narratives.py —— 把 narratives/<year-problem>.md（人工编辑的源）
+同步进 problem_briefs.json 的对应条目的 narrative 字段（网页实际读取的文件）。
+
+设计：narratives/*.md 是"单一事实源"（人读友好、可 diff）；
+problem_briefs.json 是网页消费的聚合文件，narrative 字段由本脚本从 .md 灌入，
+其余结构化字段(oneline/why/tasks/metrics/traps/checklist)在 json 内维护。
 
 用法：
-    python tools/sync_narratives.py            # 把 data/narratives/*.md 同步到 problem_briefs.json
-    python tools/sync_narratives.py --extract  # 反向：把 JSON 里现有的 narrative 拆成 .md（首次迁移）
-    python tools/sync_narratives.py --check    # 只检查 JSON 合法性，不写
-
-设计目的：
-    避免一次性写超长 narrative 字段时网络断开导致整篇丢失。
-    每题 narrative 拆成独立 .md，写作时按章节 append，最后一键同步回 JSON。
+  python sync_narratives.py            # 同步全部 narratives/*.md
+  python sync_narratives.py 2026-B     # 只同步指定题
+运行后网页(已设 no-store)刷新即可见。
 """
-import json
-import sys
-from pathlib import Path
+import json, io, sys, glob, os
+sys.stdout.reconfigure(encoding="utf-8")
 
-ROOT = Path(__file__).resolve().parent.parent
-DATA = ROOT / "data"
-NARR_DIR = DATA / "narratives"
-JSON_PATH = DATA / "problem_briefs.json"
+HERE = os.path.dirname(os.path.abspath(__file__))
+DATA = os.path.join(HERE, "..", "data")
+BRIEFS = os.path.join(DATA, "problem_briefs.json")
+NARR_DIR = os.path.join(DATA, "narratives")
 
+only = sys.argv[1] if len(sys.argv) > 1 else None
 
-def load_json():
-    return json.loads(JSON_PATH.read_text(encoding="utf-8"))
+briefs = json.load(io.open(BRIEFS, encoding="utf-8"))
 
+files = sorted(glob.glob(os.path.join(NARR_DIR, "*.md")))
+synced, skipped = [], []
+for f in files:
+    key = os.path.splitext(os.path.basename(f))[0]   # 2026-B
+    if only and key != only:
+        continue
+    text = io.open(f, encoding="utf-8").read()
+    if key not in briefs:
+        # 没有结构化条目就建一个最小壳（narrative 为主）
+        briefs[key] = {"oneline": "", "narrative": "", "why": "",
+                       "tasks": [], "metrics": [], "traps": [], "checklist": []}
+        skipped.append(key + "(新建壳)")
+    briefs[key]["narrative"] = text
+    synced.append(f"{key} ({len(text)}字)")
 
-def save_json(d):
-    JSON_PATH.write_text(
-        json.dumps(d, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+json.dump(briefs, io.open(BRIEFS, "w", encoding="utf-8"),
+          ensure_ascii=False, indent=1)
 
-
-def cmd_check():
-    d = load_json()
-    print(f"[check] {JSON_PATH.name}: ok, {len(d) - 1} 题")
-    for k, v in d.items():
-        if k.startswith("_"):
-            continue
-        nlen = len(v.get("narrative", ""))
-        print(f"  {k}: narrative {nlen} 字")
-
-
-def cmd_extract():
-    """把 JSON 里现有 narrative 拆成 .md，作为后续编辑源"""
-    d = load_json()
-    NARR_DIR.mkdir(parents=True, exist_ok=True)
-    for k, v in d.items():
-        if k.startswith("_"):
-            continue
-        narr = v.get("narrative", "")
-        if not narr.strip():
-            continue
-        path = NARR_DIR / f"{k}.md"
-        if path.exists():
-            print(f"  [skip] {path.name}（已存在，避免覆盖）")
-            continue
-        path.write_text(narr, encoding="utf-8")
-        print(f"  [extract] {path.name} ← {len(narr)} 字")
-
-
-def cmd_sync():
-    """把 narratives/*.md 内容写回 JSON。键不存在时自动创建空骨架。"""
-    d = load_json()
-    if not NARR_DIR.exists():
-        print(f"[warn] {NARR_DIR} 不存在")
-        return
-    changed = 0
-    created = 0
-    for md in sorted(NARR_DIR.glob("*.md")):
-        key = md.stem
-        if key not in d:
-            d[key] = {
-                "oneline": "",
-                "narrative": "",
-                "why": "",
-                "tasks": [],
-                "metrics": [],
-                "traps": [],
-                "checklist": [],
-            }
-            created += 1
-            print(f"  [new]  {key}: 创建空条目")
-        new = md.read_text(encoding="utf-8")
-        old = d[key].get("narrative", "")
-        if new != old:
-            d[key]["narrative"] = new
-            changed += 1
-            print(f"  [sync] {key}: {len(old)} → {len(new)} 字")
-        else:
-            print(f"  [same] {key}: {len(new)} 字")
-    if changed or created:
-        save_json(d)
-        print(f"\n已更新 {changed} 题（新建 {created} 条）到 {JSON_PATH.name}")
-    else:
-        print("\n无变化")
-
-
-def main():
-    args = sys.argv[1:]
-    if "--check" in args:
-        cmd_check()
-    elif "--extract" in args:
-        cmd_extract()
-    else:
-        cmd_sync()
-
-
-if __name__ == "__main__":
-    main()
+print("已同步:", ", ".join(synced) if synced else "(无)")
+if skipped:
+    print("注意(新建条目壳，结构化字段需在json补全):", ", ".join(skipped))
+print("problem_briefs 条目数:", len([k for k in briefs if k != "_doc"]))
