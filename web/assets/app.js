@@ -108,10 +108,10 @@ function toast(msg, type = '') {
 /* ===== 数据加载 ===== */
 async function loadData() {
   const [q, f, p, t] = await Promise.all([
-    fetch('./data/questions.json').then(r => r.json()),
-    fetch('./data/flashcards.json').then(r => r.json()),
-    fetch('./data/problems.json').then(r => r.json()),
-    fetch('./data/topics.json').then(r => r.json()),
+    fetch('./data/questions.json',{cache:'no-store'}).then(r => r.json()),
+    fetch('./data/flashcards.json',{cache:'no-store'}).then(r => r.json()),
+    fetch('./data/problems.json',{cache:'no-store'}).then(r => r.json()),
+    fetch('./data/topics.json',{cache:'no-store'}).then(r => r.json()),
   ]);
   State.questions = q;
   State.flashcards = f;
@@ -765,7 +765,7 @@ route('/problem', async (app, params) => {
     const md = el('div', { class: 'markdown analysis-paper' });
     md.innerHTML = '<div class="loading">加载中…</div>';
     leftCol.appendChild(md);
-    fetch('/' + p.origin).then(r => r.text()).then(t => {
+    fetch('/' + p.origin,{cache:'no-store'}).then(r => r.text()).then(t => {
       setMarkdownBase(p.origin.replace(/\/[^\/]+$/, ''));
       md.innerHTML = renderMarkdown(t);
     });
@@ -780,7 +780,7 @@ route('/problem', async (app, params) => {
   let briefs = State._briefs;
   if (!briefs) {
     try {
-      const r = await fetch('./data/problem_briefs.json');
+      const r = await fetch('./data/problem_briefs.json',{cache:'no-store'});
       briefs = State._briefs = r.ok ? await r.json() : {};
     } catch { briefs = State._briefs = {}; }
   }
@@ -1071,7 +1071,7 @@ route('/contest', (app, params) => {
       const fallback = el('div', { class: 'contest-paper', style: 'display:none;margin-top:16px;' });
       fallback.innerHTML = '<div class="loading">加载文字版…</div>';
       body.appendChild(fallback);
-      fetch('/' + originPath).then(r => r.text()).then(text => {
+      fetch('/' + originPath,{cache:'no-store'}).then(r => r.text()).then(text => {
         fallback.innerHTML = '';
         const md = el('div', { class: 'markdown' });
         setMarkdownBase(originPath.replace(/\/[^\/]+$/, ''));
@@ -1086,7 +1086,7 @@ route('/contest', (app, params) => {
     const mdContainer = el('div', { class: 'contest-paper' });
     mdContainer.innerHTML = '<div class="loading">加载题目…</div>';
     body.appendChild(mdContainer);
-    fetch('/' + originPath).then(r => r.text()).then(text => {
+    fetch('/' + originPath,{cache:'no-store'}).then(r => r.text()).then(text => {
       mdContainer.innerHTML = '';
       const md = el('div', { class: 'markdown' });
       setMarkdownBase(originPath.replace(/\/[^\/]+$/, ''));
@@ -1228,7 +1228,7 @@ route('/material', async (app, params) => {
   const available = [];
   await Promise.all(candidates.map(async (cand) => {
     try {
-      const r = await fetch('/' + base + cand.file);
+      const r = await fetch('/' + base + cand.file,{cache:'no-store'});
       if (r.ok) available.push(cand);
     } catch {}
   }));
