@@ -35,7 +35,7 @@ diansai/
 ├── library/       ③ 积木：可复用零件（PID/FFT/驱动/选型/物资），被 cases 引用、不重复
 ├── workbench/     ④ 工作台：正在攻的新题（活的，校赛B 在这；赛时丢 PDF 也进这）
 ├── web/           ⑤ 展示窗：读取 cases/workbench 渲染，移动端可访问
-├── index/         ★ 脊柱：题型图谱（题型↔方法↔积木↔案例），让系统会"推理"（🔜 待建）
+├── index/         ★ 脊柱：题型图谱（题型↔方法↔积木↔案例），让系统会"推理"
 ├── 赛题/           只读素材：官方 PDF（原件/<年份>/）
 ├── 历史工程/        历史实战工程参考（24 届 C 题，只读）
 └── _archive/       旁支隔离：跨赛事方法论、模拟题等非电赛主线内容
@@ -130,7 +130,7 @@ pitfalls: [ 阻塞采样导致发散, Kp过大球弹顶 ]
 | 2 | **根目录重组**：`B_历年真题实战`→`cases/`、`A+C+D`→`library/`、`E`→`skills/`、`F_刷题网页`→`web/`、`24`→`历史工程/`、`26_xiaosai`→`workbench/`，同步改 problems.json/questions.json/python工具/start.bat/index.html | ✅ 完成 |
 | 3 | 修 bug：合并 J/B 重名残缺文件夹（题目原件并入完整 folder + 对齐 web 索引）→ 修复网页 404 | ⏳ 下一步 |
 | 4 | 立 `skills/` SOP + 校赛 B 深度审题加 front-matter 成首个标准 case | ⏳ |
-| 5 | 立 `index/` 题型图谱，把校赛 B↔磁悬浮↔PID 积木连起来（垂直切片验证） | ⏳ |
+| 5 | 立 `index/` 题型图谱，把校赛 B↔磁悬浮↔PID 积木连起来（垂直切片验证） | ✅ 完成 |
 | 6 | 单一事实源：narratives/briefs 并入 cases，web 直接渲染 cases，删副本 | ⏳ |
 
 > **当前现状**：五层结构已落地（`skills/ cases/ library/ workbench/ web/ _archive/`），网页在 `http://localhost:8765/web/` 可跑、所有真题与校赛 B 可访问。后续阶段 3~6 在此结构上推进。
