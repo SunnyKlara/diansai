@@ -26,7 +26,7 @@
 
 ### 真题工作目录
 ```
-备赛系统/B_历年真题实战/<年份>/<题号_题名>/
+cases/<年份>/<题号_题名>/
 ├── 00_深度审题与方案论证.md   ✅ 必备
 ├── 00_做题指南.md             ✅ 必备
 ├── 01_代码/                   ✅ 必备
@@ -112,7 +112,7 @@ test: 2023A 补 PC 端 Python 金标准（spwm + control）
 # （在 IDE 里跑 getDiagnostics 或编译 build）
 
 # 2. Python 测试通过
-python "备赛系统/B_历年真题实战/<新题>/01_代码/tests/algo_reference.py"
+python "cases/<新题>/01_代码/tests/algo_reference.py"
 
 # 3. 没有 secret 泄漏
 # 检查 .env、密钥、个人证件信息
