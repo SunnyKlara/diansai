@@ -711,7 +711,7 @@ route('/problem', async (app, params) => {
   const hash = location.hash.replace(/^#/, '').replace(/^\/problem\//, '');
   const [yearStr, problemId] = hash.split('-');
   const year = parseInt(yearStr, 10);
-  const p = State.problems.find(x => x.year === year && x.problem === problemId);
+  const p = State.problems.find(x => x.year === year && x.problem === decodeURIComponent(problemId));
   if (!p) {
     app.appendChild(el('div', { class: 'page-title' }, '题目未找到'));
     app.appendChild(el('div', { class: 'empty' },
@@ -981,7 +981,7 @@ route('/contest', (app, params) => {
   const hash = location.hash.replace(/^#/, '').replace(/^\/contest\//, '');
   const [yearStr, problemId] = hash.split('-');
   const year = parseInt(yearStr, 10);
-  const p = State.problems.find(x => x.year === year && x.problem === problemId);
+  const p = State.problems.find(x => x.year === year && x.problem === decodeURIComponent(problemId));
   if (!p) { location.hash = '#/problems'; return; }
 
   let c = getContest(p);
@@ -1174,7 +1174,7 @@ route('/material', async (app, params) => {
   const hash = location.hash.replace(/^#/, '').replace(/^\/material\//, '');
   const [yearStr, problemId] = hash.split('-');
   const year = parseInt(yearStr, 10);
-  const p = State.problems.find(x => x.year === year && x.problem === problemId);
+  const p = State.problems.find(x => x.year === year && x.problem === decodeURIComponent(problemId));
   if (!p) { location.hash = '#/problems'; return; }
 
   const c = getContest(p);
