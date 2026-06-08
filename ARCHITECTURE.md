@@ -5,8 +5,6 @@
 >
 > ✅ 已从旧结构（`备赛系统/A~F`）迁移到下述五层框架，见 §6。后续在此结构上推进。
 
----
-
 ## ★ 北极星 / 定位（统领一切，先读这条）
 
 > **现状清醒认知**：除了 `web/data/narratives/`（57 万字叙事分析）是真精髓，**本仓库其余一切（代码/报告/BOM/流程）都是纸上谈兵，从未经过真机检验。**
@@ -160,9 +158,9 @@ pitfalls: [ 阻塞采样导致发散, Kp过大球弹顶 ]
 ## 7. 给后来者（人或 AI）
 
 > 学方法 → `skills/`（如 `skills/最高标准刷题工作流.md`、`skills/00_系统总纲.md`）
-> 找参照 → `cases/`（24 道真题 + `cases/2026/校赛B_智能球平衡控制装置/`）
+> 找参照 → `cases/`（24 道真题 + `workbench/校赛B_智能球平衡控制装置/`）
 > 取积木 → `library/`（`library/通用能力/` `library/方向训练/` `library/物资准备/`）
-> 攻新题 → `workbench/`（校赛 B 练手工程：`workbench/校赛B_工程_STM32H750/`）
+> 攻新题 → `workbench/`（校赛 B 练手工程：`workbench/校赛B_智能球平衡控制装置/工程_STM32H750/`）
 > 看展示 → 跑 `web/start.bat`（或仓库根 `python -m http.server 8765` → `/web/`）
 > 守规矩 → `.kiro/steering/电赛备赛仓库规范.md`
 > 搞不清 → 回读本文
