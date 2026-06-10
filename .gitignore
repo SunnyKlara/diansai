@@ -88,6 +88,25 @@ fp-info-cache
 *.log
 *.net
 
+# ---------- LaTeX 编译中间产物（报告 .tex → PDF；保留 .tex/.pdf/.docx）----------
+*.aux
+*.toc
+*.lof
+*.lot
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.nav
+*.snm
+*.vrb
+*.bbl
+*.blg
+*.idx
+*.ilg
+*.ind
+_build*.log
+_buildrun.log
+
 # ---------- 本仓库工具脚本临时输出 ----------
 tmp_*.txt
 *.tmp
