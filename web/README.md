@@ -24,6 +24,17 @@ npx serve -l 8765 .
 > ⚠️ 不要直接双击 `index.html` 用 `file://` 打开 —— `fetch` 加载 JSON 在
 > 大部分浏览器下会被 CORS 拦截。
 
+### 手机访问（局域网，Phase 1）
+
+让手机和电脑连**同一个 WiFi**，然后双击 `start_mobile.bat`（或 `python web/tools/mobile_serve.py`）：
+
+- 终端会自动探测本机内网 IP，打印手机可直接访问的地址，如 `http://192.168.x.x:8765/web/`
+- 同时在终端画出**二维码**，手机扫码即开（需先 `pip install qrcode`，未安装则降级为纯文字地址）
+- 手机连不上时，多半是 **Windows 防火墙**拦了：首次运行会弹"是否允许 Python 访问网络"，勾选"专用网络"放行即可
+
+> 换网络 / 不在同一 WiFi 时（Phase 2）：可用内网穿透临时拿公网 HTTPS 地址，
+> 例如 `cloudflared tunnel --url http://localhost:8765`，指向本机无需改代码。
+
 ## 目录结构
 
 ```

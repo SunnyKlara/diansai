@@ -3,6 +3,21 @@
  * 路由 / 状态 / 渲染 / 持久化 全部封装在此
  * ============================================================ */
 
+/* ============================================================
+ * 仓库基址（让站点能跑在任意位置：本机根 / GitHub Pages 子路径 / 自定义域名）
+ *   本机:            http://localhost:8765/web/        -> REPO_BASE = ''
+ *   GitHub 项目站:    https://x.github.io/diansai/web/  -> REPO_BASE = '/diansai'
+ *   用户站/自定义域名: https://域名/web/                 -> REPO_BASE = ''
+ * 所有指向仓库根的资源（cases/、赛题/、library/ 等 markdown 与 PDF）都必须经 repoUrl() 拼接。
+ * ============================================================ */
+const REPO_BASE = (() => {
+  const i = location.pathname.indexOf('/web/');
+  return i >= 0 ? location.pathname.slice(0, i) : '';
+})();
+function repoUrl(path) {
+  return REPO_BASE + '/' + String(path || '').replace(/^\/+/, '');
+}
+
 const STORE_PREFIX = 'eddc:';
 const Store = {
   get(key, def) {
@@ -750,7 +765,7 @@ route('/problem', async (app, params) => {
   // 左：PDF
   const leftCol = el('div', { class: 'analysis-pdf-col' });
   if (p.pdf) {
-    const pdfUrl = /^https?:\/\//i.test(p.pdf) ? p.pdf : '/' + p.pdf;
+    const pdfUrl = /^https?:\/\//i.test(p.pdf) ? p.pdf : repoUrl(p.pdf);
     leftCol.appendChild(el('div', { class: 'analysis-section-label' }, '📄 真题原件'));
     leftCol.appendChild(el('iframe', {
       class: 'analysis-pdf',
@@ -765,7 +780,7 @@ route('/problem', async (app, params) => {
     const md = el('div', { class: 'markdown analysis-paper' });
     md.innerHTML = '<div class="loading">加载中…</div>';
     leftCol.appendChild(md);
-    fetch('/' + p.origin,{cache:'no-store'}).then(r => r.text()).then(t => {
+    fetch(repoUrl(p.origin),{cache:'no-store'}).then(r => r.text()).then(t => {
       setMarkdownBase(p.origin.replace(/\/[^\/]+$/, ''));
       md.innerHTML = renderMarkdown(t);
     });
@@ -1045,7 +1060,7 @@ route('/contest', (app, params) => {
 
   if (pdfPath) {
     // PDF 真题原件嵌入（最优）
-    const pdfUrl = /^https?:\/\//i.test(pdfPath) ? pdfPath : '/' + pdfPath;
+    const pdfUrl = /^https?:\/\//i.test(pdfPath) ? pdfPath : repoUrl(pdfPath);
     const pdfBox = el('div', { class: 'contest-pdf-wrap' });
     pdfBox.appendChild(el('iframe', {
       class: 'contest-pdf',
@@ -1071,7 +1086,7 @@ route('/contest', (app, params) => {
       const fallback = el('div', { class: 'contest-paper', style: 'display:none;margin-top:16px;' });
       fallback.innerHTML = '<div class="loading">加载文字版…</div>';
       body.appendChild(fallback);
-      fetch('/' + originPath,{cache:'no-store'}).then(r => r.text()).then(text => {
+      fetch(repoUrl(originPath),{cache:'no-store'}).then(r => r.text()).then(text => {
         fallback.innerHTML = '';
         const md = el('div', { class: 'markdown' });
         setMarkdownBase(originPath.replace(/\/[^\/]+$/, ''));
@@ -1086,7 +1101,7 @@ route('/contest', (app, params) => {
     const mdContainer = el('div', { class: 'contest-paper' });
     mdContainer.innerHTML = '<div class="loading">加载题目…</div>';
     body.appendChild(mdContainer);
-    fetch('/' + originPath,{cache:'no-store'}).then(r => r.text()).then(text => {
+    fetch(repoUrl(originPath),{cache:'no-store'}).then(r => r.text()).then(text => {
       mdContainer.innerHTML = '';
       const md = el('div', { class: 'markdown' });
       setMarkdownBase(originPath.replace(/\/[^\/]+$/, ''));
@@ -1228,7 +1243,7 @@ route('/material', async (app, params) => {
   const available = [];
   await Promise.all(candidates.map(async (cand) => {
     try {
-      const r = await fetch('/' + base + cand.file,{cache:'no-store'});
+      const r = await fetch(repoUrl(base + cand.file),{cache:'no-store'});
       if (r.ok) available.push(cand);
     } catch {}
   }));
@@ -1267,7 +1282,7 @@ route('/material', async (app, params) => {
   ['01_代码/', '02_硬件/', '03_报告/', '04_调试记录/'].forEach(f => {
     sideNav.appendChild(el('a', {
       class: 'side-item small',
-      href: '/' + base + f, target: '_blank',
+      href: repoUrl(base + f), target: '_blank',
     }, '📁 ' + f));
   });
 
@@ -1302,7 +1317,7 @@ route('/material', async (app, params) => {
 
     content.innerHTML = '<div class="loading">加载中…</div>';
     try {
-      const url = '/' + base + cand.file;
+      const url = repoUrl(base + cand.file);
       const r = await fetch(url);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const text = await r.text();
@@ -1348,7 +1363,7 @@ function resolveAssetUrl(src) {
     base = base.replace(/\/[^\/]+$/, '');
     rel = rel.slice(3);
   }
-  return '/' + base + '/' + rel;
+  return repoUrl(base + '/' + rel);
 }
 
 function renderFrontMatterCard(yaml) {
