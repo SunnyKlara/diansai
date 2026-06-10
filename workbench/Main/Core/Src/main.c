@@ -351,8 +351,11 @@ static void Curve_Render(void)
     int16_t x  = SCOPE_X0 + (int16_t)curve_x;
 
     Scope_BgCol(x);                                          // background for newest column
-    for (uint8_t k = 1; k <= SCOPE_GAP; k++)                 // blank gap (sweep indicator), wraps
+    for (uint8_t k = 1; k <= SCOPE_GAP; k++)                 // blank the erase band ahead (wraps)
         Scope_BgCol(SCOPE_X0 + (int16_t)((curve_x + k) % SCOPE_W));
+    // sweep cursor at the leading edge of the erase band: makes the new/old boundary unambiguous
+    int16_t cursor = SCOPE_X0 + (int16_t)((curve_x + SCOPE_GAP) % SCOPE_W);
+    GC9A01_DrawVLine(cursor, SCOPE_PLOT_Y0, (int16_t)(SCOPE_Y1 - SCOPE_PLOT_Y0 + 1), LCD_GRAY);
 
     if (curve_seeded) {                                      // connect within this column
         uint8_t t0 = (curve_prev_ty < ty) ? curve_prev_ty : ty;

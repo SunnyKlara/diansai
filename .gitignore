@@ -37,6 +37,7 @@ Objects/
 *.scvd
 *.tra
 *.txt.~*
+*.lst
 
 # ---------- STM32CubeIDE / GCC ----------
 Debug/
@@ -110,6 +111,17 @@ _buildrun.log
 # ---------- 本仓库工具脚本临时输出 ----------
 tmp_*.txt
 *.tmp
+# headless 编译/烧录日志 + 串口桥运行时文件（build_flash.ps1 / serial_bridge.ps1 产出）
+_build_log.txt
+_flash_log.txt
+_*_scan.txt
+serial_log.txt
+serial_cmd.txt
+
+# 微信/即时通讯导出的临时截图（正式图请移入 02_硬件 等目录并改名）
+微信图片_*.jpg
+微信图片_*.png
+WeChat_*.jpg
 
 # ---------- 旁支归档 scaffold 自测产物 ----------
 _archive/跨赛事方法论/scaffold/scaffold_test_out/

@@ -153,6 +153,6 @@
 #define SCOPE_SPEC_CM         1.0f    /* ±spec for the error readout color (题目稳态误差 ≤±1cm) */
 #define SCOPE_RDH             12      /* top readout strip height (px), inside the box */
 #define SCOPE_PLOT_Y0         (SCOPE_Y0 + SCOPE_RDH)   /* waveform/grid top (below readout strip) */
-#define SCOPE_GAP             3       /* sweep blanking-gap width (px) ahead of the newest sample */
+#define SCOPE_GAP             12      /* sweep blanking-band width (px) ahead of newest sample = clear erase boundary */
 
 #endif /* __CONFIG_H */
