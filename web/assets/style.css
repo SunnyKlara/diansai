@@ -1709,3 +1709,27 @@ body.contest-mode #app { padding: 0; }
     overflow-y: visible;
   }
 }
+
+/* ============================================================
+ * PDF.js 移动端内联渲染（canvas 逐页）
+ * ============================================================ */
+.pdfjs-pages {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+}
+.pdfjs-page {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #fff;
+  border-radius: 4px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+.pdfjs-pages .loading,
+.pdfjs-pages .empty { background: transparent; }

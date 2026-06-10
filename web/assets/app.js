@@ -18,6 +18,89 @@ function repoUrl(path) {
   return REPO_BASE + '/' + String(path || '').replace(/^\/+/, '');
 }
 
+/* ============================================================
+ * PDF 查看器（移动端内联渲染）
+ *   桌面浏览器原生支持 iframe 内嵌 PDF（带缩放/搜索），体验最好；
+ *   但手机浏览器（iOS Safari / Android Chrome）不支持 iframe 内联渲染 PDF，
+ *   会空白或跳转下载。故移动端改用 PDF.js 把每页画到 canvas，像图片一样可滚动查看。
+ * ============================================================ */
+const PDFJS_BASE = repoUrl('web/assets/vendor/pdfjs/');
+// CJK 字模表（部分中文 PDF 未内嵌字体时需要）：走 CDN，避免仓库塞入上百个 bcmap
+const PDFJS_CMAPS = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/';
+
+// 是否使用内联渲染：移动 UA 或（触摸 + 窄屏）
+const PDF_INLINE = (() => {
+  const ua = /Android|iPhone|iPad|iPod|HarmonyOS|Mobile/i.test(navigator.userAgent);
+  const touch = (navigator.maxTouchPoints || 0) > 0 || 'ontouchstart' in window;
+  const narrow = window.matchMedia('(max-width: 900px)').matches;
+  return ua || (touch && narrow);
+})();
+
+let _pdfjsReady = null;
+function loadPdfJs() {
+  if (_pdfjsReady) return _pdfjsReady;
+  _pdfjsReady = new Promise((resolve, reject) => {
+    if (window.pdfjsLib) { resolve(window.pdfjsLib); return; }
+    const s = document.createElement('script');
+    s.src = PDFJS_BASE + 'pdf.min.js';
+    s.onload = () => {
+      if (window.pdfjsLib) {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_BASE + 'pdf.worker.min.js';
+        resolve(window.pdfjsLib);
+      } else reject(new Error('pdfjsLib 未加载'));
+    };
+    s.onerror = () => reject(new Error('PDF.js 脚本加载失败'));
+    document.head.appendChild(s);
+  });
+  return _pdfjsReady;
+}
+
+// 把 PDF 逐页渲染进 container（内联，移动端用）
+async function renderPdfInline(container, url) {
+  container.innerHTML = '<div class="loading">PDF 加载中…</div>';
+  try {
+    const pdfjsLib = await loadPdfJs();
+    const pdf = await pdfjsLib.getDocument({
+      url, cMapUrl: PDFJS_CMAPS, cMapPacked: true,
+    }).promise;
+    container.innerHTML = '';
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const cssWidth = Math.min(container.clientWidth || window.innerWidth, 1000);
+    for (let n = 1; n <= pdf.numPages; n++) {
+      const page = await pdf.getPage(n);
+      const scale = cssWidth / page.getViewport({ scale: 1 }).width;
+      const vp = page.getViewport({ scale });
+      const canvas = el('canvas', { class: 'pdfjs-page' });
+      canvas.width = Math.floor(vp.width * dpr);
+      canvas.height = Math.floor(vp.height * dpr);
+      container.appendChild(canvas);
+      await page.render({
+        canvasContext: canvas.getContext('2d'),
+        viewport: vp,
+        transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null,
+      }).promise;
+    }
+  } catch (e) {
+    container.innerHTML = '<div class="empty">PDF 内联渲染失败：' +
+      (e && e.message || e) + '<br>请用下方“在新标签页打开”查看。</div>';
+  }
+}
+
+// 返回一个 PDF 查看节点：桌面用 iframe，移动端用 PDF.js canvas
+function pdfViewerNode(pdfUrl, iframeClass) {
+  if (PDF_INLINE) {
+    const box = el('div', { class: 'pdfjs-pages' });
+    // 等节点插入 DOM 拿到宽度后再渲染
+    requestAnimationFrame(() => renderPdfInline(box, pdfUrl));
+    return box;
+  }
+  return el('iframe', {
+    class: iframeClass,
+    src: pdfUrl + (pdfUrl.includes('#') ? '' : '#toolbar=1&navpanes=0&zoom=page-width'),
+    title: '真题 PDF',
+  });
+}
+
 const STORE_PREFIX = 'eddc:';
 const Store = {
   get(key, def) {
@@ -767,11 +850,7 @@ route('/problem', async (app, params) => {
   if (p.pdf) {
     const pdfUrl = /^https?:\/\//i.test(p.pdf) ? p.pdf : repoUrl(p.pdf);
     leftCol.appendChild(el('div', { class: 'analysis-section-label' }, '📄 真题原件'));
-    leftCol.appendChild(el('iframe', {
-      class: 'analysis-pdf',
-      src: pdfUrl + '#toolbar=1&navpanes=0&zoom=page-width',
-      title: '真题 PDF',
-    }));
+    leftCol.appendChild(pdfViewerNode(pdfUrl, 'analysis-pdf'));
     leftCol.appendChild(el('div', { style: 'margin-top:8px;text-align:right;' },
       el('a', { href: pdfUrl, target: '_blank', style: 'font-size:12px;color:var(--accent);' },
         '🔗 在新标签页打开')));
@@ -1062,11 +1141,7 @@ route('/contest', (app, params) => {
     // PDF 真题原件嵌入（最优）
     const pdfUrl = /^https?:\/\//i.test(pdfPath) ? pdfPath : repoUrl(pdfPath);
     const pdfBox = el('div', { class: 'contest-pdf-wrap' });
-    pdfBox.appendChild(el('iframe', {
-      class: 'contest-pdf',
-      src: pdfUrl + (pdfUrl.includes('#') ? '' : '#toolbar=1&navpanes=0&zoom=page-width'),
-      title: '真题原件 PDF',
-    }));
+    pdfBox.appendChild(pdfViewerNode(pdfUrl, 'contest-pdf'));
     pdfBox.appendChild(el('div', { class: 'pdf-actions' },
       el('a', { href: pdfUrl, target: '_blank', class: 'pdf-row-btn primary' }, '🔍 在新标签页打开'),
       originPath ? el('a', {
