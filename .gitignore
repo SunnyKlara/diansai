@@ -117,6 +117,8 @@ _flash_log.txt
 _*_scan.txt
 serial_log.txt
 serial_cmd.txt
+# PID 调参串口抓数 CSV（tune_step.ps1 产出，按需手动归档关键几条到 04_调试记录）
+workbench/Main/tools/logs/
 
 # 微信/即时通讯导出的临时截图（正式图请移入 02_硬件 等目录并改名）
 微信图片_*.jpg

@@ -103,6 +103,16 @@ float g_dmax        = D_TERM_CLAMP;        // 'c' D项(Kd*球速)最大PWM贡献
 float g_pwm_min     = PWM_RUN_MIN;         // 'n' 闭环最低速(怠速地板,风扇不停转)
 float g_pwm_max     = PWM_RUN_MAX;         // 'x' 闭环最高速(推力天花板,防窜顶)
 volatile uint32_t g_height_sample_count = 0; // 有效高度样本累计数(用于实测帧率F:)
+
+// 串级内环(转速闭环)：默认关闭=单环已验证行为；'y1'打开后内环用tach把风机线性化
+volatile uint8_t g_cascade_en = CASCADE_RPM_DEFAULT; // 0=单环 1=串级内环
+float g_rpm_ff_a   = RPM_FF_A_DEFAULT;   // PWM->RPM 斜率(前馈)
+float g_rpm_ff_b   = RPM_FF_B_DEFAULT;   // PWM->RPM 截距(前馈)
+float g_rpm_kp     = RPM_KP_DEFAULT;     // 内环比例
+float g_rpm_ki     = RPM_KI_DEFAULT;     // 内环积分
+float rpm_integral = 0.0f;               // 内环积分累计
+float rpm_setpoint = 0.0f;               // 内环目标转速(遥测)
+
 float last_pwm_output = 0.0f;
 uint32_t pid_last_time = 0;        // 供 PID_Control 计算 dt（与控制节拍解耦）
 float pid_last_current = 0.0f;     // 上一次高度（微分基于高度变化，非误差）
@@ -252,6 +262,7 @@ void PID_Reset(void)
     pid_filtered_deriv = 0.0f;
     pid_output = 0.0f;
     last_pwm_output = PWM_BASE;
+    rpm_integral = 0.0f;                 // 串级内环积分清零
     pid_last_time = uwTick;
     pid_last_current = current_height;  // 用当前高度，避免PID切入时D项突变
     sp_ramp = current_height;           // 软目标从当前球位起步,随后按限速爬向target
@@ -589,7 +600,28 @@ void Control_Update(void)
     float u = u_pd + Ki * pid_integral;
     if (u > g_pwm_max) u = g_pwm_max;
     if (u < g_pwm_min) u = g_pwm_min;
-    pid_output = u;
+    pid_output = u;                         // 外环输出 = PWM 等效"推力需求"
+
+    // 串级内环(转速闭环)：把外环需求 u 当作"目标转速"经 tach 实测闭环，线性化执行器。
+    // 关闭时(默认)直接走 u，等价已验证单环；打开时内环补偿风机非线性/下垂,从根上压浮动。
+    if (g_cascade_en) {
+        rpm_setpoint = g_rpm_ff_a * u + g_rpm_ff_b;     // 期望转速 = PWM->RPM 前馈映射
+        float rpm_meas = (float)Fan_GetRPM();
+        float rpm_err  = rpm_setpoint - rpm_meas;
+        // 条件积分抗饱和：仅当内环输出未顶限时才累加
+        float u_inner_try = u + g_rpm_kp * rpm_err + g_rpm_ki * rpm_integral;
+        if (u_inner_try < g_pwm_max && u_inner_try > g_pwm_min) {
+            rpm_integral += rpm_err * dt;
+            if (rpm_integral >  RPM_INTEGRAL_LIMIT) rpm_integral =  RPM_INTEGRAL_LIMIT;
+            if (rpm_integral < -RPM_INTEGRAL_LIMIT) rpm_integral = -RPM_INTEGRAL_LIMIT;
+        }
+        u += g_rpm_kp * rpm_err + g_rpm_ki * rpm_integral;
+        if (u > g_pwm_max) u = g_pwm_max;
+        if (u < g_pwm_min) u = g_pwm_min;
+    } else {
+        rpm_setpoint = 0.0f;
+        rpm_integral = 0.0f;
+    }
 
     // PWM 斜率限幅（防起飞过冲；g_slew 串口可调）
     {
@@ -745,14 +777,31 @@ void Process_UART_Command(void)
             sprintf(msg, ">>pwm_max=%.0f\r\n", g_pwm_max);
             UART_SendStr(msg);
             break;
+        case 'y': case 'Y':            // 串级内环(转速闭环): y1/y0开关 ; yaN/ybN FF映射 ; ypN/yiN 内环PI
+            switch (c[1]) {
+                case '1': g_cascade_en = 1; break;
+                case '0': g_cascade_en = 0; rpm_integral = 0.0f; break;
+                case 'a': g_rpm_ff_a = (float)atof(c + 2); break;
+                case 'b': g_rpm_ff_b = (float)atof(c + 2); break;
+                case 'p': g_rpm_kp   = (float)atof(c + 2); break;
+                case 'i': g_rpm_ki   = (float)atof(c + 2); break;
+                default: break;
+            }
+            sprintf(msg, ">>CASCADE en=%u A=%.2f B=%.0f Kp=%.3f Ki=%.3f\r\n",
+                    (unsigned)g_cascade_en, g_rpm_ff_a, g_rpm_ff_b, g_rpm_kp, g_rpm_ki);
+            UART_SendStr(msg);
+            break;
         case 'q': case 'Q':            // q: 打印当前全部可调参数
             sprintf(msg, ">>PARAMS uh=%.0f kp=%.1f ki=%.1f kd=%.1f ramp=%.1f a=%.2f slew=%.0f dcl=%.0f min=%.0f max=%.0f jmp=%.1f trig=%lums T=%.1f\r\n",
                     u_hover, Kp, Ki, Kd, g_ramp_cms, g_deriv_alpha, g_slew, g_dmax, g_pwm_min, g_pwm_max, g_max_jump,
                     (unsigned long)g_ultra_trig_ms, target_height);
             UART_SendStr(msg);
+            sprintf(msg, ">>CASCADE en=%u A=%.2f B=%.0f rKp=%.3f rKi=%.3f\r\n",
+                    (unsigned)g_cascade_en, g_rpm_ff_a, g_rpm_ff_b, g_rpm_kp, g_rpm_ki);
+            UART_SendStr(msg);
             break;
         default:
-            UART_SendStr(">>? cmd: mNNN /+/-/a/tNN/s/g/nNNNN(min)/xNNNN(max)\r\n");
+            UART_SendStr(">>? cmd: m/+/-/a/tNN/s/g/k/u/r/f/l/c/n/x/y(cascade)/q\r\n");
             break;
     }
 }
@@ -902,13 +951,13 @@ int main(void)
     }
     if (uwTick - serial_tick >= SERIAL_PERIOD_MS) {
         serial_tick = uwTick;
-        char sbuf[160];
+        char sbuf[200];
 #if HEIGHT_SENSOR_TOF
         float raw_cm = (g_tof_raw_mm < 0.0f) ? -1.0f : g_tof_raw_mm * 0.1f;  // mm->cm
 #else
         float raw_cm = g_ultra_raw;
 #endif
-        int len = sprintf(sbuf, "H:%.1f T:%.1f E:%.1f P:%d M:%d D:%.1f R:%lu RAW:%.1f A:%lu F:%.1f PRE:%u"
+        int len = sprintf(sbuf, "H:%.1f T:%.1f E:%.1f P:%d M:%d D:%.1f R:%lu RAW:%.1f A:%lu F:%.1f PRE:%u CAS:%u RS:%ld"
 #if HEIGHT_SENSOR_TOF
                           " TID:0x%02X TIN:%u TST:%u"
 #endif
@@ -917,7 +966,7 @@ int main(void)
                           pwm_output, boost_mode, pid_filtered_deriv,
                           (unsigned long)Fan_GetRPM(), raw_cm,
                           (unsigned long)(uwTick - height_update_tick), g_height_fps,
-                          (unsigned)preheating
+                          (unsigned)preheating, (unsigned)g_cascade_en, (long)rpm_setpoint
 #if HEIGHT_SENSOR_TOF
                           , g_tof_id, g_tof_init, g_tof_status
 #endif

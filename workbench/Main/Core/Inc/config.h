@@ -101,16 +101,16 @@
 #define PWM_FULL_SCALE        9600
 #define PWM_OUTPUT_MIN        0.0f
 #define PWM_OUTPUT_MAX        9600.0f
-#define PWM_BASE              1800.0f /* [标定] 悬停前馈基准(真机lift-off实测~1800@25kHz,9600标度) */
-#define PWM_SLEW_PER_TICK     800     /* 每控制周期 PWM 最大变化量(防过冲) */
+#define PWM_BASE              3400.0f /* [标定 2026-06-11] 悬停前馈 u_hover@15cm 真机实测(扫PWM:3300球落底/3500托到顶,3400≈悬停刀刃) */
+#define PWM_SLEW_PER_TICK     750     /* [标定] 每控制周期 PWM 最大变化量(防过冲);真机减半1500->750 */
 
 /* 闭环运行时的"速度限幅"(占空比下限/上限),区别于物理满量程 PWM_OUTPUT_MIN/MAX。
  *  PWM_RUN_MIN = 怠速地板:闭环运行时风扇绝不低于此值,保持旋转,消除冷启动 ~3s 滞后
  *                与静摩擦复现。设在 lift-off 稍下方(让风扇一直在"做功临界"附近)。
  *  PWM_RUN_MAX = 推力天花板:封住控制器输出上限,防止球被打到顶盖/窜飞。
  * 两者均可串口在线调: nNNNN(min) / xNNNN(max)。E1 升力曲线扫出来后回填。*/
-#define PWM_RUN_MIN           1500.0f
-#define PWM_RUN_MAX           6000.0f
+#define PWM_RUN_MIN           3100.0f
+#define PWM_RUN_MAX           3700.0f
 
 /* ======================= 两段式控制 ======================= */
 #define BOOST_PWM             5800.0f /* [标定] 起飞推力 */
@@ -123,19 +123,24 @@
 /* ======================= PID 参数 [标定] ======================= */
 /* 不稳定直筒(双积分)对象：u = u_hover + Kp*e - Kd*球速 + Ki*积分。
  * D项(速度阻尼)是稳定关键。下列为起调值，务必用串口 kp/ki/kd/uh 在线整定。*/
-#define PID_KP_DEFAULT        150.0f
-#define PID_KI_DEFAULT        8.0f
-#define PID_KD_DEFAULT        120.0f
+/* [标定 2026-06-11] 15cm 真机整定值，达标 avg≈14.8 std≈1.25(稳态±1.5cm，基本分稳)。
+ * 整定顺序(关键)：先 Kd 找阻尼 → 再 Kp 找刚度&追上升 → 最后弱 Ki 消静差。
+ * 警示：Kd 过头(>60)会触发"D项自撞墙→高频抖"，本对象 ~53 为甜区；Ki 大会积分饱和冲高，0.5 足矣。
+ * 注意：u_hover/PWM带宽是 15cm 中心值，10/20cm 悬停PWM不同，待真机验证(可能需按高度调度uh)。
+ */
+#define PID_KP_DEFAULT        30.0f
+#define PID_KI_DEFAULT        0.5f
+#define PID_KD_DEFAULT        53.0f
 #define PID_DERIV_ALPHA       0.4f    /* 速度EMA滤波系数(越大越平滑,但更滞后;25Hz下降到0.4减相位滞后) */
 #define PID_ERROR_DEADBAND    0.3f    /* 误差死区±cm */
 #define PID_INTEGRAL_LIMIT    200.0f  /* 积分限幅(对应PWM贡献=Ki*此值) */
 
 /* ======================= 轨迹软启动 ======================= */
 /* 软目标按此速率(cm/s)从当前球位爬向用户目标,使误差始终小、避免大冲程极限环 */
-#define TARGET_RAMP_CM_S      10.0f
+#define TARGET_RAMP_CM_S      6.0f
 
 /* D项输出钳位: |Kd*球速| 的最大PWM贡献。挡住超声波假跳变(非物理球速)把PWM瞬间打满踹飞球 */
-#define D_TERM_CLAMP          1500.0f
+#define D_TERM_CLAMP          3000.0f
 
 /* ======================= 标定(CALIB)界面步长挡位 ======================= */
 #define CALIB_STEP_FINE       20      /* 步长：细 */
@@ -147,6 +152,23 @@
 #define TACH_ENABLE           1
 #define TACH_PULSES_PER_REV   2       /* 标准四线风扇每转2脉冲 */
 #define TACH_TIMEOUT_MS       250u    /* 超此时间无脉冲判为停转 */
+
+/* ======================= 串级内环：转速(RPM)闭环 ======================= */
+/* 单环把残余浮动压到 ±1cm 后收益递减，根因是四线风扇的执行器非线性(冷区/静摩擦/
+ * 供电下垂/温漂)：同一 PWM 在不同工况下转速并不相同，高度环只能"事后"被动补偿。
+ * 串级内环用 tach 实测转速把风机线性化：
+ *   外环(高度PID,输出仍是 PWM 等效"推力需求" u)  ->  期望转速 rpm_sp = A*u + B
+ *   内环(转速PI)   pwm = u + Kp_rpm*(rpm_sp - rpm_meas) + Ki_rpm*∫(rpm误差)
+ * 执行器理想(转速随PWM线性)时 rpm_err≈0、pwm≈u —— 与已验证的单环完全一致，零风险；
+ * 执行器发懒/下垂时内环自动多给 PWM 把转速顶回"被要求的速度"，从根上压住浮动。
+ * 默认关闭(CASCADE_RPM_DEFAULT=0)，真机用 tools/sweep_rpm.ps1 扫出 A/B 后 'y1' 打开。
+ * [标定] A/B = PWM->RPM 线性拟合(sweep_rpm.ps1 输出)。Kp_rpm/Ki_rpm 串口 'yp'/'yi' 在线整定。*/
+#define CASCADE_RPM_DEFAULT   0       /* 0=单环(已验证) 1=串级内环(未实测) */
+#define RPM_FF_A_DEFAULT      1.0f    /* [标定] PWM->RPM 斜率 (rpm / PWM-count) */
+#define RPM_FF_B_DEFAULT      0.0f    /* [标定] PWM->RPM 截距 (rpm) */
+#define RPM_KP_DEFAULT        0.05f   /* 内环比例 (PWM-count / rpm误差) */
+#define RPM_KI_DEFAULT        0.0f    /* 内环积分 (PWM-count / (rpm·s)) */
+#define RPM_INTEGRAL_LIMIT    2000.0f /* 内环积分限幅(对应最大 PWM 贡献) */
 
 /* ======================= 目标高度 ======================= */
 #define TARGET_HEIGHT_MIN     3.0f
