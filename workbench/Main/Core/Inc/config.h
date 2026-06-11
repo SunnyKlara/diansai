@@ -101,16 +101,19 @@
 #define PWM_FULL_SCALE        9600
 #define PWM_OUTPUT_MIN        0.0f
 #define PWM_OUTPUT_MAX        9600.0f
-#define PWM_BASE              3400.0f /* [标定 2026-06-11] 悬停前馈 u_hover@15cm 真机实测(扫PWM:3300球落底/3500托到顶,3400≈悬停刀刃) */
-#define PWM_SLEW_PER_TICK     750     /* [标定] 每控制周期 PWM 最大变化量(防过冲);真机减半1500->750 */
+#define PWM_BASE              3420.0f /* [辨识实测 2026-06-11] 本机悬停 u_hover@15cm。sysid闭环双点交叉:uh3360→球停11.6/uh3500→停17.8,
+                                       * 外推零静差点≈3430;tune_step uh3430→err+0.66→微降到3420。静态增益≈22.7 PWM/cm。
+                                       * 注:悬停PWM run-to-run漂±25计数(≈±1cm),是单环锁不住±1cm的根因→串级转速内环治。 */
+#define PWM_SLEW_PER_TICK     40      /* [pidcalc≈17,实测取40 验证 std0.89] 每控制周期 PWM 最大变化量。
+                                       * 限速=让控制器输出带宽匹配风扇滞后带宽,既滤噪声又不丢控制力。串口 'l' 在线调。 */
 
 /* 闭环运行时的"速度限幅"(占空比下限/上限),区别于物理满量程 PWM_OUTPUT_MIN/MAX。
  *  PWM_RUN_MIN = 怠速地板:闭环运行时风扇绝不低于此值,保持旋转,消除冷启动 ~3s 滞后
  *                与静摩擦复现。设在 lift-off 稍下方(让风扇一直在"做功临界"附近)。
  *  PWM_RUN_MAX = 推力天花板:封住控制器输出上限,防止球被打到顶盖/窜飞。
  * 两者均可串口在线调: nNNNN(min) / xNNNN(max)。E1 升力曲线扫出来后回填。*/
-#define PWM_RUN_MIN           3100.0f
-#define PWM_RUN_MAX           3700.0f
+#define PWM_RUN_MIN           3300.0f
+#define PWM_RUN_MAX           3668.0f
 
 /* ======================= 两段式控制 ======================= */
 #define BOOST_PWM             5800.0f /* [标定] 起飞推力 */
@@ -123,15 +126,17 @@
 /* ======================= PID 参数 [标定] ======================= */
 /* 不稳定直筒(双积分)对象：u = u_hover + Kp*e - Kd*球速 + Ki*积分。
  * D项(速度阻尼)是稳定关键。下列为起调值，务必用串口 kp/ki/kd/uh 在线整定。*/
-/* [标定 2026-06-11] 15cm 真机整定值，达标 avg≈14.8 std≈1.25(稳态±1.5cm，基本分稳)。
- * 整定顺序(关键)：先 Kd 找阻尼 → 再 Kp 找刚度&追上升 → 最后弱 Ki 消静差。
- * 警示：Kd 过头(>60)会触发"D项自撞墙→高频抖"，本对象 ~53 为甜区；Ki 大会积分饱和冲高，0.5 足矣。
- * 注意：u_hover/PWM带宽是 15cm 中心值，10/20cm 悬停PWM不同，待真机验证(可能需按高度调度uh)。
- */
-#define PID_KP_DEFAULT        30.0f
-#define PID_KI_DEFAULT        0.5f
-#define PID_KD_DEFAULT        53.0f
-#define PID_DERIV_ALPHA       0.4f    /* 速度EMA滤波系数(越大越平滑,但更滞后;25Hz下降到0.4减相位滞后) */
+/* [辨识+计算+验证 2026-06-11] 极点配置算出并真机验证的外环增益。
+ * sysid 实测 g≈0.333 cm/s²/计数(阶跃对数衰减法);设计 ζ=0.75 ts=2s → wn=2.67。
+ *   Kp=wn²/g≈21、Kd=2ζwn/g≈12、f(球速EMA)角频≈5wn→0.76、l≈40、ki 弱积分≈1.1。
+ * 真机验证 @15cm: std≈0.89 ptp≈3.2 D std≈3.9(比 kd6/f0.4 的 D std5.4 更干净)。pidcalc.ps1 可重算。
+ * 残余 0.13cm/s 慢漂 + 2s振荡(amp~1.3)=悬停点漂移,外环增益治不了→需串级,但当前42Hz同速串级
+ *   结构不成立(内环未比外环快,实测越开越差 std0.89→1.6)。冲±1cm 需先把内环解耦到独立高速定时器。 */
+#define PID_KP_DEFAULT        21.0f
+#define PID_KI_DEFAULT        1.1f
+#define PID_KD_DEFAULT        12.0f
+#define PID_DERIV_ALPHA       0.76f   /* 球速EMA系数:filt=a*filt_prev+(1-a)*raw。[pidcalc算出=0.76,角频≈5wn]
+                                       * 0=裸微分(噪声主导);0.76 真机验证把 D std 5.4→3.9。串口 'f' 在线调。 */
 #define PID_ERROR_DEADBAND    0.3f    /* 误差死区±cm */
 #define PID_INTEGRAL_LIMIT    200.0f  /* 积分限幅(对应PWM贡献=Ki*此值) */
 
@@ -164,8 +169,8 @@
  * 默认关闭(CASCADE_RPM_DEFAULT=0)，真机用 tools/sweep_rpm.ps1 扫出 A/B 后 'y1' 打开。
  * [标定] A/B = PWM->RPM 线性拟合(sweep_rpm.ps1 输出)。Kp_rpm/Ki_rpm 串口 'yp'/'yi' 在线整定。*/
 #define CASCADE_RPM_DEFAULT   0       /* 0=单环(已验证) 1=串级内环(未实测) */
-#define RPM_FF_A_DEFAULT      1.0f    /* [标定] PWM->RPM 斜率 (rpm / PWM-count) */
-#define RPM_FF_B_DEFAULT      0.0f    /* [标定] PWM->RPM 截距 (rpm) */
+#define RPM_FF_A_DEFAULT      2.0f    /* [辨识实测 2026-06-11 sysid fan] PWM->RPM 斜率: RPM=2.0*PWM-167 (悬停3420→6673,对上实测~6654) */
+#define RPM_FF_B_DEFAULT      -167.0f /* [辨识实测] PWM->RPM 截距 (rpm) */
 #define RPM_KP_DEFAULT        0.05f   /* 内环比例 (PWM-count / rpm误差) */
 #define RPM_KI_DEFAULT        0.0f    /* 内环积分 (PWM-count / (rpm·s)) */
 #define RPM_INTEGRAL_LIMIT    2000.0f /* 内环积分限幅(对应最大 PWM 贡献) */

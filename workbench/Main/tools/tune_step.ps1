@@ -103,6 +103,21 @@ $mn=($tail|Measure-Object -Minimum).Minimum; $mx=($tail|Measure-Object -Maximum)
 $sd=[math]::Sqrt((($tail|%{($_-$av)*($_-$av)})|Measure-Object -Sum).Sum/$tail.Count)
 Write-Output ("tail H: avg={0:N2} min={1:N1} max={2:N1} std={3:N2} ptp={4:N1}  err_avg={5:N2}  (target={6})" -f $av,$mn,$mx,$sd,($mx-$mn),($av-$Target),$Target)
 
+# --- D-term (ball velocity) stats over tail: is the derivative NOISE-dominated? ---
+# At ~42Hz a naked diff of 2.6mm position noise => ~15cm/s velocity noise; x Kd this
+# can exceed the whole control band. If the ball is ~still (low H std) but D std is
+# large, the D-term is feeding noise into PWM -> raise 'f' (velocity EMA). This block
+# turns that diagnosis from estimate into measured fact.
+$tailD=$D[$k0..($n-1)]
+$dav=($tailD|Measure-Object -Average).Average
+$dmn=($tailD|Measure-Object -Minimum).Minimum; $dmx=($tailD|Measure-Object -Maximum).Maximum
+$dsd=[math]::Sqrt((($tailD|%{($_-$dav)*($_-$dav)})|Measure-Object -Sum).Sum/$tailD.Count)
+Write-Output ("tail D(vel cm/s): avg={0:N2} std={1:N2} ptp={2:N1} min={3:N1} max={4:N1}" -f $dav,$dsd,($dmx-$dmn),$dmn,$dmx)
+# crude noise-vs-authority flag: Kd unknown here, but if |D| swings while H is flat -> noise
+if($dsd -gt 5.0 -and $sd -lt 2.0){
+  Write-Output ("  -> D NOISE-DOMINATED (vel std {0:N1}cm/s while H std only {1:N2}cm): filter velocity (raise 'f') before adding Kd" -f $dsd,$sd)
+}
+
 # --- drift: linear fit H vs t over tail (cm/s); flags slow integral wind/leak ---
 $m=$tail.Count; $sx=0.0;$sy=0.0;$sxx=0.0;$sxy=0.0
 for($i=0;$i -lt $m;$i++){ $x=$tailT[$i]/1000.0; $y=$tail[$i]; $sx+=$x;$sy+=$y;$sxx+=$x*$x;$sxy+=$x*$y }

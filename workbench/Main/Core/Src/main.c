@@ -59,7 +59,7 @@
 /* USER CODE BEGIN PV */
 
 volatile uint8_t uart_rx_byte = 0;
-char uart_cmd_buf[32];
+char uart_cmd_buf[96];
 volatile uint8_t uart_cmd_idx = 0;
 volatile uint8_t uart_cmd_ready = 0;
 
@@ -114,6 +114,7 @@ float rpm_integral = 0.0f;               // 内环积分累计
 float rpm_setpoint = 0.0f;               // 内环目标转速(遥测)
 
 float last_pwm_output = 0.0f;
+float pwm_slew_last = 0.0f;        // 斜率限幅记忆的"上一次实际输出"(PID_Reset 同步到怠速地板)
 uint32_t pid_last_time = 0;        // 供 PID_Control 计算 dt（与控制节拍解耦）
 float pid_last_current = 0.0f;     // 上一次高度（微分基于高度变化，非误差）
 
@@ -263,6 +264,7 @@ void PID_Reset(void)
     pid_output = 0.0f;
     last_pwm_output = PWM_BASE;
     rpm_integral = 0.0f;                 // 串级内环积分清零
+    pwm_slew_last = g_pwm_min;           // 斜率限幅从怠速地板起步,避免投入瞬间跌破地板
     pid_last_time = uwTick;
     pid_last_current = current_height;  // 用当前高度，避免PID切入时D项突变
     sp_ramp = current_height;           // 软目标从当前球位起步,随后按限速爬向target
@@ -563,29 +565,23 @@ void Control_Update(void)
     if (dt < 0.02f) dt = 0.02f;
     if (dt > 0.25f) dt = 0.25f;
 
-    // 软目标(轨迹斜坡)：sp_ramp 按 TARGET_RAMP_CM_S 限速爬向 target_height。
-    // 误差始终很小 → u 贴着 u_hover → 球速小 → D项不饱和，从根上避免满管极限环。
-    float step = g_ramp_cms * dt;
-    if (sp_ramp < target_height - step)      sp_ramp += step;
-    else if (sp_ramp > target_height + step) sp_ramp -= step;
-    else                                     sp_ramp = target_height;
-
-    float e = sp_ramp - current_height;
+    // 干净 PID：误差直接用目标高度（已移除轨迹斜坡 ramp）
+    float e = target_height - current_height;
     pid_error = e;
 
-    // 误差死区（抑制末端抖动）
+    // 误差死区（抑制末端抖动；±PID_ERROR_DEADBAND）
     float e_db = e;
     if (e_db > -PID_ERROR_DEADBAND && e_db < PID_ERROR_DEADBAND) e_db = 0.0f;
 
-    // 球速=高度变化率，EMA滤波（微分作用在测量上，避免目标突变"微分踢"）
-    float raw_v = (current_height - pid_last_current) / dt;
-    pid_filtered_deriv = g_deriv_alpha * pid_filtered_deriv + (1.0f - g_deriv_alpha) * raw_v;
+    // 球速=高度变化率。裸微分(g_deriv_alpha=0)等于已验证单环行为；
+    // 串口 'f' 把 alpha 从 0 上调=对球速做 EMA 低通,压住 42Hz 下测高噪声经微分放大出的假球速
+    // (噪声~15cm/s × Kd 可达 ~800 计数 > 控制区间 192),代价是相位滞后。微分作用在测量上,避免目标突变"微分踢"。
+    float v_raw = (current_height - pid_last_current) / dt;
+    pid_filtered_deriv = g_deriv_alpha * pid_filtered_deriv + (1.0f - g_deriv_alpha) * v_raw;
+    float v = pid_filtered_deriv;   // 实际用于阻尼的球速(已按 alpha 滤波);同时喂遥测 D 字段
 
-    // 前馈 + 比例 + 微分阻尼（D项钳位:挡超声波假跳变喂出的非物理球速,防瞬间打满踹飞球）
-    float dterm = -Kd * pid_filtered_deriv;
-    if (dterm >  g_dmax) dterm =  g_dmax;
-    if (dterm < -g_dmax) dterm = -g_dmax;
-    float u_pd = u_hover + Kp * e_db + dterm;
+    // 干净控制律：前馈 + 比例 + 微分阻尼（已移除 D 项钳位）
+    float u_pd = u_hover + Kp * e_db - Kd * v;
 
     // 弱积分（条件积分抗饱和：仅当总输出未顶限时才累加，限幅按运行速度上下限）
     float u_try = u_pd + Ki * pid_integral;
@@ -623,13 +619,14 @@ void Control_Update(void)
         rpm_integral = 0.0f;
     }
 
-    // PWM 斜率限幅（防起飞过冲；g_slew 串口可调）
-    {
-        static float last_u = 0.0f;
-        if (u - last_u >  g_slew)      u = last_u + g_slew;
-        else if (last_u - u > g_slew)  u = last_u - g_slew;
-        last_u = u;
-    }
+    // PWM 斜率限幅（每拍最大变化 g_slew，串口 'l' 可调）。相对"上一次实际输出"限速。
+    // 起步从怠速地板开始(PID_Reset 已同步 pwm_slew_last=g_pwm_min)，避免投入瞬间从 0 爬升而跌破地板。
+    if (u - pwm_slew_last >  g_slew)      u = pwm_slew_last + g_slew;
+    else if (pwm_slew_last - u > g_slew)  u = pwm_slew_last - g_slew;
+    // 斜率限幅后再做最终上下限钳位：保证输出恒在 [pwm_min, pwm_max] 内（地板永不被限速拉穿）
+    if (u > g_pwm_max) u = g_pwm_max;
+    if (u < g_pwm_min) u = g_pwm_min;
+    pwm_slew_last = u;
 
     pwm_output = (uint16_t)u;
     pid_last_current = current_height;
@@ -643,13 +640,11 @@ void Control_Update(void)
 //   a     退出手动，回自动闭环
 //   tNN   设目标高度 NN cm，例 t15
 //   s     停机(风扇停)   g  启动闭环
-void Process_UART_Command(void)
+// 单条命令执行（被 Process_UART_Command 按空格/分号切分后逐条调用）
+static void Exec_Cmd(char *c)
 {
-    if (!uart_cmd_ready) return;
-    uart_cmd_ready = 0;
-
-    char *c = uart_cmd_buf;
     char msg[160];
+    if (c[0] == '\0') return;
 
     switch (c[0]) {
         case 'm': case 'M': {
@@ -728,24 +723,16 @@ void Process_UART_Command(void)
             sprintf(msg, ">>u_hover=%.0f\r\n", u_hover);
             UART_SendStr(msg);
             break;
-        case 'r': case 'R':            // rNN: 目标爬升速率 cm/s (软启动快慢)
-            g_ramp_cms = (float)atof(c + 1);
-            sprintf(msg, ">>ramp=%.1f cm/s\r\n", g_ramp_cms);
-            UART_SendStr(msg);
-            break;
-        case 'f': case 'F':            // fN.N: 球速EMA系数 0..1 (越大越平滑越滞后)
-            g_deriv_alpha = (float)atof(c + 1);
-            sprintf(msg, ">>deriv_alpha=%.2f\r\n", g_deriv_alpha);
-            UART_SendStr(msg);
-            break;
         case 'l': case 'L':            // lNNN: PWM每拍限幅 (刹车速度)
             g_slew = (float)atof(c + 1);
             sprintf(msg, ">>slew=%.0f\r\n", g_slew);
             UART_SendStr(msg);
             break;
-        case 'c': case 'C':            // cNNNN: D项输出钳位(|Kd*球速|最大PWM贡献)
-            g_dmax = (float)atof(c + 1);
-            sprintf(msg, ">>dclamp=%.0f\r\n", g_dmax);
+        case 'f': case 'F':            // fN.N: 球速EMA系数(0=裸微分 ->0.95=重滤波)。降D项噪声,增相位滞后
+            g_deriv_alpha = (float)atof(c + 1);
+            if (g_deriv_alpha < 0.0f)  g_deriv_alpha = 0.0f;
+            if (g_deriv_alpha > 0.95f) g_deriv_alpha = 0.95f;
+            sprintf(msg, ">>deriv_alpha=%.2f\r\n", g_deriv_alpha);
             UART_SendStr(msg);
             break;
         case 'j': case 'J':            // jN.N: 测高跳变剔除阈值cm(物理护栏,挡假回波)
@@ -792,17 +779,36 @@ void Process_UART_Command(void)
             UART_SendStr(msg);
             break;
         case 'q': case 'Q':            // q: 打印当前全部可调参数
-            sprintf(msg, ">>PARAMS uh=%.0f kp=%.1f ki=%.1f kd=%.1f ramp=%.1f a=%.2f slew=%.0f dcl=%.0f min=%.0f max=%.0f jmp=%.1f trig=%lums T=%.1f\r\n",
-                    u_hover, Kp, Ki, Kd, g_ramp_cms, g_deriv_alpha, g_slew, g_dmax, g_pwm_min, g_pwm_max, g_max_jump,
-                    (unsigned long)g_ultra_trig_ms, target_height);
+            sprintf(msg, ">>PARAMS uh=%.0f kp=%.1f ki=%.1f kd=%.1f f=%.2f slew=%.0f min=%.0f max=%.0f T=%.1f\r\n",
+                    u_hover, Kp, Ki, Kd, g_deriv_alpha, g_slew, g_pwm_min, g_pwm_max, target_height);
             UART_SendStr(msg);
             sprintf(msg, ">>CASCADE en=%u A=%.2f B=%.0f rKp=%.3f rKi=%.3f\r\n",
                     (unsigned)g_cascade_en, g_rpm_ff_a, g_rpm_ff_b, g_rpm_kp, g_rpm_ki);
             UART_SendStr(msg);
             break;
         default:
-            UART_SendStr(">>? cmd: m/+/-/a/tNN/s/g/k/u/r/f/l/c/n/x/y(cascade)/q\r\n");
+            UART_SendStr(">>? cmd: m/+/-/a/tNN/s/g/kpNN/kiNN/kdNN/uhNNNN/lNNN/nNNNN/xNNNN/y(cascade)/q\r\n");
             break;
+    }
+}
+
+// 串口命令解析入口：一行可含多条命令，用 空格 / ; / , / Tab 分隔，逐条执行。
+// 例：发一行 "uh3500 kp10 ki0.3 kd50 n3400 x3900 t15" 即可一次性全部生效。
+void Process_UART_Command(void)
+{
+    if (!uart_cmd_ready) return;
+    uart_cmd_ready = 0;
+
+    char *p = uart_cmd_buf;
+    char token[24];
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == ';' || *p == ',') p++;  // skip separators
+        if (*p == '\0') break;
+        uint8_t k = 0;
+        while (*p && *p != ' ' && *p != '\t' && *p != ';' && *p != ',' && k < sizeof(token) - 1)
+            token[k++] = *p++;
+        token[k] = '\0';
+        Exec_Cmd(token);     // 逐条派发
     }
 }
 /* USER CODE END 0 */
