@@ -127,8 +127,8 @@
  *                与静摩擦复现。设在 lift-off 稍下方(让风扇一直在"做功临界"附近)。
  *  PWM_RUN_MAX = 推力天花板:封住控制器输出上限,防止球被打到顶盖/窜飞。
  * 两者均可串口在线调: nNNNN(min) / xNNNN(max)。E1 升力曲线扫出来后回填。*/
-#define PWM_RUN_MIN           3300.0f
-#define PWM_RUN_MAX           3668.0f
+#define PWM_RUN_MIN           3800.0f /* [达标mode2] 怠速地板抬到串级工作区下沿 */
+#define PWM_RUN_MAX           4100.0f /* [达标mode2] 推力上限,悬停PWM~3960在区间内 */
 
 /* ======================= 两段式控制 ======================= */
 #define BOOST_PWM             5800.0f /* [标定] 起飞推力 */
@@ -146,12 +146,12 @@
  *   kp21/kd12 在 10/15cm std0.94 好,到 20cm 极限环 std2.82(PWM两轨bang-bang)。
  * 降到 kp12/kd7 后三高度全稳:10cm std0.73 / 15cm std0.87 / 20cm std0.97,均±2cm内,无需增益调度。
  * 即"略低于极点配置值的保守增益"对 g 的高度变化更鲁棒。冲±1cm 仍需内环高速定时器串级。 */
-#define PID_KP_DEFAULT        12.0f
-#define PID_KI_DEFAULT        1.1f
-#define PID_KD_DEFAULT        7.0f
-#define PID_DERIV_ALPHA       0.76f   /* 球速EMA系数:filt=a*filt_prev+(1-a)*raw。[pidcalc算出=0.76,角频≈5wn]
+#define PID_KP_DEFAULT        8.0f    /* [达标2026-06-12 串级mode2开机默认配方] 外环高度PID */
+#define PID_KI_DEFAULT        0.6f
+#define PID_KD_DEFAULT        12.0f
+#define PID_DERIV_ALPHA       0.40f   /* 球速EMA系数:mode2用观测器速度,此为备用路径。[达标用0.40]
                                        * 0=裸微分(噪声主导);0.76 真机验证把 D std 5.4→3.9。串口 'f' 在线调。 */
-#define PID_ERROR_DEADBAND    0.3f    /* 误差死区±cm。运行时 'd' 可调;不稳定对象上死区会养极限环,冲±1cm 时设0试 */
+#define PID_ERROR_DEADBAND    0.6f    /* [达标2026-06-12] 误差死区±cm。d0.6掐断低频极限环又不留稳态误差;'d'在线调 */
 #define PID_INTEGRAL_LIMIT    200.0f  /* 积分限幅(对应PWM贡献=Ki*此值) */
 
 /* ======================= 速度观测器(α-β滤波,冲±1cm) ======================= */
@@ -160,7 +160,7 @@
  *   预测: x+=v*dt ; 校正: r=z-x; x+=α*r; v+=(β/dt)*r
  * α 小=信测量少更平滑,β 小=速度更平滑但更滞后。串口 'va'/'vb' 在线调。
  * g_use_obs=1 时 PID 的 D 项用观测器速度(默认1);=0 退回旧 EMA 行为。'vo' 切换。*/
-#define OBS_ALPHA_DEFAULT     0.35f
+#define OBS_ALPHA_DEFAULT     0.20f   /* [达标2026-06-12] va0.2 */
 #define OBS_BETA_DEFAULT      0.05f
 #define OBS_USE_DEFAULT       1
 
@@ -168,7 +168,7 @@
 /* 对象 y''=b0*u+f。ESO 估 z1≈y,z2≈y',z3≈f(总扰动:悬停漂+g(h)+外扰+未建模),控制律减掉 z3。
  * 详见 04_调试记录/ADRC自抗扰控制方案与实施.md。默认关(走已验证PID),串口 Z1/Z0 切换。
  * b0=sysid实测g;Kp=ωc²,Kd=2ωc;ESO增益 b1=3ωo,b2=3ωo²,b3=ωo³。串口 b0/wc/wo 在线调。*/
-#define CTRL_MODE_DEFAULT     0       /* 0=PWM-PID(已验证基线) 1=LADRC(外环) 2=RPM串级(外环PID+转速内环) */
+#define CTRL_MODE_DEFAULT     2       /* [达标2026-06-12] 开机即串级,评委按键一键用达标配方。0=PWM-PID 1=LADRC 2=RPM串级 */
 #define ADRC_B0_DEFAULT       0.333f  /* [sysid实测] 输入增益 g (cm/s²/计数);ADRC对其不敏感 */
 #define ADRC_WC_DEFAULT       3.0f    /* 控制器带宽 ωc (rad/s);Kp=ωc² Kd=2ωc */
 #define ADRC_WO_DEFAULT       8.0f    /* 观测器带宽 ωo (rad/s);主调旋钮。实测:12噪声爆/5太慢冲顶,8折中(配TD) */
@@ -202,7 +202,7 @@
  * 执行器发懒/下垂时内环自动多给 PWM 把转速顶回"被要求的速度"，从根上压住浮动。
  * 默认关闭(CASCADE_RPM_DEFAULT=0)，真机用 tools/sweep_rpm.ps1 扫出 A/B 后 'y1' 打开。
  * [标定] A/B = PWM->RPM 线性拟合(sweep_rpm.ps1 输出)。Kp_rpm/Ki_rpm 串口 'yp'/'yi' 在线整定。*/
-#define CASCADE_RPM_DEFAULT   0       /* 0=单环(已验证) 1=串级内环(未实测) */
+#define CASCADE_RPM_DEFAULT   1       /* [达标2026-06-12] 开机即开串级内环(500Hz转速环);'y0'可关 */
 /* === CTRL_MODE=2 转速串级 8.87V 实测整定值 (2026-06-12, 500Hz内环ISR) ===
  * [达标 2026-06-12] CTRL_MODE=2 串级 @15cm: std=0.51-0.59, ±1cm内80-98%, ±2cm内100%, 居中。
  * 关键转折: (1)转速反馈EMA滤波(yf,g_rpm_alpha)消tach抖动→内环不再帮倒忙;

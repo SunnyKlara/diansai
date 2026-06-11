@@ -1129,6 +1129,8 @@ int main(void)
         if (!ctrl_en_prev) {
             ctrl_en_prev = 1;
             control_start_tick = uwTick;
+            // 预热:风机先转起来越过四线风扇冷启动爬升(数秒),控制接管时已在转。
+            // mode2(串级)也预热——去掉预热则boost时风机从0硬爬~6s,起飞更慢。
             preheating = manual_mode ? 0 : 1;
         }
 
@@ -1141,7 +1143,14 @@ int main(void)
             // 预热期：风机空转在怠速地板(g_pwm_min)，不跑闭环、不积分，越过冷启动死区。
             // D项基准跟随当前球位，投入闭环时不会因预热段位移喷出假球速。
             if ((uint32_t)(uwTick - control_start_tick) < FAN_PREHEAT_MS) {
-                pwm_output = (uint16_t)g_pwm_min;
+                // mode2:预热吹"悬停转速对应PWM"(风机预转到~hover_rpm,球预浮到工作区),
+                // 投入闭环时转速连续、不暴跌;mode0:吹怠速地板。
+                float pre_pwm = (g_ctrl_mode == 2 && g_rpm_ff_a > 0.0f)
+                                ? (g_hover_rpm - g_rpm_ff_b) / g_rpm_ff_a
+                                : g_pwm_min;
+                if (pre_pwm > g_pwm_max) pre_pwm = g_pwm_max;
+                if (pre_pwm < g_pwm_min) pre_pwm = g_pwm_min;
+                pwm_output = (uint16_t)pre_pwm;
                 __HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_2, pwm_output);
                 height_updated = 0;
                 pid_last_current = current_height;
