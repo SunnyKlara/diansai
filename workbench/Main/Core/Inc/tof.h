@@ -24,5 +24,7 @@ extern volatile float    g_tof_raw_mm;   /* last raw range (mm), pre-geometry */
 extern volatile uint8_t  g_tof_status;   /* last VL53L0X RangeStatus */
 extern volatile uint8_t  g_tof_id;       /* model id read at init (expect 0xEE) - I2C alive test */
 extern volatile uint8_t  g_tof_init;     /* init result: 0=ok, else step index that failed (1..9) */
+extern float             g_tof_zero;     /* height zero/intercept (cm): H = g_tof_zero - g_tof_scale*raw. 'o' to trim. */
+extern float             g_tof_scale;    /* height slope; 'os' to trim tilt/slope drift (default 1.0). */
 
 #endif /* __TOF_H */

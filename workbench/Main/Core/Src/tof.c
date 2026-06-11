@@ -26,6 +26,8 @@ volatile float   g_tof_raw_mm = -1.0f;
 volatile uint8_t g_tof_status = 0xFF;
 volatile uint8_t g_tof_id     = 0x00;   /* 0xEE expected once I2C talks */
 volatile uint8_t g_tof_init   = 0xFF;   /* 0 = init ok; else failing step */
+float            g_tof_zero   = TOF_ZERO_CM;  /* height zero/intercept (cm); runtime-trim via 'o' */
+float            g_tof_scale  = TOF_SCALE_DEFAULT;  /* height slope: H = g_tof_zero - g_tof_scale*raw. 'os' to trim tilt/slope drift */
 
 static VL53L0X_Dev_t  tof_dev;
 static VL53L0X_Dev_t *dev = &tof_dev;
@@ -127,8 +129,8 @@ void Tof_Measure(void)
 
     float raw_cm = Median3(raw_mm) * 0.1f;
 
-    float h = TOF_ZERO_CM - raw_cm;     /* laser geometry (see config.h TOF_ZERO_CM) */
-    if (h < 0.0f) h = 0.0f;
+    float h = g_tof_zero - g_tof_scale * raw_cm; /* H = zero - scale*raw (8-pt cal slope~1; scale/zero runtime-trim 'os'/'o') */
+    if (h < 0.0f) h = 0.0f;                       /* clamp restored: ball height never negative in operation */
     current_height = HeightFilter(h);
     height_updated = 1;
     height_update_tick = uwTick;

@@ -112,11 +112,29 @@ float g_rpm_kp     = RPM_KP_DEFAULT;     // 内环比例
 float g_rpm_ki     = RPM_KI_DEFAULT;     // 内环积分
 float rpm_integral = 0.0f;               // 内环积分累计
 float rpm_setpoint = 0.0f;               // 内环目标转速(遥测)
+float g_rpm_alpha = 0.8f;                // 'yf' 内环转速反馈EMA系数(0=不滤,越大越平滑越滞后)
+float rpm_meas_filt = 0.0f;              // 转速反馈滤波状态
 
 float last_pwm_output = 0.0f;
 float pwm_slew_last = 0.0f;        // 斜率限幅记忆的"上一次实际输出"(PID_Reset 同步到怠速地板)
 uint32_t pid_last_time = 0;        // 供 PID_Control 计算 dt（与控制节拍解耦）
 float pid_last_current = 0.0f;     // 上一次高度（微分基于高度变化，非误差）
+
+// LADRC 自抗扰(默认关,串口 Z1 开)。对象 y''=b0*u+f;ESO 估 z1≈y z2≈y' z3≈f(总扰动)
+volatile uint8_t g_ctrl_mode = CTRL_MODE_DEFAULT; // 0=PID 1=LADRC
+float g_b0 = ADRC_B0_DEFAULT;      // 'b0' 输入增益
+float g_wc = ADRC_WC_DEFAULT;      // 'wc' 控制器带宽 -> Kp=wc^2 Kd=2wc
+float g_wo = ADRC_WO_DEFAULT;      // 'wo' 观测器带宽 -> b1=3wo b2=3wo^2 b3=wo^3
+float g_wt = ADRC_WT_DEFAULT;      // 'wt' 跟踪微分器带宽(平滑目标,消起浮冲击)
+float g_hover_rpm = HOVER_RPM_DEFAULT; // 'h' 悬停转速(CTRL_MODE=2 外环基准,跨电池稳定)
+// α-β 速度观测器(冲±1cm:干净速度替裸差分+重滤波)
+float g_deadband = PID_ERROR_DEADBAND;  // 'd' 误差死区
+float g_ab_alpha = OBS_ALPHA_DEFAULT;   // 'va' 位置校正增益
+float g_ab_beta  = OBS_BETA_DEFAULT;    // 'vb' 速度校正增益
+uint8_t g_use_obs = OBS_USE_DEFAULT;    // 'vo' 1=用观测器速度 0=用旧EMA
+float obs_x = 0.0f, obs_v = 0.0f;       // 观测器状态(位置/速度)
+float adrc_z1 = 0.0f, adrc_z2 = 0.0f, adrc_z3 = 0.0f; // ESO 状态(z3=f_hat,遥测)
+float adrc_r1 = 0.0f, adrc_r2 = 0.0f;                 // TD 状态(r1=平滑目标位置,r2=目标速度前馈)
 
 // 两阶段控制
 uint8_t boost_mode = 1;            // 1=起飞模式(大风速)，0=PID精调模式
@@ -264,7 +282,12 @@ void PID_Reset(void)
     pid_output = 0.0f;
     last_pwm_output = PWM_BASE;
     rpm_integral = 0.0f;                 // 串级内环积分清零
+    rpm_meas_filt = (float)Fan_GetRPM(); // 转速反馈滤波以当前转速起步,避免投入瞬间从0爬
+    rpm_setpoint = g_hover_rpm;          // 内环ISR在外环首次更新前有合理给定(免投入瞬间掉到地板)
     pwm_slew_last = g_pwm_min;           // 斜率限幅从怠速地板起步,避免投入瞬间跌破地板
+    adrc_z1 = current_height; adrc_z2 = 0.0f; adrc_z3 = 0.0f;  // ESO 以当前球位起步,扰动估计清零
+    adrc_r1 = current_height; adrc_r2 = 0.0f;                  // TD 从当前球位起步,平滑爬向目标
+    obs_x = current_height; obs_v = 0.0f;                      // α-β 观测器以当前球位起步
     pid_last_time = uwTick;
     pid_last_current = current_height;  // 用当前高度，避免PID切入时D项突变
     sp_ramp = current_height;           // 软目标从当前球位起步,随后按限速爬向target
@@ -553,6 +576,51 @@ void UI_OnKey(uint8_t key)
 /* USER CODE END 0 */
 
 // 控制更新（固定节拍）：前馈 + PD + 弱积分。
+// ===== 串级内环:转速(RPM)PI,在 TIM4 500Hz ISR 中运行(与外环解耦) =====
+// 外环(Control_Update,~42Hz)只设 rpm_setpoint;本函数高速闭合转速环->PWM。
+// 真正的带宽分离(500Hz>>42Hz)使串级成立;tach 锁转速 -> 对电池放电掉压免疫。
+// 仅在 CTRL_MODE==2 且闭环投入(非停机/手动/预热)时由回调调用并写 PWM。
+static void Inner_RPM_Update(void)
+{
+    const float dt = 1.0f / (float)RPM_INNER_HZ;
+    float rpm_sp   = rpm_setpoint;                  // 外环给定(32位float读写原子)
+    float rpm_raw  = (float)Fan_GetRPM();
+    // 转速反馈低通(EMA):tach 逐脉冲量化阶梯+抖动,直接喂内环会让 PWM 抖。先滤再用。
+    rpm_meas_filt  = g_rpm_alpha * rpm_meas_filt + (1.0f - g_rpm_alpha) * rpm_raw;
+    float rpm_meas = rpm_meas_filt;
+    float rpm_err  = rpm_sp - rpm_meas;
+    // 前馈:rpm->pwm 逆映射(电压稳态工作点);PI 在其上修正(吸收电压漂/非线性/下垂)
+    float ff = (g_rpm_ff_a != 0.0f) ? ((rpm_sp - g_rpm_ff_b) / g_rpm_ff_a) : u_hover;
+    float u  = ff + g_rpm_kp * rpm_err + g_rpm_ki * rpm_integral;
+    // 条件抗饱和:仅当未顶限时累加内环积分
+    float uc = u;
+    if (uc > g_pwm_max) uc = g_pwm_max;
+    if (uc < g_pwm_min) uc = g_pwm_min;
+    if (uc < g_pwm_max && uc > g_pwm_min) {
+        rpm_integral += rpm_err * dt;
+        if (rpm_integral >  RPM_INTEGRAL_LIMIT) rpm_integral =  RPM_INTEGRAL_LIMIT;
+        if (rpm_integral < -RPM_INTEGRAL_LIMIT) rpm_integral = -RPM_INTEGRAL_LIMIT;
+    }
+    u = uc;
+    // 斜率限幅(相对上次实际输出)+ 最终钳位(地板永不被限速拉穿)
+    if (u - pwm_slew_last >  g_slew)      u = pwm_slew_last + g_slew;
+    else if (pwm_slew_last - u > g_slew)  u = pwm_slew_last - g_slew;
+    if (u > g_pwm_max) u = g_pwm_max;
+    if (u < g_pwm_min) u = g_pwm_min;
+    pwm_slew_last = u;
+    pwm_output = (uint16_t)u;
+    __HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_2, pwm_output);
+}
+
+// TIM4 周期中断(500Hz):驱动串级内环。其它模式/状态下不动 PWM(由主循环/外环负责)。
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance != TIM4) return;
+    if (g_ctrl_mode == 2 && control_enabled && !manual_mode && !preheating) {
+        Inner_RPM_Update();
+    }
+}
+
 // 对象=不稳定直筒(双积分)：固定PWM托不住球，必须实时反馈。
 // D项(球速阻尼)是稳定关键；u_hover=悬停前馈(球速、误差均0时的PWM)。
 void Control_Update(void)
@@ -565,20 +633,117 @@ void Control_Update(void)
     if (dt < 0.02f) dt = 0.02f;
     if (dt > 0.25f) dt = 0.25f;
 
+    // ===== LADRC 自抗扰分支(g_ctrl_mode==1)。TD平滑目标 + ESO估扰 + PD,扰动直接抵消 =====
+    if (g_ctrl_mode == 1) {
+        // 跟踪微分器(TD):把阶跃目标 target 平滑成 r1(位置)+ r2(速度前馈),消起浮冲击
+        // 2阶临界阻尼跟踪,带宽 g_wt:r1''= -2wt*r2 - wt^2*(r1-target)
+        adrc_r1 += dt * adrc_r2;
+        adrc_r2 += dt * (-2.0f * g_wt * adrc_r2 - g_wt * g_wt * (adrc_r1 - target_height));
+        // ESO 增益(三极点配到 -wo)
+        float b1 = 3.0f * g_wo;
+        float b2 = 3.0f * g_wo * g_wo;
+        float b3 = g_wo * g_wo * g_wo;
+        float u_prev = (pwm_slew_last - u_hover);   // 上拍等效控制量(相对悬停偏置)
+        // ESO 更新(离散欧拉,事件驱动 dt)
+        float eo = adrc_z1 - current_height;
+        adrc_z1 += dt * (adrc_z2 - b1 * eo);
+        adrc_z2 += dt * (adrc_z3 + g_b0 * u_prev - b2 * eo);
+        float z3_next = adrc_z3 + dt * (-b3 * eo);
+        // 控制律:PD 作用在"跟踪误差"上(含速度前馈 r2),再减掉估计的总扰动 z3
+        float Kp_a = g_wc * g_wc;
+        float Kd_a = 2.0f * g_wc;
+        float u0 = Kp_a * (adrc_r1 - adrc_z1) + Kd_a * (adrc_r2 - adrc_z2);
+        float ua = u_hover + (u0 - z3_next) / g_b0;
+        // 抗饱和:输出顶限时冻结 z3 积分
+        if (ua < g_pwm_max && ua > g_pwm_min) {
+            adrc_z3 = z3_next;
+        }
+        // 斜率限幅 + 上下限钳位
+        float u = ua;
+        if (u - pwm_slew_last >  g_slew)      u = pwm_slew_last + g_slew;
+        else if (pwm_slew_last - u > g_slew)  u = pwm_slew_last - g_slew;
+        if (u > g_pwm_max) u = g_pwm_max;
+        if (u < g_pwm_min) u = g_pwm_min;
+        pwm_slew_last = u;
+        pwm_output = (uint16_t)u;
+        pid_error = target_height - current_height;          // 遥测 E
+        pid_filtered_deriv = adrc_z2;                        // 遥测 D = ESO 估的球速
+        pid_output = u;
+        pid_last_current = current_height;
+        boost_mode = (fabsf(pid_error) > 3.0f) ? 1 : 0;
+        __HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_2, pwm_output);
+        return;
+    }
+
+    // ===== CTRL_MODE==2: 转速串级(外环高度PID,慢,~42Hz) =====
+    // 关键:外环只产生"目标转速 rpm_setpoint";内环转速PI->PWM 在 TIM4 500Hz ISR
+    // (Inner_RPM_Update) 里跑,与本外环解耦,实现真正的带宽分离。本函数不写 PWM。
+    // 速度用 α-β 观测器(干净,不被 0.3cm 激光跳变放大),即"串级+观测器"。
+    if (g_ctrl_mode == 2) {
+        float e = target_height - current_height;
+        pid_error = e;
+        // 起飞 boost:球在底部时给超过离地阈值的高转速把它吹起,升过 EXIT 再交还悬停控制。
+        // 迟滞(ENTER<EXIT)防抖;飞行中坠底会自动重新 boost(自恢复)。
+        static uint8_t casc_launching = 0;
+        if (current_height < CASCADE_LAUNCH_ENTER)      casc_launching = 1;
+        else if (current_height > CASCADE_LAUNCH_EXIT)  casc_launching = 0;
+        if (casc_launching && target_height > CASCADE_LAUNCH_EXIT) {
+            rpm_setpoint = g_hover_rpm + CASCADE_LAUNCH_BOOST;  // 交给内环ISR冲到离地转速
+            pid_integral = 0.0f;                                // 起飞期不积分
+            pid_filtered_deriv = 0.0f;
+            obs_x = current_height; obs_v = 0.0f;               // 观测器跟随,避免交接时喷假速度
+            pid_last_current = current_height;
+            pid_output = rpm_setpoint;
+            boost_mode = 1;
+            return;
+        }
+        float e_db = e;
+        if (e_db > -g_deadband && e_db < g_deadband) e_db = 0.0f;
+        // α-β 速度观测器(与 CTRL_MODE==0 同一套,匀速模型+测量残差)
+        obs_x += obs_v * dt;
+        float obs_r = current_height - obs_x;
+        obs_x += g_ab_alpha * obs_r;
+        obs_v += (g_ab_beta / dt) * obs_r;
+        float v_raw = (current_height - pid_last_current) / dt;
+        pid_filtered_deriv = g_deriv_alpha * pid_filtered_deriv + (1.0f - g_deriv_alpha) * v_raw;
+        float v = g_use_obs ? obs_v : pid_filtered_deriv;
+        pid_filtered_deriv = v;                              // 遥测 D = 观测器球速
+        // 外环:目标转速 = 悬停转速 + Kp*e - Kd*球速 + Ki*积分(Kp/Ki/Kd 单位 = RPM-空间)
+        float rpm_sp = g_hover_rpm + Kp * e_db - Kd * v + Ki * pid_integral;
+        // 限幅:目标转速夹在悬停±600RPM(防外环命令离谱转速)
+        if (rpm_sp > g_hover_rpm + 600.0f) rpm_sp = g_hover_rpm + 600.0f;
+        if (rpm_sp < g_hover_rpm - 600.0f) rpm_sp = g_hover_rpm - 600.0f;
+        // 条件抗饱和:仅当目标转速未顶限时才累加外环积分
+        if (rpm_sp < g_hover_rpm + 600.0f && rpm_sp > g_hover_rpm - 600.0f) {
+            pid_integral += e_db * dt;
+            if (pid_integral >  PID_INTEGRAL_LIMIT) pid_integral =  PID_INTEGRAL_LIMIT;
+            if (pid_integral < -PID_INTEGRAL_LIMIT) pid_integral = -PID_INTEGRAL_LIMIT;
+        }
+        rpm_setpoint = rpm_sp;       // 交给 500Hz 内环 ISR
+        pid_output = rpm_sp;         // 遥测
+        pid_last_current = current_height;
+        boost_mode = (fabsf(pid_error) > 3.0f) ? 1 : 0;
+        return;                      // PWM 由 Inner_RPM_Update() 在 TIM4 ISR 写
+    }
+
+    // ===== CTRL_MODE==0: 干净 PWM-PID(已验证基线) =====
     // 干净 PID：误差直接用目标高度（已移除轨迹斜坡 ramp）
     float e = target_height - current_height;
     pid_error = e;
-
     // 误差死区（抑制末端抖动；±PID_ERROR_DEADBAND）
     float e_db = e;
-    if (e_db > -PID_ERROR_DEADBAND && e_db < PID_ERROR_DEADBAND) e_db = 0.0f;
+    if (e_db > -g_deadband && e_db < g_deadband) e_db = 0.0f;
 
-    // 球速=高度变化率。裸微分(g_deriv_alpha=0)等于已验证单环行为；
-    // 串口 'f' 把 alpha 从 0 上调=对球速做 EMA 低通,压住 42Hz 下测高噪声经微分放大出的假球速
-    // (噪声~15cm/s × Kd 可达 ~800 计数 > 控制区间 192),代价是相位滞后。微分作用在测量上,避免目标突变"微分踢"。
+    // α-β 速度观测器:用匀速模型+测量残差算干净速度(滞后远小于EMA,不被0.3cm跳变放大)
+    obs_x += obs_v * dt;
+    float obs_r = current_height - obs_x;
+    obs_x += g_ab_alpha * obs_r;
+    obs_v += (g_ab_beta / dt) * obs_r;
+    // 旧路径:裸微分+EMA(g_use_obs=0 时回退)
     float v_raw = (current_height - pid_last_current) / dt;
     pid_filtered_deriv = g_deriv_alpha * pid_filtered_deriv + (1.0f - g_deriv_alpha) * v_raw;
-    float v = pid_filtered_deriv;   // 实际用于阻尼的球速(已按 alpha 滤波);同时喂遥测 D 字段
+    float v = g_use_obs ? obs_v : pid_filtered_deriv;   // D项用的球速;同时喂遥测 D 字段
+    pid_filtered_deriv = v;
 
     // 干净控制律：前馈 + 比例 + 微分阻尼（已移除 D 项钳位）
     float u_pd = u_hover + Kp * e_db - Kd * v;
@@ -681,6 +846,16 @@ static void Exec_Cmd(char *c)
             PID_Reset();
             UART_SendStr(">>AUTO (closed-loop)\r\n");
             break;
+        case 'o': case 'O':            // o<v>: ToF高度零点/截距; os<v>: 斜率(修支架倾斜/斜率漂移)
+            if (c[1] == 's' || c[1] == 'S') {
+                g_tof_scale = (float)atof(c + 2);
+                sprintf(msg, ">>TOF_SCALE=%.4f\r\n", g_tof_scale);
+            } else {
+                g_tof_zero = (float)atof(c + 1);
+                sprintf(msg, ">>TOF_ZERO=%.2f\r\n", g_tof_zero);
+            }
+            UART_SendStr(msg);
+            break;
         case 't': case 'T': {
             float v = (float)atof(c + 1);
             if (v < TARGET_HEIGHT_MIN) v = TARGET_HEIGHT_MIN;
@@ -735,6 +910,27 @@ static void Exec_Cmd(char *c)
             sprintf(msg, ">>deriv_alpha=%.2f\r\n", g_deriv_alpha);
             UART_SendStr(msg);
             break;
+        case 'h': case 'H':            // hNNNN: 悬停转速(CTRL_MODE=2 外环基准,跨电池稳定)
+            g_hover_rpm = (float)atof(c + 1);
+            sprintf(msg, ">>hover_rpm=%.0f\r\n", g_hover_rpm);
+            UART_SendStr(msg);
+            break;
+        case 'd': case 'D':            // dN.N: 误差死区cm(冲±1cm设0试)
+            g_deadband = (float)atof(c + 1);
+            sprintf(msg, ">>deadband=%.2f\r\n", g_deadband);
+            UART_SendStr(msg);
+            break;
+        case 'v': case 'V':            // 速度观测器: vaN.N(alpha) vbN.NN(beta) vo1/vo0(开关)
+            switch (c[1]) {
+                case 'a': g_ab_alpha = (float)atof(c + 2); break;
+                case 'b': g_ab_beta  = (float)atof(c + 2); break;
+                case 'o': g_use_obs  = (c[2] == '1') ? 1 : 0; break;
+                default: break;
+            }
+            sprintf(msg, ">>OBS use=%u alpha=%.2f beta=%.3f\r\n",
+                    (unsigned)g_use_obs, g_ab_alpha, g_ab_beta);
+            UART_SendStr(msg);
+            break;
         case 'j': case 'J':            // jN.N: 测高跳变剔除阈值cm(物理护栏,挡假回波)
             g_max_jump = (float)atof(c + 1);
             sprintf(msg, ">>maxjump=%.1f\r\n", g_max_jump);
@@ -770,6 +966,7 @@ static void Exec_Cmd(char *c)
                 case '0': g_cascade_en = 0; rpm_integral = 0.0f; break;
                 case 'a': g_rpm_ff_a = (float)atof(c + 2); break;
                 case 'b': g_rpm_ff_b = (float)atof(c + 2); break;
+                case 'f': g_rpm_alpha = (float)atof(c + 2); break;   // yf: 转速反馈EMA系数
                 case 'p': g_rpm_kp   = (float)atof(c + 2); break;
                 case 'i': g_rpm_ki   = (float)atof(c + 2); break;
                 default: break;
@@ -778,12 +975,30 @@ static void Exec_Cmd(char *c)
                     (unsigned)g_cascade_en, g_rpm_ff_a, g_rpm_ff_b, g_rpm_kp, g_rpm_ki);
             UART_SendStr(msg);
             break;
+        case 'Z': case 'z':            // LADRC: Z1/Z0开关 ; Zc<wc> Zo<wo> Zb<b0>
+            switch (c[1]) {
+                case '1': g_ctrl_mode = 1; PID_Reset(); break;
+                case '2': g_ctrl_mode = 2; PID_Reset(); break;
+                case '0': g_ctrl_mode = 0; break;
+                case 'c': g_wc = (float)atof(c + 2); break;
+                case 'o': g_wo = (float)atof(c + 2); break;
+                case 'b': g_b0 = (float)atof(c + 2); break;
+                case 't': g_wt = (float)atof(c + 2); break;
+                default: break;
+            }
+            sprintf(msg, ">>ADRC mode=%u b0=%.3f wc=%.2f wo=%.2f wt=%.2f\r\n",
+                    (unsigned)g_ctrl_mode, g_b0, g_wc, g_wo, g_wt);
+            UART_SendStr(msg);
+            break;
         case 'q': case 'Q':            // q: 打印当前全部可调参数
             sprintf(msg, ">>PARAMS uh=%.0f kp=%.1f ki=%.1f kd=%.1f f=%.2f slew=%.0f min=%.0f max=%.0f T=%.1f\r\n",
                     u_hover, Kp, Ki, Kd, g_deriv_alpha, g_slew, g_pwm_min, g_pwm_max, target_height);
             UART_SendStr(msg);
-            sprintf(msg, ">>CASCADE en=%u A=%.2f B=%.0f rKp=%.3f rKi=%.3f\r\n",
-                    (unsigned)g_cascade_en, g_rpm_ff_a, g_rpm_ff_b, g_rpm_kp, g_rpm_ki);
+            sprintf(msg, ">>CASCADE en=%u A=%.2f B=%.0f rKp=%.3f rKi=%.3f hover_rpm=%.0f\r\n",
+                    (unsigned)g_cascade_en, g_rpm_ff_a, g_rpm_ff_b, g_rpm_kp, g_rpm_ki, g_hover_rpm);
+            UART_SendStr(msg);
+            sprintf(msg, ">>ADRC mode=%u b0=%.3f wc=%.2f wo=%.2f wt=%.2f\r\n",
+                    (unsigned)g_ctrl_mode, g_b0, g_wc, g_wo, g_wt);
             UART_SendStr(msg);
             break;
         default:
@@ -860,6 +1075,14 @@ int main(void)
   HAL_UART_Receive_IT(&huart1, (uint8_t *)&uart_rx_byte, 1);
 #if HEIGHT_SENSOR_TOF
   Tof_Init();                  // VL53L0X laser: bit-bang I2C (PD11/PD12), continuous ranging
+  // TIM4 (old ultrasonic capture, now free since ToF uses bit-bang I2C) repurposed as
+  // the cascade inner-loop timebase. PSC=239 -> 1MHz tick; set ARR for RPM_INNER_HZ.
+  // Run-time config only (no CubeMX edit). HAL_TIM_PeriodElapsedCallback drives the
+  // RPM PI at this rate, decoupled from the ~42Hz ToF-driven outer loop.
+  __HAL_TIM_SET_PRESCALER(&htim4, 239u);
+  __HAL_TIM_SET_AUTORELOAD(&htim4, (1000000u / RPM_INNER_HZ) - 1u);
+  __HAL_TIM_SET_COUNTER(&htim4, 0u);
+  HAL_TIM_Base_Start_IT(&htim4);
 #else
   HAL_TIM_IC_Start_IT(&htim4, TIM_CHANNEL_1);
 #endif
@@ -934,8 +1157,12 @@ int main(void)
             // 不再让 PWM 静默僵在预热/旧值（那会把人骗去"调PID"），改为保持开环
             // 悬停前馈 u_hover —— 执行器进入已知安全态；同时重置D项基准，使样本
             // 恢复时不会因跨停滞段的大位移喷出假球速。心跳 A: 字段会同步飙升。
-            pwm_output = (uint16_t)u_hover;
-            __HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_2, pwm_output);
+            // CTRL_MODE==2(串级):不在此写PWM——内环ISR用tach自持最后一个rpm_setpoint,
+            // 转速环本身就是已知安全态,且写了也会被500Hz ISR在2ms内覆盖。
+            if (g_ctrl_mode != 2) {
+                pwm_output = (uint16_t)u_hover;
+                __HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_2, pwm_output);
+            }
             pid_last_current = current_height;
         }
     }
@@ -957,13 +1184,13 @@ int main(void)
     }
     if (uwTick - serial_tick >= SERIAL_PERIOD_MS) {
         serial_tick = uwTick;
-        char sbuf[200];
+        char sbuf[220];
 #if HEIGHT_SENSOR_TOF
         float raw_cm = (g_tof_raw_mm < 0.0f) ? -1.0f : g_tof_raw_mm * 0.1f;  // mm->cm
 #else
         float raw_cm = g_ultra_raw;
 #endif
-        int len = sprintf(sbuf, "H:%.1f T:%.1f E:%.1f P:%d M:%d D:%.1f R:%lu RAW:%.1f A:%lu F:%.1f PRE:%u CAS:%u RS:%ld"
+        int len = sprintf(sbuf, "H:%.1f T:%.1f E:%.1f P:%d M:%d D:%.1f R:%lu RAW:%.1f A:%lu F:%.1f PRE:%u CAS:%u RS:%ld CM:%u FH:%.2f"
 #if HEIGHT_SENSOR_TOF
                           " TID:0x%02X TIN:%u TST:%u"
 #endif
@@ -972,7 +1199,8 @@ int main(void)
                           pwm_output, boost_mode, pid_filtered_deriv,
                           (unsigned long)Fan_GetRPM(), raw_cm,
                           (unsigned long)(uwTick - height_update_tick), g_height_fps,
-                          (unsigned)preheating, (unsigned)g_cascade_en, (long)rpm_setpoint
+                          (unsigned)preheating, (unsigned)g_cascade_en, (long)rpm_setpoint,
+                          (unsigned)g_ctrl_mode, adrc_z3
 #if HEIGHT_SENSOR_TOF
                           , g_tof_id, g_tof_init, g_tof_status
 #endif

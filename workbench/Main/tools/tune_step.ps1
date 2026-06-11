@@ -79,6 +79,16 @@ for($i=0;$i -lt $n;$i++){ [void]$csv.Add(("{0},{1},{2},{3},{4},{5},{6}" -f $T_ms
 [System.IO.File]::WriteAllLines($CsvOut, $csv)
 Write-Output ("=== parsed=$n  target=$Target  csv=$CsvOut ===")
 
+# Auto-run the offline analyzer -> writes <csv>.summary.txt (clean, read via read_file).
+# This is the authoritative metrics output; the stdout below can be ignored if it wraps.
+$py = Join-Path $PSScriptRoot "..\..\..\.venv\Scripts\python.exe"
+$an = Join-Path $PSScriptRoot "analyze.py"
+if ((Test-Path $py) -and (Test-Path $an) -and $n -gt 8) {
+  try { & $py $an $CsvOut --target $Target --tail $TailFrac | ForEach-Object { Write-Output $_ } }
+  catch { Write-Output ("analyze.py failed: " + $_.Exception.Message) }
+  Write-Output ("SUMMARY FILE: " + $CsvOut + ".summary.txt")
+}
+
 # --- feedback-health gate: stalled tach/laser => tuning PID is the 'circles' trap ---
 if($A.Count -gt 0){
   $amax=($A|Measure-Object -Maximum).Maximum

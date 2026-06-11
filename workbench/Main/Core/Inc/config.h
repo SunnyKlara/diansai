@@ -81,11 +81,26 @@
 #define TOF_RAW_MIN_MM        20.0f    /* valid raw distance floor (mm) */
 #define TOF_RAW_MAX_MM        500.0f   /* valid raw distance ceiling (mm); tube < this */
 
-/* ToF geometry (independent from the ultrasonic constants so the fallback path
- * is unaffected). height_cm = TOF_ZERO_CM - raw_cm.
- * [CAL] TOF_ZERO_CM = the raw distance (cm) the laser reads when the ball rests
- * at the bottom (height = 0). Measure on-board and fill in. */
-#define TOF_ZERO_CM           47.0f
+/* ToF geometry. height_cm = TOF_ZERO_CM - TOF_SCALE * raw_cm.
+ * [CAL 2026-06-12 2-point static least-squares] H = 47.81 - 1.0331 * raw.
+ * Points (ball-bottom-to-tube-bottom, static clamped): 10cm->raw36.6, 35cm->raw12.4.
+ * Verify @20cm: raw27.1 -> 19.8 (within -0.2cm). Residuals over 10/20/35cm all +/-0.5cm.
+ * The slope (1.0331) corrects a real tilt/scale drift that a single zero could not
+ * fix (low points read slightly high, high points read low). Rest raw~47 -> H~0.
+ * Runtime trim: 'o<zero>' / 'os<scale>'. Re-run 2-pt static cal if rig is bumped. */
+/* HOVER-WORKING-POINT calibration [2026-06-12]: the 2-pt STATIC cal above is
+ * geometrically correct for a clamped ball, but the SCORING condition is the
+ * HOVERING ball. Measured (30s mean, ruler mid-point): hovering display reads
+ * ~3cm LOW vs the real ball-bottom (laser is slightly off the tube axis, so a
+ * centered hovering ball is hit off-normal -> longer slant range -> H too low).
+ * Verified at target 15: with +3 the ball really sits at 15 (display=target=ruler).
+ * So the runtime zero carries static-intercept 47.81 + 3.0 hover offset = 50.81.
+ * This makes current_height == true ball height in flight, which satisfies BOTH
+ * scoring items at once: LCD-vs-ruler (measurement) AND ball-vs-target (control).
+ * Re-measure the 3.0 if the laser/rig is re-aligned; trim live with 'o'. */
+#define TOF_ZERO_CM           50.81f  /* 47.81 static geom + 3.0 hover offset (see note) */
+#define TOF_SCALE_DEFAULT     1.0331f /* 2-pt static cal slope; runtime 'os' to re-trim */
+#define TOF_HEIGHT_OFFSET_CM  0.0f    /* legacy, unused (geometry now zero+scale) */
 
 /* ======================= 几何标定 [标定] ======================= */
 /* 高度 = 腔体总高 - 原始测距 - 传感器偏移 - 球径。需用尺子在 10/20/30cm 标定。*/
@@ -136,8 +151,28 @@
 #define PID_KD_DEFAULT        7.0f
 #define PID_DERIV_ALPHA       0.76f   /* 球速EMA系数:filt=a*filt_prev+(1-a)*raw。[pidcalc算出=0.76,角频≈5wn]
                                        * 0=裸微分(噪声主导);0.76 真机验证把 D std 5.4→3.9。串口 'f' 在线调。 */
-#define PID_ERROR_DEADBAND    0.3f    /* 误差死区±cm */
+#define PID_ERROR_DEADBAND    0.3f    /* 误差死区±cm。运行时 'd' 可调;不稳定对象上死区会养极限环,冲±1cm 时设0试 */
 #define PID_INTEGRAL_LIMIT    200.0f  /* 积分限幅(对应PWM贡献=Ki*此值) */
+
+/* ======================= 速度观测器(α-β滤波,冲±1cm) ======================= */
+/* 激光逐样本跳 ~0.3cm → 裸差分速度被放大成 ±12cm/s 噪声 → 逼出重EMA滤波 → 滞后 → 极限环。
+ * α-β 观测器用"匀速模型 + 测量残差"算干净速度,滞后远小于 EMA。
+ *   预测: x+=v*dt ; 校正: r=z-x; x+=α*r; v+=(β/dt)*r
+ * α 小=信测量少更平滑,β 小=速度更平滑但更滞后。串口 'va'/'vb' 在线调。
+ * g_use_obs=1 时 PID 的 D 项用观测器速度(默认1);=0 退回旧 EMA 行为。'vo' 切换。*/
+#define OBS_ALPHA_DEFAULT     0.35f
+#define OBS_BETA_DEFAULT      0.05f
+#define OBS_USE_DEFAULT       1
+
+/* ======================= LADRC 自抗扰(冲±1cm+抗扰) ======================= */
+/* 对象 y''=b0*u+f。ESO 估 z1≈y,z2≈y',z3≈f(总扰动:悬停漂+g(h)+外扰+未建模),控制律减掉 z3。
+ * 详见 04_调试记录/ADRC自抗扰控制方案与实施.md。默认关(走已验证PID),串口 Z1/Z0 切换。
+ * b0=sysid实测g;Kp=ωc²,Kd=2ωc;ESO增益 b1=3ωo,b2=3ωo²,b3=ωo³。串口 b0/wc/wo 在线调。*/
+#define CTRL_MODE_DEFAULT     0       /* 0=PWM-PID(已验证基线) 1=LADRC(外环) 2=RPM串级(外环PID+转速内环) */
+#define ADRC_B0_DEFAULT       0.333f  /* [sysid实测] 输入增益 g (cm/s²/计数);ADRC对其不敏感 */
+#define ADRC_WC_DEFAULT       3.0f    /* 控制器带宽 ωc (rad/s);Kp=ωc² Kd=2ωc */
+#define ADRC_WO_DEFAULT       8.0f    /* 观测器带宽 ωo (rad/s);主调旋钮。实测:12噪声爆/5太慢冲顶,8折中(配TD) */
+#define ADRC_WT_DEFAULT       1.8f    /* 跟踪微分器带宽 ωt (rad/s);把目标做平滑爬升,消起浮阶跃冲击。小=慢而稳 */
 
 /* ======================= 轨迹软启动 ======================= */
 /* 软目标按此速率(cm/s)从当前球位爬向用户目标,使误差始终小、避免大冲程极限环 */
@@ -168,11 +203,34 @@
  * 默认关闭(CASCADE_RPM_DEFAULT=0)，真机用 tools/sweep_rpm.ps1 扫出 A/B 后 'y1' 打开。
  * [标定] A/B = PWM->RPM 线性拟合(sweep_rpm.ps1 输出)。Kp_rpm/Ki_rpm 串口 'yp'/'yi' 在线整定。*/
 #define CASCADE_RPM_DEFAULT   0       /* 0=单环(已验证) 1=串级内环(未实测) */
-#define RPM_FF_A_DEFAULT      2.0f    /* [辨识实测 2026-06-11 sysid fan] PWM->RPM 斜率: RPM=2.0*PWM-167 (悬停3420→6673,对上实测~6654) */
-#define RPM_FF_B_DEFAULT      -167.0f /* [辨识实测] PWM->RPM 截距 (rpm) */
-#define RPM_KP_DEFAULT        0.05f   /* 内环比例 (PWM-count / rpm误差) */
-#define RPM_KI_DEFAULT        0.0f    /* 内环积分 (PWM-count / (rpm·s)) */
+/* === CTRL_MODE=2 转速串级 8.87V 实测整定值 (2026-06-12, 500Hz内环ISR) ===
+ * [达标 2026-06-12] CTRL_MODE=2 串级 @15cm: std=0.51-0.59, ±1cm内80-98%, ±2cm内100%, 居中。
+ * 关键转折: (1)转速反馈EMA滤波(yf,g_rpm_alpha)消tach抖动→内环不再帮倒忙;
+ *   (2)hover_rpm必须=真实悬停转速(由mode-0实测PWM反推:3960PWM→6700RPM区,设6600);
+ *   (3)kd加大(18)在滤波后干净地提供阻尼; (4)起飞boost自恢复防卡底。
+ * 完整配方(Z2前下发,kp/kd/ki与mode0共用全局不能进PID_*_DEFAULT):
+ *   h6600 ya2.53 yb-3315 n3800 x4100 kp12 ki1.5 kd18 f0.4 d0 yp0.2 yi0.5 yf0.8 va0.2 vb0.05
+ * 注:供电=12V电池经降压模块给风扇8.87V(稳压);PWM->RPM映射随供电方式变,换硬件需 find_hover 重标。 */
+/* 串级内环高速定时器频率(Hz)。CTRL_MODE=2 时内环PI移入 TIM4 ISR 以此频率运行,
+ * 与外环高度环(ToF事件驱动~42Hz)解耦,实现教科书要求的"内环>=5x外环"带宽分离。
+ * 这是单环卡在std~1.0、yp一开就更差的结构根因的修复(见调试日志2026-06-11结论)。
+ * 500Hz(>10x外环) + tach转速反馈 -> 对电池放电掉压免疫(锁RPM不锁PWM)。*/
+#define RPM_INNER_HZ          500u
+#define HOVER_RPM_DEFAULT     6600.0f /* [达标2026-06-12] 15cm悬停转速。由mode-0实测悬停PWM~3960反推(2.53*3960-3315≈6700区),
+                                       * 取6600居中。注:之前误设6590/6250是错的(混乱标定),导致串级托不住球。'h'在线调 */
+#define RPM_FF_A_DEFAULT      2.53f   /* [实测2026-06-12 find_hover 当前供电] PWM->RPM 斜率: RPM=2.53*PWM-3315 */
+#define RPM_FF_B_DEFAULT      -3315.0f/* [实测] PWM->RPM 截距 (rpm)。随供电方式变,换硬件重标 */
+#define RPM_KP_DEFAULT        0.2f    /* [达标] 内环比例(yp) */
+#define RPM_KI_DEFAULT        0.5f    /* [达标] 内环积分(yi) */
 #define RPM_INTEGRAL_LIMIT    2000.0f /* 内环积分限幅(对应最大 PWM 贡献) */
+
+/* 串级起飞 boost(CTRL_MODE=2):气动悬崖+迟滞使"从静止起飞"需 RPM 远高于"维持飞行"。
+ * 单一 hover_rpm+小kp 无法兼顾:球一旦坠底,外环命令的 hover+kp*e 低于离地阈值→永远卡底。
+ * 解法:球在底(<ENTER)时直接给 hover+BOOST 的高转速把球吹起,升过 EXIT 后交还悬停控制;
+ * 若飞行中坠回底部会自动重新 boost(自恢复,杜绝"卡底")。BOOST 需使总转速超过离地阈值。*/
+#define CASCADE_LAUNCH_BOOST   600.0f  /* 起飞时叠加在 hover_rpm 上的 RPM(超过离地阈值) */
+#define CASCADE_LAUNCH_ENTER   3.0f    /* 高度<此值 → (重新)进入起飞 boost */
+#define CASCADE_LAUNCH_EXIT    10.0f   /* 高度>此值 → 退出 boost,交还悬停控制 */
 
 /* ======================= 目标高度 ======================= */
 #define TARGET_HEIGHT_MIN     3.0f
