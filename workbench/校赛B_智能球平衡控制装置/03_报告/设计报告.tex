@@ -10,8 +10,8 @@
 % ---------- 页面与版式 ----------
 \usepackage[a4paper,top=2.5cm,bottom=2.5cm,left=3.0cm,right=3.0cm]{geometry}
 \usepackage{setspace}
-\onehalfspacing                      % 1.5 倍行距（电赛报告惯例）
-\usepackage{indentfirst}             % 段首缩进
+\onehalfspacing
+\usepackage{indentfirst}
 
 % ---------- 数学 / 符号 ----------
 \usepackage{amsmath,amssymb}
@@ -19,7 +19,7 @@
 
 % ---------- 图表 ----------
 \usepackage{graphicx}
-\usepackage{booktabs}                % 三线表
+\usepackage{booktabs}
 \usepackage{array}
 \usepackage{multirow}
 \usepackage{longtable}
@@ -48,7 +48,7 @@
 
 % ---------- TikZ 框图 ----------
 \usepackage{tikz}
-\usetikzlibrary{shapes.geometric,arrows.meta,positioning,calc,fit}
+\usetikzlibrary{shapes.geometric,arrows.meta,positioning,calc,fit,matrix,backgrounds}
 \tikzset{
   blk/.style={draw,rounded corners=2pt,align=center,minimum height=1.0cm,minimum width=2.6cm,font=\small},
   io/.style={draw,align=center,minimum height=0.9cm,minimum width=2.4cm,font=\small},
@@ -76,7 +76,7 @@
   subsubsection/format=\normalsize\bfseries,
 }
 
-% ---------- 占位图框（照片未到时也能编译，后期替换 \includegraphics）----------
+% ---------- 占位图框 ----------
 \newcommand{\figplaceholder}[2][12cm]{%
   \begin{center}
   \fbox{\begin{minipage}[c][4.5cm][c]{#1}\centering\color{gray} #2\end{minipage}}
@@ -101,7 +101,7 @@
   \begin{tabular}{rl}
     题\quad 号： & B 题 \\[6pt]
     组\quad 别： & 高职组 \\[6pt]
-    队\quad 员： & 张衡宇 \\[6pt]
+    队\quad 员： & 张衡宇、夏贤辉、廖尉浩 \\[6pt]
     学\quad 校： & 深圳职业技术大学 \\[6pt]
     日\quad 期： & 2026 年 6 月 12 日 \\
   \end{tabular}\par}
@@ -111,10 +111,10 @@
 % --------------------------- 摘要 ---------------------------
 \begin{center}{\zihao{3}\bfseries 摘\quad 要}\end{center}
 
-本设计以 STM32H750 为主控，构建气流悬浮式乒乓球定高控制装置。系统采用超声波模块非接触测量球体高度，控制器以\textbf{悬停前馈 $u_{hover}$ + PD（球速阻尼）+ 弱积分}的控制律自动调节四线风机转速，使标准 40\,mm 乒乓球在透明导管内稳定悬浮于设定高度。针对竖直直筒"升力随高度衰减"构成的开环不稳定对象，引入球速微分反馈提供阻尼；针对风机低占空比段的强非线性，将 PWM 频率提升至 25\,kHz 以线性化执行特性、提高调节分辨率约 10 倍。人机交互采用 GC9A01 圆形彩屏，实时显示当前高度、目标高度、PWM 输出与控制状态，并以双色示波器曲线（目标参考线 + 实际高度）直观呈现定高与动态跟踪过程。系统上电就绪时间 $\le 2$\,s，支持 10/15/20\,cm 高度按键设定与定高控制。实测关键指标见正文第四节（部分指标待整定回填）。
+本设计以 STM32H750（480\,MHz，Cortex-M7）为主控，构建气流悬浮式乒乓球定高控制装置。测高采用 VL53L0X 激光 ToF 模块（约 42\,Hz、噪声底标准差 0.26\,cm），执行器为 0420 四线风机并以 25\,kHz PWM 调速以消除低占空比段的死区非线性。针对竖直直筒中开环无自然阻尼、固定 PWM 下不能自持悬浮的不稳定对象，控制器采用悬停前馈 $u_{hover}$ 加 PD（球速阻尼）加弱积分的控制律。设计上先进行系统辨识（实测对象输入增益 $g\approx0.333$、风机时间常数 $\tau_{fan}\approx0.49$\,s、PWM 与转速的线性关系），再以极点配置计算 PID 参数，得到一组保守增益（略低于计算值，$K_p{=}12$、$K_i{=}1.1$、$K_d{=}7$）作为单环基线，同一组参数适用于 10/15/20\,cm，三个高度稳态误差均不超过 $\pm2$\,cm（标准差 $0.72\sim0.98$\,cm）。为将精度提高到 $\pm1$\,cm 并适应电池放电带来的电压下降，在单环基础上采用转速串级控制：外环高度 PID 输出期望转速，内环以 TACH 实测转速做 PI，运行于 500\,Hz 独立定时器，与外环（约 42\,Hz）形成带宽分离；球速则由 α-β 观测器从激光数据中估计，替代重滤波以减小相位滞后。由于内环控制的是转速而非占空比，悬停工作点对供电电压变化不敏感。15\,cm 定高实测标准差降至 $0.51\sim0.59$\,cm，约 $80\%\sim98\%$ 样本落入 $\pm1$\,cm 带、全部落入 $\pm2$\,cm 带。人机界面采用 GC9A01 圆形彩屏，以双色示波器曲线（红色目标参考线、绿色实际高度）实时呈现定高与跟踪过程。系统上电就绪时间 $\le5$\,s。抗强扰发挥功能仍在优化（见第五节）。
 
 \vspace{0.4cm}
-\noindent\textbf{关键词：}\,悬浮定高；前馈+PD 控制；超声波测距；执行器线性化；STM32H750；GC9A01
+\noindent\textbf{关键词：}\,气流悬浮定高；系统辨识；极点配置；转速串级控制；α-β 速度观测器；VL53L0X 激光测距；STM32H750
 
 \newpage
 \tableofcontents
@@ -124,15 +124,39 @@
 \section{系统方案}
 % =====================================================================
 
-本系统由主控模块、测高模块、风机执行模块、人机交互模块与电源模块组成。被控对象为竖直透明导管内的标准 40\,mm 乒乓球，风机自底部送风使球悬浮，控制器实时检测球高并闭环调节风机转速以实现定高。下面分别论证各关键模块的方案选择。
+本系统由主控模块、测高模块、风机执行模块、人机交互模块与电源模块组成。被控对象为竖直透明导管（内径 45\,mm）内的标准 40\,mm 乒乓球，风机自底部送风使球悬浮，控制器实时检测球高并闭环调节风机转速以实现定高。下面分别论证各关键模块的方案选择。
+
+\subsection{任务要求与技术指标}
+题目要求设计气流悬浮式球体定高装置：非接触测高，按键设定目标高度并闭环定高，LCD 显示运行状态；在此基础上设进阶（高精度定高、动态跟踪、曲线显示）与发挥（抗扰）要求。各项要求与本设计的实现指标对照见表~\ref{tab:spec}，作为后续方案设计与第五节测试的依据。
+
+\begin{table}[H]
+\centering
+\caption{题目要求与本设计技术指标}
+\label{tab:spec}
+\begin{tabular}{p{2.9cm} p{4.4cm} p{5.4cm}}
+\toprule
+项目 & 题目要求 & 本设计实现 \\
+\midrule
+测高范围与精度 & 3$\sim$40\,cm，误差 $\le\pm1$\,cm & VL53L0X 激光，静态噪声底 0.26\,cm \\
+高度设定 & 可设 10/15/20\,cm & 按键设定，屏显目标值 \\
+定高稳态误差 & $\le\pm2$\,cm & 单环三高度 std 0.72$\sim$0.98\,cm；串级 15\,cm 0.51$\sim$0.59\,cm \\
+数据显示 & 当前/目标/PWM/状态 & CONTROL 界面四项同屏 \\
+就绪时间 & $\le5$\,s & 约 5\,s \\
+高精度（进阶） & 任意高度 $\le\pm1$\,cm & 15\,cm 约 80\%$\sim$98\% 入带（优化中） \\
+动态跟踪（进阶） & 调节时间 $\le5$\,s & 初到邻域约 2.2\,s（持续保持 $\pm1$\,cm 优化中） \\
+曲线显示（进阶） & 曲线 + 参考线 + 坐标 & GC9A01 双色示波器曲线 \\
+抗扰（发挥） & 扰动后恢复稳定 & 优化中 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{主控器件的论证与选择}
 
-\textbf{方案一}：采用 51 系列单片机。成本低、开发简单，但主频与外设资源有限，难以同时承担高速定时器捕获测距、PWM 调速、彩屏刷新与实时控制运算。
+\textbf{方案一}：采用 51 系列单片机。成本低、开发简单，但主频与外设资源有限，难以同时承担高速测距、PWM 调速、彩屏刷新与实时控制运算。
 
 \textbf{方案二}：采用 STM32F1 系列。资源较 51 充裕，可满足基本闭环，但浮点运算与高刷新彩屏驱动余量偏紧。
 
-\textbf{方案三}：采用 STM32H750（Cortex-M7，480\,MHz，带 FPU 与大容量 SRAM）。高主频与硬件浮点利于 PD 控制与滤波运算，定时器与 SPI 资源充裕，可同时驱动 GC9A01 彩屏的示波器曲线。
+\textbf{方案三}：采用 STM32H750（Cortex-M7，480\,MHz，带 FPU 与大容量 SRAM）。高主频与硬件浮点利于 PD 控制、滤波与系统辨识运算，定时器与 SPI 资源充裕，可同时驱动 GC9A01 彩屏的示波器曲线。
 
 综合主频、浮点能力与外设资源，且该平台工程已完成搭建并通过编译/烧录/串口/测距/显示的真机验证，\textbf{选择方案三，以 STM32H750 作为主控芯片}。
 
@@ -140,21 +164,24 @@
 
 \textbf{方案一}：红外测距模块。成本低、响应快，但易受环境光与管壁反射干扰，线性度差。
 
-\textbf{方案二}：超声波测距模块（HY-SRF05）。非接触、受环境光影响小、成本适中，量程覆盖题目要求的 3\,$\sim$\,40\,cm，配合滤波可达 $\pm2$\,cm 量级精度。
+\textbf{方案二}：超声波测距模块（HY-SRF05）。非接触、成本适中，量程覆盖题目要求。但在内径 45\,mm 的窄管内，风机开启时回波混响与声学噪声严重，实测出样间隔需 $\ge80$\,ms（约 12.5\,Hz）方可信，带宽偏低且 D 项相位滞后大。
 
-\textbf{方案三}：TOF 激光测距模块。精度与刷新率高，可达 $\pm1$\,cm，但成本较高、驱动复杂。
+\textbf{方案三}：VL53L0X 激光 ToF 模块。基于飞行时间测距，不受声学混响影响，高速模式出样约 42\,Hz，实测噪声底仅 0.26\,cm（标准差），可为 $\pm1$\,cm 精度提供高刷新、低噪声的反馈。
 
-综合成本、量程与精度需求，\textbf{基本要求阶段选择方案二（超声波）}；为冲击进阶要求的 $\pm1$\,cm，软件层以统一的"读高度"接口抽象底层传感器，预留\textbf{方案三 TOF 的平滑升级}而不改动控制逻辑。
+软件层以统一的高度读取接口抽象底层传感器（仅维护 \texttt{current\_height} 与 \texttt{height\_updated}），更换传感器不影响控制逻辑。综合抗干扰能力、刷新率与精度，\textbf{选择方案三（VL53L0X 激光）}，并保留超声波作为备用通道。
 
 \subsection{控制策略的论证与选择}
 
 \textbf{方案一}：两段式 Bang-Bang（低于目标全功率、高于目标减力）。实现简单，但本质是开关控制，对无机械阻尼的悬浮对象必然产生极限环往复（真机实测已证实球大幅上下振荡、无法收敛）。
 
-\textbf{方案二}：纯 PID。比例项可拉回目标，但竖直直筒近似开环不稳定，缺乏有效阻尼时易过冲、振荡。
+\textbf{方案二}：纯 PID。比例项可拉回目标，但竖直直筒近似开环不稳定，缺乏有效阻尼时易过冲、振荡；且无前馈时积分难以单独提供约 3400 计数的悬停量，球易落底。
 
-\textbf{方案三}：悬停前馈 + PD（球速阻尼）+ 弱积分。前馈 $u_{hover}$ 直接托住悬停工作点，PD 的微分项对球速提供等效阻尼镇定对象，弱积分消除稳态静差。
+\textbf{方案三}：悬停前馈 + PD（球速阻尼）+ 弱积分。前馈 $u_{hover}$ 托住悬停工作点，PD 的微分项对球速提供阻尼以镇定对象，弱积分消除稳态静差。参数由系统辨识与极点配置确定，不在不稳定对象上反复试凑。
 
 综合稳定性与稳态精度，\textbf{选择方案三}，控制律见第二节式~\eqref{eq:law}。
+
+\subsubsection{面向 $\pm1$\,cm 精度与电压适应性的改进：转速串级}
+单环以 PWM 占空比为输出，存在两点不足：悬停工作点随供电电压（电池放电）变化而漂移；四线风机的冷区、静摩擦与供电下垂等非线性只能由外环事后补偿，限制了精度的进一步提高。实测发现球离地所需转速基本恒定（约 6700\,r/min，与电压无关），因此将控制量从占空比改为转速：外环高度 PID 输出期望转速，内环以 TACH 实测转速做 PI，运行于 500\,Hz 独立定时器中断。内环控制转速而非占空比，电压下降时内环自动增大占空比维持转速，悬停点不随电压漂移。单环（\texttt{CTRL\_MODE=0}）作为已验证基线，转速串级（\texttt{CTRL\_MODE=2}）用于提高精度与电压适应性，二者运行时可切换。
 
 \subsection{执行与调速方案的论证与选择}
 
@@ -162,7 +189,7 @@
 
 \textbf{方案二}：25\,kHz PWM 驱动四线风机（风机规格频率）。占空比与转速近似线性，有效调节区间显著展宽，分辨率提升约 10 倍。
 
-\textbf{选择方案二}，由 TIM8 输出 25\,kHz PWM（引脚 PI6），占空比寄存器满量程 9600。
+\textbf{选择方案二}，由 TIM8 输出 25\,kHz PWM，占空比寄存器满量程 9600；同时引出风机 TACH 转速线经 PC6（TIM3\_CH1）输入捕获测速，为转速串级内环提供内环测量量。
 
 \subsection{显示方案的论证与选择}
 
@@ -174,12 +201,12 @@
 
 \subsection{系统总体方案}
 
-系统总体框图如图~\ref{fig:block} 所示。控制链路为：超声波回波 $\rightarrow$ 距离换算 $\rightarrow$ 中值与滑动平均滤波 $\rightarrow$ 几何标定得球高 $\rightarrow$ 前馈+PD 闭环 $\rightarrow$ PWM 限幅/斜率限幅 $\rightarrow$ 风机；同时高度送 GC9A01 显示并经 UART 输出遥测以便在线整定。
+系统总体框图如图~\ref{fig:block} 所示。控制链路为：激光测距 $\rightarrow$ 几何标定得球高 $\rightarrow$ 中值与滑动平均滤波 $\rightarrow$ 前馈+PD（球速经 EMA 平滑）闭环 $\rightarrow$ PWM 斜率限幅/运行限幅 $\rightarrow$ 风机；同时高度送 GC9A01 显示，风机转速经 TACH 捕获供转速串级内环使用，并经 UART 输出遥测以便在线整定。
 
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}[node distance=0.9cm and 1.4cm]
-  \node[io] (sensor) {测高层\\HY-SRF05 超声波};
+  \node[io] (sensor) {测高层\\VL53L0X 激光\\ToF $\approx$42\,Hz};
   \node[blk,right=of sensor] (mcu) {主控核心\\STM32H750\\(480\,MHz)};
   \node[io,right=of mcu] (fan) {执行层\\0420 四线风机\\TIM8 25\,kHz PWM};
   \node[io,below=of mcu] (hmi) {人机界面\\GC9A01 圆屏 + 4 按键};
@@ -188,6 +215,7 @@
   \draw[ar] (mcu) -- (fan);
   \draw[ar] (mcu) -- (hmi);
   \draw[ar] (mcu) -- (dbg);
+  \draw[ar,dashed] (fan.north) to[out=90,in=0] node[above,font=\scriptsize]{TACH 转速} (dbg.east);
   \draw[ar,dashed] (fan.south) to[out=-90,in=0] node[below,font=\scriptsize]{气流抬升球体} (sensor.south);
 \end{tikzpicture}
 \caption{系统总体框图}
@@ -200,32 +228,48 @@
 
 \subsection{被控对象建模}
 
-设球质量 $m$、高度 $h$，受向上气流升力 $F(u,h)$ 与重力 $mg$，其中 $u$ 为风机 PWM 占空比。竖直导管内，球升高则远离风口、升力下降，即 $\partial F/\partial h<0$；增大占空比则升力上升，$\partial F/\partial u>0$。在悬停点 $(u_0,h_0)$ 附近线性化，记 $F_u=\partial F/\partial u$、$F_h=\partial F/\partial h$，运动方程为
+设球质量 $m$、高度 $h$，受向上气流升力 $F(u,h)$ 与重力 $mg$，其中 $u$ 为风机 PWM 占空比。在工作点 $(u_0,h_0)$ 附近线性化，记 $F_u=\partial F/\partial u>0$、$F_h=\partial F/\partial h$，运动方程为
 
 \begin{equation}
-m\ddot{h}=F(u,h)-mg\approx F_u\,\Delta u + F_h\,\Delta h .
+m\ddot{h}=F(u,h)-mg\approx F_u\,\Delta u + F_h\,\Delta h ,
 \label{eq:plant}
 \end{equation}
 
-由式~\eqref{eq:plant} 得开环传递函数 $\dfrac{\Delta h(s)}{\Delta u(s)}=\dfrac{F_u}{ms^2-F_h}$。由于 $F_h<0$，其极点为 $s=\pm\sqrt{-F_h/m}$，一极点位于右半平面，对象\textbf{开环不稳定}且无固有阻尼。这从理论上解释了纯比例或 Bang-Bang 控制必然振荡的根因：必须人为引入阻尼项。
+对应开环传递函数
 
-\subsection{控制律设计}
+\begin{equation}
+\frac{\Delta h(s)}{\Delta u(s)}=\frac{F_u}{m s^2 - F_h}.
+\label{eq:tf}
+\end{equation}
 
-引入对球速 $\dot{h}$ 的微分反馈构成悬停前馈 + PD + 弱积分控制律，误差定义 $e=h_{\mathrm{target}}-h$：
+其中 $F_h$ 的符号与大小由导管几何决定且随高度变化，难以解析预测，故不依赖其解析值，改由实测现象与系统辨识确定对象特性。实测现象为：固定 PWM 下球在管内没有中段稳定平衡点，PWM 略低即落底、略高即冲顶，整段升力压缩在约 300 个计数内（见后文执行器线性化一节）。可见工作点附近开环既无自然阻尼、也不能自持悬浮（等效极点位于虚轴附近乃至略偏右半平面）；再叠加风机约 0.5\,s 的转速滞后（见系统辨识一节），开环定高不可行。镇定的关键是人为提供阻尼，这与纯比例、Bang-Bang 控制产生满管极限环的实测现象一致，也是控制律中引入微分（球速）项的原因。
+
+为便于控制器综合，将除控制输入外的全部效应（含 $F_h\Delta h$、重力残差、$g(h)$ 非线性与未建模扰动）归并为总扰动 $f$，得到面向控制的\textbf{设计模型}
+
+\begin{equation}
+\ddot{h}=b_0\,u+f ,\qquad b_0=F_u/m ,
+\label{eq:design}
+\end{equation}
+
+即双积分加总扰动的形式。该模型用于控制器综合：后文极点配置基于此设计模型，输入增益 $b_0$ 由辨识测得（见系统辨识一节），自抗扰（见结论）则以扩张状态观测器在线估计并补偿 $f$。
+
+\subsection{控制律设计与镇定分析}
+
+引入对球速 $\dot{h}$ 的微分反馈，构成悬停前馈 + PD + 弱积分控制律，误差定义 $e=h_{\mathrm{target}}-h$：
 
 \begin{equation}
 u=u_{hover}+K_p\,e-K_d\,\dot{h}+K_i\!\int e\,\mathrm{d}t .
 \label{eq:law}
 \end{equation}
 
-将式~\eqref{eq:law}（取 $K_i=0$ 分析镇定）代入式~\eqref{eq:plant}，闭环特征方程为
+取 $K_i=0$ 分析镇定，将式~\eqref{eq:law} 代入式~\eqref{eq:plant}（注意 $\Delta u = K_p e - K_d\dot h$，$e=-\Delta h$），得闭环特征方程
 
 \begin{equation}
 m s^2 + K_d F_u\, s + (K_p F_u - F_h)=0 .
 \label{eq:char}
 \end{equation}
 
-由式~\eqref{eq:char}：当 $K_p>F_h/F_u$（恒成立，因 $F_h<0$）保证刚度为正，当 $K_d>0$ 引入正阻尼，全部极点即被拉入左半平面，系统镇定。微分项 $-K_d\dot{h}$ 是稳定的关键——这与真机现象一致：去掉 D 项球必发散冲顶或落底。等效阻尼比与无阻尼自然频率为
+由劳斯判据，式~\eqref{eq:char} 全部根位于左半平面的充要条件是各系数同号：阻尼项要求 $K_d F_u>0$ 即 $K_d>0$；刚度项要求 $K_p F_u>F_h$，即比例增益须足够大以克服对象本身（可能为正）的 $F_h$。二者同时满足即把极点配置进左半平面。其中微分项 $-K_d\dot h$ 提供的阻尼是镇定关键：去掉 D 项则阻尼系数为零、极点回到虚轴附近，与去掉 D 项后球冲顶或落底的实测现象一致。对应的闭环自然频率与阻尼比为
 
 \begin{equation}
 \omega_n=\sqrt{\frac{K_pF_u-F_h}{m}},\qquad
@@ -233,7 +277,7 @@ m s^2 + K_d F_u\, s + (K_p F_u - F_h)=0 .
 \label{eq:zeta}
 \end{equation}
 
-整定目标取 $\zeta\approx0.6\sim0.8$（轻微过冲、快速稳定）。由于 $F_u,F_h$ 随工作高度变化、难以精确测量，工程上以式~\eqref{eq:zeta} 指导方向，最终用串口在线整定 $K_p/K_i/K_d$ 收敛到达标。闭环控制系统框图如图~\ref{fig:loop} 所示。
+闭环控制系统框图如图~\ref{fig:loop} 所示。
 
 \begin{figure}[H]
 \centering
@@ -245,7 +289,7 @@ m s^2 + K_d F_u\, s + (K_p F_u - F_h)=0 .
   \node[blk,right=of ctl] (act) {执行器\\TIM8\\25\,kHz PWM};
   \node[blk,right=of act] (plant) {被控对象\\风机--导管--球};
   \node[right=8mm of plant] (out) {$h$};
-  \node[blk,below=10mm of ctl,text width=3.0cm] (sen) {测高反馈\\超声波 + 3点中值 + 滑动平均};
+  \node[blk,below=10mm of ctl,text width=3.2cm] (sen) {测高反馈\\VL53L0X + 3点中值 + 滑动平均};
   \draw[ar] (ref) -- node[above,font=\scriptsize]{$+$} (sum);
   \draw[ar] (sum) -- node[above,font=\scriptsize]{$e$} (ctl);
   \draw[ar] (ctl) -- node[above,font=\scriptsize]{$u$} (act);
@@ -258,61 +302,240 @@ m s^2 + K_d F_u\, s + (K_p F_u - F_h)=0 .
 \label{fig:loop}
 \end{figure}
 
+\subsection{系统辨识}
+
+由于 $F_u$、$F_h$ 随工作高度变化、难以解析求取，本设计先辨识对象模型，再据此计算参数。借助上位机脚本（\texttt{sysid.ps1}、\texttt{sweep\_rpm.ps1}）驱动采集与拟合，测出如下关键量，辨识总体流程如图~\ref{fig:idflow} 所示。
+
+\begin{figure}[H]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[node distance=4mm and 8mm,
+   b/.style={draw,rounded corners=2pt,align=center,font=\scriptsize,minimum height=0.85cm,minimum width=2.3cm},
+   t/.style={draw,rounded corners=7pt,align=center,font=\scriptsize,fill=gray!10,minimum height=0.8cm,minimum width=2.0cm}]
+  \node[t] (s) {开始辨识};
+  \node[b,fill=orange!8,right=of s] (fan) {风机阶跃\\采 R(t)};
+  \node[b,right=of fan] (tau) {63\%交叉\\$\Rightarrow\tau_{fan}$};
+  \node[b,right=of tau] (lin) {线性拟合\\$\Rightarrow R{=}2.0u{-}167$};
+  \node[b,fill=green!8,below=12mm of fan] (plant) {闭环双点\\稳态采 PWM};
+  \node[b,right=of plant] (gain) {$\Rightarrow$静态增益\\$u_{hover}$};
+  \node[b,right=of gain] (step) {15$\to$18 阶跃\\对数衰减};
+  \node[b,right=of step] (g) {$\Rightarrow g{\approx}0.333$};
+  \node[t,fill=blue!7,below=12mm of gain] (place) {极点配置\\算 PID 参数};
+  \draw[ar] (s)--(fan); \draw[ar] (fan)--(tau); \draw[ar] (tau)--(lin);
+  \draw[ar] (lin.south) |- (plant.east);
+  \draw[ar] (plant)--(gain); \draw[ar] (gain)--(step); \draw[ar] (step)--(g);
+  \draw[ar] (g.south) |- (place.east);
+\end{tikzpicture}}
+\caption{系统辨识实验流程}
+\label{fig:idflow}
+\end{figure}
+
+\textbf{（1）执行器（风机）辨识。} 对 PWM 施加阶跃，由 TACH 采转速 $R(t)$。线性拟合得 PWM 与转速关系（式~\eqref{eq:rpm}），相关系数 $R^2\approx0.99$；以 63\% 交叉法测得风机时间常数 $\tau_{fan}\approx0.49$\,s（冷启动自静止约 6\,s，是设置 3\,s 风机预热的依据）。受 TACH 采样间隔约 0.6\,s 限制，该值为暖机段插值估计。
+
+\begin{equation}
+R = 2.0\,u - 167 \quad (\text{r/min}).
+\label{eq:rpm}
+\end{equation}
+
+需要说明，PWM--转速关系随供电电压变化：式~\eqref{eq:rpm} 为约 12\,V 下的拟合，而转速串级实际工作于约 8.87\,V，对应映射重标为 $R\approx2.53\,u-3315$。串级内环正是依赖该映射作前馈，故更换电池或供电方式后需重新标定（见附录 B）。
+
+\textbf{（2）被控对象增益辨识。} 用一组稳定参数维持球悬浮，做闭环双点交叉：取 $u_{hover}{=}3360$ 时球稳于 11.6\,cm、$u_{hover}{=}3500$ 时球稳于 17.8\,cm，两次稳态 PWM 均约 3442。由稳态静差关系 $e_{ss}=(u_{hover}-u_{eq})/K_p$ 推得静态增益约 22.7\,PWM/cm，零静差悬停点 $u_{hover}\approx3430$。再由 15$\rightarrow$18\,cm 目标阶跃（辨识时控制器尚未整定，呈欠阻尼振荡）用对数衰减法读出闭环阻尼比与自然频率（首个超调 $M_p\approx35\%\Rightarrow\zeta_{\mathrm{id}}\approx0.3$，阻尼周期 $T_d\approx2.4$\,s $\Rightarrow\omega_{n,\mathrm{id}}\approx2.6$\,rad/s），并由 $b_0=\omega_{n,\mathrm{id}}^2/K_{p,\mathrm{run}}$ 反算输入增益 $b_0=g\approx0.333$\,cm/s$^2$/计数。该 $g$ 由单一高度、单次欠阻尼阶跃响应的对数衰减法估得，精度有限，且 $g$ 随高度变化（见极点配置一节），故仅用于确定参数量级与整定起点。
+
+\textbf{（3）噪声底与帧率。} 静止采集 251 样本，测高噪声标准差 $\sigma\approx0.26$\,cm（峰峰 1.5\,cm）；激光高速模式出样约 42\,Hz（间隔约 24\,ms）。
+
+风机阶跃实测曲线如图~\ref{fig:fan} 所示，转速由约 5388\,rpm 一阶上升至约 7868\,rpm，63\% 交叉点对应 $\tau_{fan}\approx0.49$\,s；图中虚线为按该时间常数拟合的一阶曲线，与实测基本吻合，说明把风机视为一阶惯性环节是合理的近似。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.86\linewidth]{figs/fan.pdf}
+\caption{风机阶跃响应与时间常数辨识（真机实测，暖机段）}
+\label{fig:fan}
+\end{figure}
+
+被控对象增益辨识所用的 15$\rightarrow$18\,cm 目标阶跃如图~\ref{fig:idstep} 所示（辨识时控制器尚未整定，故呈欠阻尼振荡）。实测首个超调约 35\%、阻尼周期约 2.4\,s，据此拟合的二阶模型（橙线）在首个振荡周期内与实测吻合，由对数衰减法反算得输入增益 $g\approx0.333$。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.86\linewidth]{figs/idstep.pdf}
+\caption{辨识阶跃响应（15$\rightarrow$18\,cm，真机实测，对数衰减法反算 $g$）}
+\label{fig:idstep}
+\end{figure}
+
+\subsection{极点配置算 PID 参数}
+
+将设计模型取为 $\ddot{h}=g\,u+f$（式~\eqref{eq:design}）。期望二阶闭环取阻尼比 $\zeta=0.75$、调节时间 $t_s=2$\,s，对应\textbf{目标}自然频率
+
+\begin{equation}
+\omega_{n,\mathrm{tgt}}=\frac{4}{\zeta\,t_s}\approx2.67~\mathrm{rad/s}.
+\label{eq:wn}
+\end{equation}
+
+此处 $\omega_{n,\mathrm{tgt}}$ 为设计选定的期望闭环带宽，与系统辨识中实测的 $\omega_{n,\mathrm{id}}\approx2.6$（旧控制器下的闭环响应）含义不同。按极点配置，比例、微分增益与球速 EMA 系数为
+
+\begin{equation}
+K_p=\frac{\omega_{n,\mathrm{tgt}}^2}{g},\qquad K_d=\frac{2\zeta\,\omega_{n,\mathrm{tgt}}}{g},\qquad
+\alpha=e^{-\omega_d\,\mathrm{d}t}\;(\omega_d\approx5\,\omega_{n,\mathrm{tgt}}).
+\label{eq:place}
+\end{equation}
+
+代入 $g=0.333$ 得 $K_p\approx21.4$、$K_d\approx12.0$、$\alpha\approx0.76$；积分增益取弱积分，积分转折频率约 $\omega_{n,\mathrm{tgt}}/5$（远低于控制带宽，仅缓慢消除静差、不影响主导动态），即 $K_i\approx K_p\,\omega_{n,\mathrm{tgt}}/50\approx1.1$。该组计算值与早期试凑得到的稳定值（$K_p\approx20$）量级一致，表明辨识给出的参数起点合理。
+
+极点配置给出的是设计起点，并非可直接上机的终值。实测中，按单点（15\,cm）算出的 $K_p21/K_d12$ 在 10/15\,cm 表现良好（标准差 0.94），但在 20\,cm 出现极限环（标准差 2.82、PWM 在两个值间切换），原因是对象增益 $g$ 随高度升高而变陡（$g(20)>g(15)$），单点辨识不足以覆盖全程。为兼顾各高度的稳定性，最终取低于计算值约一半的保守增益 $K_p{=}12$、$K_d{=}7$，同一组参数适用于 10/15/20\,cm、无需增益调度，代价是带宽略降（对 $\pm2$\,cm 余量充足）。因此参数确定的路径为：辨识确定悬停前馈 $u_{hover}$、增益量级与整定起点，最终增益经真机按全高度稳定性下调定稿。在线整定按单变量、定量裁决的方式进行，顺序如图~\ref{fig:tune}：先 D（阻尼）、再 P（刚度）、最后弱 I（消静差），每步只调一个参数并以上位机统计的标准差作为判据。
+
+\begin{figure}[H]
+\centering
+\resizebox{0.96\linewidth}{!}{%
+\begin{tikzpicture}[node distance=5mm and 10mm,
+   b/.style={draw,rounded corners=2pt,align=center,font=\scriptsize,minimum height=0.95cm,minimum width=2.3cm},
+   d/.style={draw,diamond,aspect=2,align=center,font=\scriptsize,inner sep=2pt},
+   t/.style={draw,rounded corners=7pt,align=center,font=\scriptsize,fill=gray!10,minimum height=0.9cm,minimum width=2.0cm}]
+  \node[t] (s) {设 $u_{hover}$\\(辨识值)};
+  \node[b,fill=green!8,right=of s] (d) {调 $K_d$\\压住球速振荡};
+  \node[b,fill=blue!7,right=of d] (p) {加 $K_p$\\拉回目标};
+  \node[b,fill=orange!8,right=of p] (i) {加弱 $K_i$\\消静差};
+  \node[d,below=12mm of p] (chk) {$\sigma$ 达标?};
+  \node[t,fill=red!6,right=of chk] (ok) {锁定回填\\config.h};
+  \draw[ar] (s)--(d); \draw[ar] (d)--(p); \draw[ar] (p)--(i);
+  \draw[ar] (i.south) |- (chk.east);
+  \draw[ar] (chk.south) -- node[left,font=\scriptsize]{否：退回上一步，单变量再试} ([yshift=-7mm]chk.south) -| (d.south);
+  \draw[ar] (chk) -- node[above,font=\scriptsize]{是} (ok);
+\end{tikzpicture}}
+\caption{PID 在线整定流程（先 D 后 P 最后 I，单变量裁决）}
+\label{fig:tune}
+\end{figure}
+
+\subsection{转速串级与 α-β 速度观测器}
+
+单环以占空比 $u$ 为输出存在两个瓶颈：其一，悬停占空比随供电电压变化（实测约 12\,V 时悬停约 3420 计数、约 9\,V 时约 4090 计数），电池放电使工作点漂移；其二，四线风机的冷启动死区、静摩擦与供电下垂使同一占空比对应的转速并不固定，外环只能事后补偿。考虑到球离地所需转速基本恒定（实测约 6700\,r/min，与电压无关），将控制量由占空比改为转速即可降低对电压变化的敏感性，这是采用转速串级的依据。
+
+\textbf{串级结构。} 外环高度控制器输出期望转速 $r_{sp}$，内环对 TACH 实测转速 $r_{meas}$ 做 PI：
+
+\begin{equation}
+r_{sp}=r_{hover}+K_p\,e-K_d\,\hat{v}+K_i\!\int e\,\mathrm{d}t ,
+\label{eq:outer}
+\end{equation}
+\begin{equation}
+u=\frac{r_{sp}-B}{A}+K_p^{r}\,(r_{sp}-r_{meas})+K_i^{r}\!\int (r_{sp}-r_{meas})\,\mathrm{d}t ,
+\label{eq:inner}
+\end{equation}
+
+其中 $\hat v$ 为观测器估计的球速，$A,B$ 为当前供电下 PWM--转速逆映射 $R=Au+B$ 的拟合系数，构成内环前馈。当执行器理想（转速随占空比线性）时转速误差近零、$u$ 退化为前馈，与单环等价；当执行器响应变慢或供电下垂时，内环自动增大占空比维持转速，从而抑制由此引起的高度波动。内环运行于 500\,Hz 独立定时器中断，约为外环（受测距样本驱动，约 42\,Hz）的 12 倍，满足串级对内环带宽远高于外环（$\ge5\times$）的要求；也避免了内、外环同为 42\,Hz 时内环没有带宽优势的问题。串级结构如图~\ref{fig:cascade}。
+
+\begin{figure}[H]
+\centering
+\resizebox{0.96\linewidth}{!}{%
+\begin{tikzpicture}[node distance=5mm and 9mm,
+   b/.style={draw,rounded corners=2pt,align=center,font=\scriptsize,minimum height=0.95cm,minimum width=2.0cm},
+   sm/.style={draw,circle,inner sep=0pt,minimum size=0.62cm,font=\scriptsize}]
+  \node[b] (ref) {目标\\$h_{tgt}$};
+  \node[sm,right=of ref] (s1) {$\Sigma$};
+  \node[b,right=of s1,fill=blue!7] (outer) {外环\\高度 PID};
+  \node[b,right=of outer] (map) {前馈映射\\$u{=}(r_{sp}{-}B)/A$};
+  \node[sm,right=of map] (s2) {$\Sigma$};
+  \node[b,right=of s2,fill=green!8] (inner) {内环\\转速 PI\\(500\,Hz 定时器)};
+  \node[b,right=of inner] (plant) {风机--管--球};
+  \node[right=7mm of plant] (h) {$h$};
+  \node[b,below=10mm of inner] (tach) {TACH 测速};
+  \node[b,below=10mm of map] (laser) {激光测高\\+α-β 观测器};
+  \draw[ar] (ref)--(s1); \draw[ar] (s1)-- node[above,font=\tiny]{$e$}(outer);
+  \draw[ar] (outer)-- node[above,font=\tiny]{$r_{sp}$}(map); \draw[ar] (map)--(s2);
+  \draw[ar] (s2)--(inner); \draw[ar] (inner)-- node[above,font=\tiny]{PWM}(plant);
+  \draw[ar] (plant)--(h);
+  \draw[ar] (plant.south) |- (tach.east); \draw[ar] (tach) -| node[pos=0.9,left,font=\tiny]{$-$}(s2.south);
+  \draw[ar] (h.south) |- ([yshift=-3mm]plant.south) -| (laser.east);
+  \draw[ar] (laser) -| node[pos=0.9,left,font=\tiny]{$-$}(s1.south);
+\end{tikzpicture}}
+\caption{转速串级控制结构（外环高度 + 内环转速 500\,Hz）}
+\label{fig:cascade}
+\end{figure}
+
+\textbf{α-β 速度观测器。} 微分项所需的球速若由激光逐样本裸差分得到，约 0.3\,cm 的逐样本跳变会被放大为约 $\pm12$\,cm/s 的假速度，逼出重滤波又引入相位滞后。为此用 α-β 观测器以"匀速模型 + 测量残差"在线估计干净的位置 $\hat x$ 与速度 $\hat v$：
+
+\begin{equation}
+\hat{x}\leftarrow\hat{x}+\hat{v}\,\mathrm{d}t,\quad r=z-\hat{x},\quad
+\hat{x}\leftarrow\hat{x}+\alpha\,r,\quad \hat{v}\leftarrow\hat{v}+\frac{\beta}{\mathrm{d}t}\,r ,
+\label{eq:ab}
+\end{equation}
+
+其中 $z$ 为激光测得高度，取 $\alpha=0.35$、$\beta=0.05$。相较重 EMA，实测速度噪声下降约 $37\%$、定高标准差由 1.43 降至 1.32\,cm（同条件），故微分项默认采用观测器速度 $\hat v$。转速串级与速度观测器共同将残余波动由约 $\pm1.5$\,cm 降至 $\pm1$\,cm。
+
 \subsection{离散实现与抗饱和}
 
-控制环以"测距新样本到达"为事件节拍驱动，步长 $\mathrm{d}t$ 取相邻样本真实间隔（标称 80\,ms，$12.5$\,Hz，受超声波最小触发间隔约 60\,ms 限制），避免固定节拍与传感器错相产生的锯齿速度。离散控制律如下：
+控制环以"测距新样本到达"为事件节拍驱动，步长 $\mathrm{d}t$ 取相邻样本真实间隔（约 24\,ms，42\,Hz），避免固定节拍与传感器错相产生的锯齿球速。离散控制律如下：
 
 \begin{lstlisting}[language=C]
-e   = h_target - h;                       // 高度误差
-v   = alpha*v + (1-alpha)*(h - h_prev)/dt;// 球速，EMA 平滑(alpha=0.6)
-I   = clamp(I + e*dt, -I_lim, +I_lim);    // 条件积分抗饱和
-u   = u_hover + Kp*e - Kd*v + Ki*I;       // 前馈 + PD + 弱I
-u   = slew_limit(u, PWM_SLEW_PER_TICK);   // 斜率限幅防过冲
-u   = clamp(u, 0, PWM_FULL_SCALE);        // 输出限幅
+e      = h_target - h;                          // 高度误差(目标经斜率限幅软启动)
+v_filt = alpha*v_filt + (1-alpha)*(h-h_prev)/dt;// 球速 EMA, alpha=0.76
+I      = clamp(I + e*dt, -I_lim, +I_lim);       // 条件积分抗饱和
+u      = u_hover + Kp*e - Kd*v_filt + Ki*I;     // 前馈 + PD + 弱I
+u      = slew_limit(u, PWM_SLEW_PER_TICK);      // 斜率限幅(40/周期)
+u      = clamp(u, PWM_RUN_MIN, PWM_RUN_MAX);    // 运行限幅[3300,3668]
 \end{lstlisting}
 
-起调参数（集中于 \texttt{config.h}，待真机整定回填）：$K_p=150$、$K_i=8$、$K_d=120$，积分限幅 $\pm200$，误差死区 $\pm0.3$\,cm，斜率限幅 800\,/周期。
+球速滤波系数 $\alpha$ 与斜率限幅的作用：42\,Hz 下裸微分会把 0.26\,cm 的测量噪声放大为约 $0.26\sqrt2/\mathrm{d}t\approx15$\,cm/s 的球速噪声，使 $K_d v$ 项达约 800 计数，远超整管控制区间（约 $\pm192$ 计数），淹没位置信号。EMA（$\alpha=0.76$）滤除高频微分噪声，斜率限幅使控制器输出带宽与风机约 0.5\,s 的滞后带宽匹配，二者共同降低残余波动。已整定回填 \texttt{config.h} 的终值见附录 B。
 
 \subsection{执行器线性化的定量依据}
 
-四线风机规格 PWM 频率为 25\,kHz。在 1\,kHz 时，占空比到转速严重非线性，真机实测整管升力被压缩在约 10 个占空比计数内（球在该窄区间内非顶即底，近似开关）。将定时器重配为 25\,kHz（预分频 0、自动重装 9599）后，占空比寄存器满量程由约 1000 提升至 9600，有效调节区间显著展宽，控制分辨率提升约 \textbf{10 倍}，前馈基准 $u_{hover}\approx3800$（约 $40\%$，待实测回填）。
+四线风机规格 PWM 频率为 25\,kHz。在 1\,kHz 时占空比到转速严重非线性，真机实测整管升力被压缩在约 10 个占空比计数内（球在该窄区间内非顶即底，近似开关）。将定时器重配为 25\,kHz（预分频 0、自动重装 9599）后，占空比寄存器满量程提升至 9600，有效调节区间从约 10 计数展宽到约 300 计数（起浮约 3500、配平约 3450、落底约 3300），控制分辨率提升约 10 倍，为控制器整定提供了足够的调节区间。
 
 \subsection{测高链路与几何标定}
 
-声速法距离换算：$d=\dfrac{t_{\mathrm{echo}}}{58}$（cm，$t$ 单位 $\mu$s）。球高由几何关系（式~\eqref{eq:geo}）求得：
+VL53L0X 工作于连续测距高速模式（时序预算 20\,ms），以连续测距加非阻塞数据就绪轮询的方式喂入控制环，避免阻塞式单次测量拖慢闭环。有效性门控包含三重：测距状态 \texttt{RangeStatus}=0、量程窗 $[20,500]$\,mm，以及该模式下的信号速率（signal rate）与测距标准差（sigma）上限检查；后两项用于剔除窄管内打到管壁的低置信度散射回波，是激光在透明窄管中抗串扰的主要手段。球高由几何关系（式~\eqref{eq:geo}）求得：
 
 \begin{equation}
-h=\mathrm{TUBE\_HEIGHT}-d_{\mathrm{raw}}-\mathrm{SENSOR\_OFFSET}-\delta_{\mathrm{ball}} ,
+h=Z_0-k\,d_{\mathrm{raw}} ,\qquad Z_0=47.81~\mathrm{cm},\;\; k=1.0331 ,
 \label{eq:geo}
 \end{equation}
 
-其中腔体总高 46\,cm、传感器偏移 2\,cm、球径修正 4\,cm（均标 \texttt{[标定]}，需用钢尺在 10/20/30\,cm 三点校准回填）。滤波链：原始测距 3 点中值剔除尖刺 $\rightarrow$ 滑动平均（窗口 3，取小窗以降低相位滞后、保住 D 项质量）$\rightarrow$ 相邻跳变超 10\,cm 丢弃（连续丢弃 3 次强制接受防卡死）。
+其中斜率 $k$ 由\textbf{两点静态最小二乘标定}得到，用以修正单一零点无法消除的安装倾斜/标度漂移（低点读数偏高、高点偏低）。标定取球底到管底的两个静态钳位点（10\,cm 对应原始 36.6、35\,cm 对应原始 12.4）拟合，并在 20\,cm 验证（原始 27.1 $\Rightarrow$ 19.8，偏差 $-0.2$\,cm），10/20/35\,cm 残差均在 $\pm0.5$\,cm 内；支架碰动后需重新两点标定（串口 \texttt{o}/\texttt{os} 可在线微调零点与斜率）。从原始测距到控制器所需的高度与球速，信号处理链如图~\ref{fig:filter}：3 点中值剔除孤立假回波（近距饱和产生的 0\,cm 尖刺）$\rightarrow$ 滑动平均（窗口 3，取小窗以降低相位滞后、保住 D 项质量）$\rightarrow$ 几何换算 $\rightarrow$ 真实 $\mathrm{d}t$ 差分得球速并经 EMA 平滑。
+
+\begin{figure}[H]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[node distance=4mm and 7mm,
+   b/.style={draw,rounded corners=2pt,align=center,font=\scriptsize,minimum height=0.95cm,minimum width=1.95cm}]
+  \node[b,fill=orange!8] (raw) {激光原始\\$d_{raw}$};
+  \node[b,right=of raw] (gate) {有效性门\\Status/量程};
+  \node[b,right=of gate] (med) {3 点中值\\剔尖刺};
+  \node[b,right=of med] (ma) {滑动平均\\窗口 3};
+  \node[b,right=of ma,fill=green!8] (geo) {几何换算\\$h{=}Z{-}d$};
+  \node[b,below=10mm of ma,fill=green!8] (h) {高度 $h$};
+  \node[b,left=of h] (diff) {真实 d$t$\\差分};
+  \node[b,left=of diff] (ema) {球速 EMA\\$\alpha{=}0.76$};
+  \node[b,left=of ema,fill=blue!7] (out) {$h,\dot h$\\$\rightarrow$控制器};
+  \draw[ar] (raw)--(gate); \draw[ar] (gate)--(med); \draw[ar] (med)--(ma); \draw[ar] (ma)--(geo);
+  \draw[ar] (geo.south) |- (h.east); \draw[ar] (h)--(diff); \draw[ar] (diff)--(ema); \draw[ar] (ema)--(out);
+\end{tikzpicture}}
+\caption{测高信号处理与球速估计数据流}
+\label{fig:filter}
+\end{figure}
 
 \subsection{误差预算}
 
-测高误差预算见表~\ref{tab:err}。
+测高与定高误差预算见表~\ref{tab:err}。
 
 \begin{table}[H]
 \centering
-\caption{测高误差预算}
+\caption{误差预算}
 \label{tab:err}
-\begin{tabular}{lcl}
+\begin{tabular}{l c p{5.2cm}}
 \toprule
 误差源 & 估算 & 备注 \\
 \midrule
-超声波量化/分辨率 & $\pm0.3$\,cm & 58\,$\mu$s/cm，定时器计数足够 \\
-管壁反射 / 气流扰动 & 【待实测】 & 中值+滑动平均后评估 \\
-几何标定残差 & 【待实测】 & 三点标定后回填 \\
-滤波相位滞后 & $\approx1$ 样本(80\,ms) & 窗口 3 折中 \\
+激光量化/噪声底 & $\pm0.26$\,cm & 静止 251 样本实测，亚毫米级 \\
+几何标定残差 & $<\pm0.5$\,cm & 支架固定后两点标定 \\
+D 项微分噪声残留 & D std $\approx3.9$\,cm/s & EMA($\alpha{=}0.76$)把裸微分 5.4 降至 3.9 \\
+悬停点 run-to-run 漂移 & $\pm25$ 计数 $\approx\pm1$\,cm & 由辨识双点 PWM 散布估计，需多次重启确认 \\
+残余慢漂 + $\sim$2\,s 振荡 & 0.13\,cm/s / 振幅 1.3\,cm & 串级/自抗扰主攻对象 \\
 \midrule
-合计（目标） & $\le\pm1$\,cm & 题目基本 $\le\pm1$\,cm \\
+合计（当前达成） & 稳态 std $0.72\sim0.98$\,cm & 基本分稳拿；$\pm1$\,cm 优化中 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsection{时间预算}
 
-系统就绪与实时性预算见表~\ref{tab:time}，就绪时间约 2\,s，满足题目"上电至正常工作 $\le5$\,s"。
+系统就绪与实时性预算见表~\ref{tab:time}。上电初始化约 2\,s、风机预热约 3\,s，二者串行约 5\,s，处于题目"上电至正常工作 $\le5$\,s"要求的边界；若需裕量，可缩短预热时长或令预热与初始化部分并行（预热期 ToF/显示已可工作，仅风机在越过冷启动死区）。
 
 \begin{table}[H]
 \centering
@@ -322,11 +545,12 @@ h=\mathrm{TUBE\_HEIGHT}-d_{\mathrm{raw}}-\mathrm{SENSOR\_OFFSET}-\delta_{\mathrm
 \toprule
 阶段 & 耗时 & 说明 \\
 \midrule
-上电初始化 & 2000\,ms & 含 GC9A01 复位与初始化 \\
-单控制周期 & 80\,ms & 测距$\rightarrow$滤波$\rightarrow$控制$\rightarrow$PWM \\
-单帧曲线刷新 & $\approx60$\,ms & 184$\times$152 区域 @7.5\,MHz SPI \\
+上电初始化 & 2000\,ms & 含 GC9A01 与 VL53L0X 初始化 \\
+风机预热 & 3000\,ms & 越过四线风机冷启动死区 \\
+单控制周期 & $\approx24$\,ms & 42\,Hz：测距$\rightarrow$滤波$\rightarrow$控制$\rightarrow$PWM \\
+单帧曲线刷新 & $\approx55$\,ms & 与控制环解耦，不阻塞闭环 \\
 \midrule
-就绪时间 & $\le2$\,s & $<$ 题目 5\,s 要求 \\
+就绪时间 & $\approx5$\,s & 串行，处判据边界 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -337,23 +561,61 @@ h=\mathrm{TUBE\_HEIGHT}-d_{\mathrm{raw}}-\mathrm{SENSOR\_OFFSET}-\delta_{\mathrm
 
 \subsection{电路设计}
 
+系统主要元器件见表~\ref{tab:comp}，各模块接口与连接见后文各小节及系统原理图。
+
+\begin{table}[H]
+\centering
+\caption{主要元器件}
+\label{tab:comp}
+\begin{tabular}{p{2.2cm} p{3.6cm} p{6.0cm}}
+\toprule
+模块 & 型号 & 关键参数 \\
+\midrule
+主控 & STM32H750XBH6 & Cortex-M7，480\,MHz，单精度 FPU，QSPI 外扩 Flash \\
+测距 & VL53L0X & 激光 ToF，量程 $\le2$\,m，高速模式约 42\,Hz，软件位带 I2C \\
+执行器 & 0420 四线 PWM 风机 & 40$\times$40$\times$20\,mm，12\,V，PWM 25\,kHz，含 TACH 转速输出 \\
+显示 & GC9A01 & 1.28\,寸圆形 TFT，240$\times$240，硬件 SPI1 \\
+电源 & 可调降压模块 & 12\,V 电池输入，输出 3.3\,V，风机工作点约 8.87\,V \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \subsubsection{主控与电源}
-以 STM32H750XBH6 最小系统为核心，12\,V 电池供电，经降压为 MCU 提供 3.3\,V，风机直接由 12\,V 驱动。系统原理图见图~\ref{fig:sch}。
+以 STM32H750XBH6 最小系统为核心，主控由 USB/降压提供 3.3\,V，风机由 12\,V 电池经可调降压模块供电（实测工作点约 8.87\,V，便于模拟电池放电的较低供电并验证转速串级的电压鲁棒性）；程序经 QSPI 外部 Flash 扩展存储（XIP 执行）。系统原理图见图~\ref{fig:sch}。
 
 \begin{figure}[H]
-\figplaceholder{此处插入系统原理图（导出后 \texttt{\textbackslash includegraphics} 替换占位框）}
-\caption{系统电路原理图}
+\centering
+\includegraphics[width=\linewidth]{figs/schematic.png}
+\caption{系统电路原理图（嘉立创 EDA 绘制）}
 \label{fig:sch}
 \end{figure}
 
-\subsubsection{风机驱动（执行器）}
-由 TIM8 输出 25\,kHz PWM（引脚 PI6）驱动四线风机的 PWM 控制线。四线风机引脚为 GND / +12\,V / PWM / TACH。其中 \textbf{TACH 转速反馈线经 10\,k$\Omega$ 上拉至 3.3\,V 接入 PC6（TIM3\_CH1，AF2）}，由定时器输入捕获测得脉冲周期换算转速（每转 2 脉冲，满速实测约 9520\,r/min），并随串口心跳输出（字段 \texttt{R}）。该转速反馈为后续风速串级闭环（发挥部分）提供内环测量量。
+\noindent 原理图按功能分区：左上为测距接口（PD11/PD12）、显示接口（PB3/PB5/PE6/PG13/PG14），左下为四线风机 PWM 驱动与四路上拉按键，右侧为 STM32H750 双排引脚分布。图中测距区与显示区沿用了早期超声波、OLED 的模块标注，本设计在同一组连接器引脚上分别换装 VL53L0X 激光（复用 PD11/PD12 的 TRIG/ECHO 焊点作 SCL/SDA）与 GC9A01 彩屏（复用 OLED 的 SPI 与控制脚），引脚映射与表~\ref{tab:tof}、\ref{tab:pin} 一致，硬件无需改板。
 
-\subsubsection{超声波测距}
-HY-SRF05 的 TRIG 由 GPIO 触发、ECHO 经定时器输入捕获测量回波脉宽，触发间隔 $\ge60$\,ms。
+\subsubsection{风机驱动与转速反馈}
+由 TIM8 输出 25\,kHz PWM 驱动四线风机的 PWM 控制线（四线为 GND / +12\,V / PWM / TACH）。其中 \textbf{TACH 转速线经 10\,k$\Omega$ 上拉至 3.3\,V 接入 PC6（TIM3\_CH1，AF2）}，由输入捕获测脉冲周期换算转速（每转 2 脉冲），随串口心跳输出（字段 \texttt{R}），为风速串级内环提供内环测量量。
+
+\subsubsection{激光测距（VL53L0X）}
+采用软件位带 I2C，复用超声波空出的两根线，零新增引脚，引脚映射见表~\ref{tab:tof}。XSH 接 3.3\,V 常使能；上电读取 model id（寄存器 0xC0 应为 0xEE）自检 I2C 通断。
+
+\begin{table}[H]
+\centering
+\caption{VL53L0X 引脚映射}
+\label{tab:tof}
+\begin{tabular}{lll}
+\toprule
+VL53L0X & MCU 引脚 & 功能 \\
+\midrule
+SCL & PD11 & GPIO 推挽（主机驱动） \\
+SDA & PD12 & GPIO 开漏 in/out \\
+XSH & 3.3\,V & 常使能 \\
+INT & NC & 轮询数据就绪寄存器 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsubsection{显示接口（GC9A01）}
-采用硬件 SPI1 寄存器级直驱（本工程不含 HAL SPI 库）。引脚映射见表~\ref{tab:pin}。
+采用硬件 SPI1 寄存器级直驱（本工程不含 HAL SPI 库），SPI1 内核时钟取 pll1\_q 240\,MHz、分频 32（7.5\,MHz，飞线信号完整性稳定点）。引脚映射见表~\ref{tab:pin}。
 
 \begin{table}[H]
 \centering
@@ -374,32 +636,86 @@ RST & PG14 & GPIO 输出 \\
 
 \subsection{程序设计}
 
-\subsubsection{开发平台}
-基于 STM32 HAL 库，使用 Keil MDK（ARM Compiler 6 / armclang）编译，SWD 烧录，并通过 UART 串口心跳输出遥测，配合上位机串口桥脚本在线整定参数（命令 \texttt{kp/ki/kd/uh} 等），无需反复烧录即可调参。
-
-\subsubsection{软件架构}
-按驱动层（Drivers）、算法层（Algorithm）、应用层（Core）三层分离，关键参数集中于 \texttt{config.h}：
+\subsubsection{开发平台与软件架构}
+基于 STM32 HAL 库，使用 Keil MDK（ARM Compiler 6 / armclang）编译，SWD 烧录，并通过 UART 串口心跳输出遥测，配合上位机脚本在线整定参数，无需反复烧录即可调参。可在线调整的不仅是 PID 三参与悬停前馈（\texttt{kp/ki/kd/uh}），还包括控制模式切换（\texttt{Z0/Z1/Z2} 对应单环/LADRC/转速串级）、转速串级的映射与内环增益（\texttt{ya/yb/yp/yi/h}）、α-β 观测器系数与开关（\texttt{va/vb/vo}）、几何零点与斜率（\texttt{o/os}）等。软件按驱动层、算法层、应用层三层分离，关键参数集中于 \texttt{config.h}：
 \begin{itemize}[leftmargin=2em,itemsep=2pt]
-  \item \textbf{Drivers}：超声波测距状态机、GC9A01 寄存器级 SPI 驱动、按键扫描、UART、风机转速捕获（TIM3）。
-  \item \textbf{Algorithm}：前馈+PD 控制律、3 点中值 + 滑动平均滤波、球速估计（真实 $\mathrm{d}t$ + EMA）、条件积分抗饱和。
-  \item \textbf{Core}：主循环调度器、UI 四界面状态机（HOME/CONTROL/CALIB/CURVE）与定高控制算法。
+  \item \textbf{Drivers}：VL53L0X 测距 glue（连续测距 + 非阻塞数据就绪轮询）与软件位带 I2C、移植并裁剪的 ST VL53L0X API（含 SPAD 与参考校准）、GC9A01 寄存器级 SPI 驱动、按键扫描、UART、风机转速捕获（TIM3 输入捕获）。
+  \item \textbf{Algorithm}：前馈+PD+弱积分控制律、3 点中值 + 滑动平均滤波、球速估计（α-β 速度观测器，可切回真实 $\mathrm{d}t$+EMA）、条件积分抗饱和、PWM 斜率限幅；转速串级内环（外环高度 PID + 500\,Hz 转速 PI）与 LADRC 自抗扰（运行时可切换）。
+  \item \textbf{Core}：主循环调度器、UI 四界面状态机（HOME/CONTROL/CALIB/CURVE）、定高控制状态机、风机预热与反馈看门狗。
 \end{itemize}
 
+软件分层架构与模块依赖如图~\ref{fig:arch} 所示，驱动层与算法层严格分离，所有可调参数经 \texttt{config.h} 单点集中，并经 UART 暴露在线整定接口。
+
+\begin{figure}[H]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[
+   mod/.style={draw=#1!60!black,fill=#1!12,rounded corners=2pt,align=center,
+               font=\footnotesize,text width=1.95cm,minimum height=1.05cm,inner sep=2pt},
+   mod/.default=blue,
+   lbl/.style={align=center,font=\small\bfseries,text width=1.95cm},
+   band/.style={rounded corners=4pt,inner sep=2.6mm,draw=#1!55!black,fill=#1!7},
+   bandarrow/.style={-{Stealth[length=3mm]},line width=1.1pt,draw=black!55}]
+  % row 1 - application layer
+  \node[lbl] (a0) at (0,0) {应用层\\Core};
+  \node[mod=blue] (a1) at (2.5,0) {主循环调度器};
+  \node[mod=blue] (a2) at (5.0,0) {UI 四界面状态机};
+  \node[mod=blue] (a3) at (7.5,0) {定高控制状态机};
+  \node[mod=blue] (a4) at (10.0,0) {风机预热};
+  \node[mod=blue] (a5) at (12.5,0) {反馈看门狗};
+  % row 2 - algorithm layer
+  \node[lbl] (b0) at (0,-1.75) {算法层\\Algorithm};
+  \node[mod=teal] (b1) at (2.5,-1.75) {前馈+PD+弱 I};
+  \node[mod=teal] (b2) at (5.0,-1.75) {中值+滑动平均};
+  \node[mod=teal] (b3) at (7.5,-1.75) {α-β 速度观测器};
+  \node[mod=teal] (b4) at (10.0,-1.75) {条件积分抗饱和};
+  \node[mod=teal] (b5) at (12.5,-1.75) {辨识/极点配置/串级};
+  % row 3 - driver layer
+  \node[lbl] (c0) at (0,-3.5) {驱动层\\Drivers};
+  \node[mod=orange] (c1) at (2.5,-3.5) {VL53L0X 激光测距};
+  \node[mod=orange] (c2) at (5.0,-3.5) {GC9A01 彩屏 SPI};
+  \node[mod=orange] (c3) at (7.5,-3.5) {TIM3 风机测速};
+  \node[mod=orange] (c4) at (10.0,-3.5) {按键扫描};
+  \node[mod=orange] (c5) at (12.5,-3.5) {UART 遥测};
+  % row 4 - config layer
+  \node[lbl] (d0) at (0,-5.25) {配置层\\config.h};
+  \node[mod=gray] (d1) at (2.5,-5.25) {PID 三参};
+  \node[mod=gray] (d2) at (5.0,-5.25) {PWM 限幅};
+  \node[mod=gray] (d3) at (7.5,-5.25) {几何标定};
+  \node[mod=gray] (d4) at (10.0,-5.25) {采样节拍};
+  \node[mod=gray] (d5) at (12.5,-5.25) {辨识模型常数};
+  \begin{scope}[on background layer]
+    \node[band=blue,  fit=(a0)(a5)] {};
+    \node[band=teal,  fit=(b0)(b5)] {};
+    \node[band=orange,fit=(c0)(c5)] {};
+    \node[band=gray,  fit=(d0)(d5)] {};
+  \end{scope}
+  \draw[bandarrow] (a3.south) -- (b3.north);
+  \draw[bandarrow] (b3.south) -- (c3.north);
+  \draw[bandarrow] (c3.south) -- (d3.north);
+  \draw[-{Stealth[length=3mm]},line width=1pt,draw=red!55,dashed]
+        (d5.east) .. controls +(1.5,0) and +(1.5,0) .. (a5.east)
+        node[midway,right=1mm,font=\scriptsize,text=red!55!black,align=center] {参数\\注入};
+\end{tikzpicture}}
+\caption{软件三层架构与模块依赖（自顶向下调用，config.h 单点参数注入）}
+\label{fig:arch}
+\end{figure}
+
 \subsubsection{主循环调度}
-系统为非阻塞单循环调度：每轮依次执行非阻塞测距、按键与界面分发、串口命令解析、控制门判定，并按各自节拍刷新显示（200\,ms）与串口心跳（80\,ms），总体流程如图~\ref{fig:mainloop} 所示。控制环采用\textbf{事件驱动}——仅当测距产生新样本（\texttt{height\_updated}）时才执行一次闭环，使每步控制都用最新数据、$\mathrm{d}t$ 与采样真实间隔一致，避免固定节拍与传感器节拍错相产生锯齿球速。
+系统为非阻塞单循环调度：每轮依次执行非阻塞测距、按键与界面分发、串口命令解析、控制门判定，并按各自节拍刷新显示（200\,ms）与串口心跳（80\,ms，均由软件定时标志位触发、不阻塞控制环），总体流程如图~\ref{fig:mainloop} 所示。控制环采用\textbf{事件驱动}——仅当测距产生新样本（\texttt{height\_updated}）时才执行一次闭环，使每步控制都用最新数据、$\mathrm{d}t$ 与采样真实间隔一致。
 
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}[node distance=6mm and 14mm]
   \node[term] (s) {上电 / 外设初始化};
-  \node[blk,below=of s] (meas) {非阻塞测距\\Ultrasonic\_Measure};
+  \node[blk,below=of s] (meas) {非阻塞测距\\Tof\_Measure};
   \node[blk,below=of meas] (key) {按键扫描 + 界面分发\\KEY\_Process / UI\_OnKey};
-  \node[blk,below=of key] (uart) {串口命令解析\\Process\_UART\_Command};
+  \node[blk,below=of key] (uart) {串口命令解析\\Exec\_Cmd（支持批量）};
   \node[blk,below=of uart] (gate) {控制门（三分支，见图~\ref{fig:gate}）};
   \node[dec,below=8mm of gate] (dd) {到 200\,ms?};
-  \node[act,right=of dd] (disp) {刷新界面\\OLED\_Update};
+  \node[act,right=of dd] (disp) {刷新界面\\GC9A01};
   \node[dec,below=10mm of dd] (dh) {到 80\,ms?};
-  \node[act,right=of dh] (hb) {串口心跳\\H/T/E/P/M/D/R};
+  \node[act,right=of dh] (hb) {串口心跳\\H/T/E/P/D/R/F/A};
   \coordinate (L) at ([xshift=-12mm]meas.west);
   \draw[ar] (s)--(meas); \draw[ar] (meas)--(key); \draw[ar] (key)--(uart);
   \draw[ar] (uart)--(gate); \draw[ar] (gate)--(dd);
@@ -414,8 +730,8 @@ RST & PG14 & GPIO 输出 \\
 \label{fig:mainloop}
 \end{figure}
 
-\subsubsection{控制门}
-控制门按"是否使能、是否手动、是否有新样本"三级判定决定本轮动作，如图~\ref{fig:gate}。停机态直接丢弃挂起样本；手动标定态直给 PWM（用于扫 $u_{min}$/$u_{hover}$）；自动态仅在有新样本时跑一次闭环。
+\subsubsection{控制门与反馈看门狗}
+控制门按是否使能、是否手动、是否有新样本三级判定决定本轮动作，如图~\ref{fig:gate}。停机态直接丢弃挂起样本；手动标定态直给 PWM（用于扫 $u_{min}$/$u_{hover}$）；自动态仅在有新样本时执行一次闭环。为防止激光因管壁串扰拒帧、闭环因缺少新反馈而把 PWM 冻结在旧值，设置反馈看门狗：闭环下若超过 150\,ms（约为激光最大出样间隔 24\,ms 的 6 倍）无有效样本，则不再沿用旧 PWM，而是保持开环前馈 $u_{hover}$ 并复位 D 项基准，同时将停滞时长经心跳字段 \texttt{A} 输出，便于判断是反馈中断还是参数问题。
 
 \begin{figure}[H]
 \centering
@@ -425,7 +741,7 @@ RST & PG14 & GPIO 输出 \\
   \node[dec,below=of e] (m) {manual\\\_mode?};
   \node[act,right=of m] (m1) {直给 manual\_pwm\\（跳过闭环）};
   \node[dec,below=of m] (h) {height\\\_updated?};
-  \node[act,right=of h] (h0) {本轮不控制};
+  \node[act,right=of h] (h0) {看门狗：超 150\,ms\\保持 $u_{hover}$};
   \node[blk,below=of h] (c) {Control\_Update()\\前馈+PD+弱积分};
   \draw[ar] (e)-- node[above,font=\scriptsize]{否} (e0);
   \draw[ar] (e)-- node[left,font=\scriptsize]{是} (m);
@@ -438,39 +754,29 @@ RST & PG14 & GPIO 输出 \\
 \label{fig:gate}
 \end{figure}
 
-\subsubsection{超声波非阻塞测量}
-测距采用两级非阻塞状态机：主状态 \texttt{measure\_state} 负责触发与回波等待，回波沿由 TIM4\_CH1 输入捕获中断（\texttt{capture\_state}：上升沿$\rightarrow$下降沿$\rightarrow$完成）测得脉宽。一次测量的处理流程如图~\ref{fig:ultra} 所示，含量程门限、3 点中值与跳变剔除（连续丢弃达上限则强制接受防卡死）。
+\subsubsection{定高控制状态机}
+定高分预热、起飞、定高三态，如图~\ref{fig:state}。闭环使能后风机先在怠速地板（最低运行 PWM）空转 3\,s 越过冷启动死区与静摩擦，再以当前球位干净投入闭环；起飞段给推力把球吹离底部，待误差进入 $\pm8$\,cm 带并连续 5 周期确认（防虚假读数）后切入 PID 精调。
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[node distance=6mm and 10mm]
-  \node[term] (idle) {空闲 (state=0)};
-  \node[dec,below=of idle] (per) {到触发周期\\80\,ms?};
-  \node[blk,below=of per] (trig) {发触发脉冲\\state=1};
-  \node[dec,below=of trig] (cap) {回波完成?\\(capture=2)};
-  \node[dec,right=14mm of cap] (to) {等待超时\\10\,ms?};
-  \node[blk,below=of cap] (raw) {取距 $d=t_{echo}/58$};
-  \node[dec,below=of raw] (rng) {$2{<}d{<}44$\,cm?};
-  \node[blk,below=of rng] (med) {3 点中值滤波};
-  \node[dec,below=of med] (jmp) {跳变${>}10$cm 且\\丢弃${<}3$次?};
-  \node[blk,below=of jmp] (calc) {算高度 + 滑动平均\\height\_updated=1};
-  \draw[ar] (idle)--(per);
-  \draw[ar] (per)-- node[right,font=\scriptsize]{是} (trig);
-  \draw[ar] (trig)--(cap);
-  \draw[ar] (cap)-- node[above,font=\scriptsize]{否} (to);
-  \draw[ar] (to.north) to[bend right=20] node[right,font=\scriptsize]{超时复位} (cap.east);
-  \draw[ar] (cap)-- node[left,font=\scriptsize]{是} (raw);
-  \draw[ar] (raw)--(rng);
-  \draw[ar] (rng)-- node[left,font=\scriptsize]{是} (med);
-  \draw[ar] (med)--(jmp);
-  \draw[ar] (jmp)-- node[left,font=\scriptsize]{否} (calc);
-\end{tikzpicture}
-\caption{超声波非阻塞测量流程}
-\label{fig:ultra}
+\resizebox{0.98\linewidth}{!}{%
+\begin{tikzpicture}[node distance=8mm and 16mm]
+  \node[term] (stop) {停止};
+  \node[st,right=of stop] (pre) {预热 3\,s\\怠速旋转};
+  \node[st,right=of pre] (boost) {起飞 BOOST\\推力抬球};
+  \node[st,right=of boost] (pid) {定高 PID\\前馈+PD+弱I};
+  \draw[ar] (stop)-- node[above,font=\scriptsize]{启动} (pre);
+  \draw[ar] (pre)-- (boost);
+  \draw[ar] (boost)-- node[above,font=\scriptsize]{$|e|{<}8$ 连续5周期} (pid);
+  \draw[ar] (pid) to[bend left=30] node[below,font=\scriptsize]{$|e|{>}10$} (boost);
+  \draw[ar] (pid) to[bend right=38] node[below,font=\scriptsize]{停机} (stop);
+\end{tikzpicture}}
+\caption{定高控制状态机}
+\label{fig:state}
 \end{figure}
 
 \subsubsection{定高控制算法}
-\texttt{Control\_Update()} 为统一的前馈+PD+弱积分律，全程闭环（不再使用早期两段式 Bang-Bang）；\texttt{boost\_mode} 仅作显示标签（按 $|e|$ 远/近显示"起飞/定高"），不改变控制律。单次控制的计算流程如图~\ref{fig:ctrl}，含真实 $\mathrm{d}t$、误差死区、球速 EMA、条件积分抗饱和、输出限幅与 PWM 斜率限幅。
+\texttt{Control\_Update()} 为统一的前馈+PD+弱积分律，全程闭环（不再使用早期两段式 Bang-Bang）。单次控制的计算流程如图~\ref{fig:ctrl}，含真实 $\mathrm{d}t$ 限幅、误差死区、α-β 观测器球速、条件积分抗饱和、输出限幅与 PWM 斜率限幅。
 
 \begin{figure}[H]
 \centering
@@ -496,8 +802,17 @@ RST & PG14 & GPIO 输出 \\
 \label{fig:ctrl}
 \end{figure}
 
+\subsubsection{转速串级与速度观测器的实现}
+转速串级（\texttt{CTRL\_MODE=2}）按外环慢、内环快两级实现，二者通过共享变量 \texttt{rpm\_setpoint} 解耦。
+
+\emph{外环}（高度环）在 \texttt{Control\_Update()} 中随测距新样本以约 42\,Hz 事件驱动执行，步长取相邻样本的真实间隔。为约束大幅目标切换时的轨迹，外环对目标做斜率限幅：软目标 \texttt{sp\_ramp} 以设定速率（\texttt{TARGET\_RAMP\_CM\_S}）逼近用户目标，使跟踪误差始终较小、避免失速过冲。球低于离地阈值时进入起飞分支，在悬停转速上叠加固定增量将球吹起，越过退出阈值后交还悬停控制；进入/退出阈值带迟滞，飞行中跌回底部可自动重新起飞。外环输出期望转速 $r_{sp}=r_{hover}+K_pe-K_d\hat v+K_i\!\int e$，限幅于 $r_{hover}\pm600$\,r/min，并采用条件积分抗饱和（仅在未顶限时累加积分），该函数本身不写 PWM。
+
+\emph{内环}（转速环）\texttt{Inner\_RPM\_Update()} 置于 TIM4 周期中断、以 500\,Hz 运行：读取 TACH 转速并经一阶低通（系数 \texttt{g\_rpm\_alpha}）抑制逐脉冲量化抖动，按 $u=(r_{sp}-B)/A+K_p^r(r_{sp}-r_{meas})+K_i^r\!\int(r_{sp}-r_{meas})$ 计算占空比——前一项为 PWM--转速逆映射前馈、确定稳态工作点，PI 项修正供电变化与执行器非线性。占空比同样经条件积分抗饱和、斜率限幅与运行限幅 $[u_{min},u_{max}]$ 后写入 TIM8\_CH2。内环仅在 \texttt{CTRL\_MODE=2} 且闭环已投入（非停机/手动/预热）时动作，投入瞬间以当前转速与悬停给定为初值，避免接管时的阶跃冲击；PWM 比较寄存器全程仅由内环写入，与外环互不争用。
+
+球速统一由 α-β 观测器（式~\eqref{eq:ab}）估计，经开关 \texttt{vo} 可回退至 EMA。悬停转速、映射系数 $A/B$、内外环增益与观测器系数 $\alpha/\beta$ 均支持串口在线整定，配合上位机采集脚本完成定量整定。
+
 \subsubsection{人机界面与曲线显示}
-人机界面为四界面状态机，统一键义（K1 上/加、K2 进入/切换、K3 返回、K4 下/减），切换关系如图~\ref{fig:ui} 所示。CONTROL 界面同时显示当前高度、目标高度、PWM 输出、控制状态（对应数据显示要求）；CURVE 界面以红色参考线绘制目标高度、绿色曲线绘制实际高度，叠加 $\pm1$\,cm 误差带与 cm 刻度，直观呈现定高与动态跟踪。为降低刷新对控制环的阻塞，CURVE 采用扫描式渲染，每帧仅重绘并刷新最新一列。
+人机界面为四界面状态机，统一键义（K1 上/加、K2 进入/切换、K3 返回、K4 下/减），切换关系如图~\ref{fig:ui}。CONTROL 界面同时显示当前高度、目标高度、PWM 输出、控制状态（对应数据显示要求）；CURVE 界面以红色参考线绘制目标高度、绿色曲线绘制实际高度并叠加 cm 刻度，直观呈现定高与动态跟踪。为降低刷新对控制环的阻塞，CURVE 采用左滚动 strip-chart 渲染并与控制环解耦。
 
 \begin{figure}[H]
 \centering
@@ -525,7 +840,7 @@ RST & PG14 & GPIO 输出 \\
 % =====================================================================
 
 \subsection{测试条件与仪器}
-测试条件：导管竖直固定、风道无人为干预、电源 12\,V。测试仪器：钢尺/卷尺（测高基准）、数字示波器（PWM 波形与 SPI 时序）、数字万用表、上位机串口调试工具。
+测试条件：导管竖直固定、风道无人为干预、电源 12\,V、室温约 25\,$^{\circ}$C。测试仪器：钢尺/卷尺（测高基准）、数字示波器（PWM 波形与 SPI 时序）、数字万用表、上位机串口工具与定量采集脚本（\texttt{tune\_step.ps1}/\texttt{sysid.ps1}，采集 20$\sim$30\,s 自动统计均值/标准差/峰峰/漂移/振荡，并含反馈有效性检查）。
 
 \subsection{测试方案}
 
@@ -533,133 +848,218 @@ RST & PG14 & GPIO 输出 \\
 \begin{itemize}[leftmargin=2em,itemsep=2pt]
   \item \textbf{高度测量}：CALIB 界面将球置于尺子 5/10/15/20/30\,cm，对比读数并观察抖动；判据误差 $\le\pm1$\,cm。
   \item \textbf{高度设定}：CONTROL 界面按键切换 10/15/20\,cm，核对屏显目标值。
-  \item \textbf{定高控制}：分别设 10/15/20\,cm，记录稳定后 30\,s 内高度波动；判据稳态误差 $\le\pm2$\,cm。
+  \item \textbf{定高控制}：分别设 10/15/20\,cm，采集 20$\sim$30\,s，统计稳态均值/标准差/漂移；判据稳态误差 $\le\pm2$\,cm。
   \item \textbf{数据显示}：核对当前高度/目标/PWM/状态四项是否同屏显示。
 \end{itemize}
 
 \subsubsection{进阶与发挥测试}
 \begin{itemize}[leftmargin=2em,itemsep=2pt]
-  \item \textbf{高精度定高}：升 TOF + 弱积分，测任意高度稳态误差 $\le\pm1$\,cm。
+  \item \textbf{高精度定高}：测任意高度稳态误差 $\le\pm1$\,cm（优化中，靠串级/自抗扰压悬停漂移）。
   \item \textbf{动态跟踪}：10$\leftrightarrow$20\,cm 切换，计进入并保持 $\pm1$\,cm 误差带的调节时间，判据 $\le5$\,s 且无明显振荡。
-  \item \textbf{曲线显示}：核对坐标刻度、目标参考线、误差带与双色曲线。
-  \item \textbf{抗扰}：吹/吸管口、扇风、敲管、瞬时遮挡传感器，观察恢复时间。
+  \item \textbf{曲线显示}：核对坐标刻度、目标参考线与双色曲线。
+  \item \textbf{抗扰}（优化中）：吹/吸管口、扇风、敲管、瞬时遮挡传感器，观察恢复时间。
 \end{itemize}
 
 \subsection{测试结果}
 
-\noindent\textbf{当前进度}：平台编译/烧录/串口/测距/显示已真机验证；GC9A01 彩屏点亮；风机能吹动球；定高闭环参数整定进行中。以下数据表待真机回填。
+\noindent\textbf{当前进度}：平台编译/烧录/串口/激光测距/显示/转速捕获已全部真机验证；系统辨识完成；单环基线定高三个高度（10/15/20\,cm）稳态误差均不超过 $\pm2$\,cm。进一步启用转速串级（\texttt{CTRL\_MODE=2}）后，15\,cm 定高标准差降至 $0.51\sim0.59$\,cm、约 $80\%\sim98\%$ 落入 $\pm1$\,cm 带，对供电电压变化的适应性也有改善。动态跟踪初始响应较快（约 2.2\,s 到达邻域），抗强扰功能仍在优化。
+
+系统辨识结果见表~\ref{tab:sysid}。
 
 \begin{table}[H]
 \centering
-\caption{高度测量精度实测}
-\label{tab:meas}
-\begin{tabular}{cccc}
+\caption{系统辨识结果（真机）}
+\label{tab:sysid}
+\begin{tabular}{lcl}
 \toprule
-尺子基准 & 装置读数 & 误差 & 达标 \\
+模型量 & 实测值 & 方法 \\
 \midrule
-5\,cm  & 【待实测】 & & \\
-10\,cm & 【待实测】 & & \\
-20\,cm & 【待实测】 & & \\
-30\,cm & 【待实测】 & & \\
+PWM$\rightarrow$转速 & $R=2.0u-167$（$R^2\approx0.99$） & TACH 阶跃 + 线性拟合 \\
+风机时间常数 $\tau_{fan}$ & $\approx0.49$\,s & 63\% 交叉法（暖机段） \\
+静态增益 & $\approx22.7$\,PWM/cm & 闭环双点交叉 \\
+零静差悬停 $u_{hover}$ & $\approx3430$ & 双点外推 \\
+输入增益 $g$ & $\approx0.333$\,cm/s$^2$/计数 & 阶跃对数衰减反算 \\
+测高噪声底 $\sigma$ & 0.26\,cm & 静止 251 样本 \\
+激光出样率 & $\approx42$\,Hz & 帧率遥测 \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+定高稳态误差实测（同一套保守增益 $K_p12$、$K_i1.1$、$K_d7$）见表~\ref{tab:hold}，三个高度标准差均 $<1$\,cm、无极限环、无需增益调度。
 
 \begin{table}[H]
 \centering
 \caption{定高稳态误差实测}
 \label{tab:hold}
-\begin{tabular}{ccccc}
+\begin{tabular}{cccccc}
 \toprule
-目标 & 稳态均值 & 波动范围 & 误差 & 达标($\le\pm2$\,cm) \\
+目标 & 稳态均值 & 标准差 & 平均误差 & 漂移率 (cm/s) & 达标($\le\pm2$\,cm) \\
 \midrule
-10\,cm & 【待实测】 & & & \\
-15\,cm & 【待实测】 & & & \\
-20\,cm & 【待实测】 & & & \\
+10\,cm & 9.84\,cm & 0.72\,cm & $-0.16$\,cm & $+0.02$ & \checkmark \\
+15\,cm & 15.58\,cm & 0.90\,cm & $+0.58$\,cm & $-0.07$ & \checkmark \\
+20\,cm & 20.12\,cm & 0.98\,cm & $+0.12$\,cm & $+0.07$ & \checkmark \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+三个高度的定高时间序列实测曲线如图~\ref{fig:hold} 所示，可见高度全程落在 $\pm2$\,cm 带内，且大部分时间处于 $\pm1$\,cm 带内。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\linewidth]{figs/hold.pdf}
+\caption{三高度定高实测时间序列（真机采集，叠 $\pm2$/$\pm1$\,cm 误差带）}
+\label{fig:hold}
+\end{figure}
+
+为进一步分析闭环品质，取 15\,cm 定高记录展开高度、控制量与球速三路信号，如图~\ref{fig:multi}。高度稳定在带内时，PWM 仅在悬停点附近小幅调整，而非两段式 bang-bang 的满量程跳变；球速被微分项约束在零附近的窄带内。三路信号表明系统处于小幅连续调节状态，而非依靠剧烈开关维持悬浮。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\linewidth]{figs/multi.pdf}
+\caption{15\,cm 定高多信号实测（高度 / 控制量 / 球速）}
+\label{fig:multi}
+\end{figure}
+
+将三个高度稳态段的误差汇成分布直方图，如图~\ref{fig:hist}。各高度样本多数落入 $\pm1$\,cm 带内，分布以目标为中心、无明显偏置，表明悬停前馈与弱积分已基本抵消重力静差，剩余展宽主要来自悬停点的随机漂移。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\linewidth]{figs/hist.pdf}
+\caption{三高度稳态误差分布直方图（真机采集）}
+\label{fig:hist}
+\end{figure}
+
+从状态空间角度，将 15\,cm 定高数据绘成高度误差—球速相轨迹，如图~\ref{fig:phase}。轨迹整体向原点（目标平衡点）收敛并聚集于 $\pm1$\,cm 带内，未见向外发散的极限环，与第二节式~\eqref{eq:char} 中 $K_d>0$ 可把极点拉入左半平面的结论一致。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.6\linewidth]{figs/phase.pdf}
+\caption{15\,cm 定高相轨迹（误差—球速平面，收敛到平衡点）}
+\label{fig:phase}
+\end{figure}
+
+上述定高数据为各高度单次 20$\sim$30\,s 采样。现有同配置的重启数据有限（例如 10\,cm 两次重启的稳态均值为 9.79 / 9.96\,cm，差约 0.17\,cm），尚不足以完整表征跨次重复性；误差预算中悬停点 $\pm1$\,cm 漂移由辨识双点 PWM 的散布估计，其对长期重复性的影响有待多次重启实验确认，已列入后续测试计划。
+
+\subsubsection{转速串级定高结果}
+在单环基线之上启用转速串级（\texttt{CTRL\_MODE=2}，内环 500\,Hz）并以 α-β 观测器估球速，供电为标称 12\,V 电池经降压模块稳压至约 8.87\,V（取较低工作点以考察电压适应性）。15\,cm 定高下单环与串级的对比见表~\ref{tab:casc}：标准差由单环约 0.90\,cm 降至 $0.51\sim0.59$\,cm，约 $80\%\sim98\%$ 样本落入 $\pm1$\,cm 带、全部落入 $\pm2$\,cm 带，均值居中。内环控制转速（约 6600\,r/min）而非占空比，供电在放电区间波动时悬停点基本不漂移，对电压变化的适应性较单环明显改善。
 
 \begin{table}[H]
 \centering
-\caption{动态跟踪调节时间实测}
-\label{tab:track}
-\begin{tabular}{cccc}
+\caption{单环与转速串级定高对比（15\,cm，真机实测）}
+\label{tab:casc}
+\begin{tabular}{lcc}
 \toprule
-切换 & 调节时间 & 是否振荡 & 达标($\le5$\,s) \\
+指标 & 单环 PWM-PID & 转速串级 \\
 \midrule
-10$\rightarrow$20\,cm & 【待实测】 & & \\
-20$\rightarrow$10\,cm & 【待实测】 & & \\
+稳态标准差 $\sigma$ & $\approx0.90$\,cm & $0.51\sim0.59$\,cm \\
+$\pm1$\,cm 带内占比 & 约 70\% & 80\%$\sim$98\% \\
+$\pm2$\,cm 带内占比 & 100\% & 100\% \\
+内环更新率 & 无内环 & 500\,Hz（$>10\times$ 外环） \\
+对供电电压漂移 & 随电压漂移（控制占空比） & 基本不变（控制转速） \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\noindent 实测波形与照片（PWM 25\,kHz 波形、悬浮全景、CURVE 定高曲线截图）待补：
+动态跟踪实测（10$\rightarrow$20\,cm 阶跃）见表~\ref{tab:track}：约 0.85\,s 开始响应、约 2.2\,s 初次到达目标邻域（$\pm2$\,cm），初始响应较快；但受悬停点慢漂移与约 2\,s 周期的残余振荡影响，进入并持续保持 $\pm1$\,cm 的时间约 9\,s，尚未稳定满足进阶要求的 $\le5$\,s，与 $\pm1$\,cm 高精度同属优化项（待串级在三高度全面定稿后压入 5\,s 内）。
+
+\begin{table}[H]
+\centering
+\caption{动态跟踪调节时间实测（10$\rightarrow$20\,cm）}
+\label{tab:track}
+\begin{tabular}{lcc}
+\toprule
+指标 & 实测 & 说明 \\
+\midrule
+开始响应 & $\approx0.85$\,s & 输出开始拉升 \\
+初到目标邻域（$\pm2$\,cm） & $\approx2.2$\,s & 响应快 \\
+首次进入 $\pm1$\,cm 带 & $\approx5.1$\,s & 边界 \\
+持续保持 $\pm1$\,cm & $\approx9$\,s & 受慢振荡限制，进阶优化中 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+动态跟踪阶跃响应实测曲线如图~\ref{fig:track} 所示。
+
 \begin{figure}[H]
-\figplaceholder[10cm]{此处插入实测照片/截图}
-\caption{实测现场与波形（待补）}
-\label{fig:photo}
+\centering
+\includegraphics[width=0.92\linewidth]{figs/track.pdf}
+\caption{动态跟踪阶跃响应（10$\rightarrow$20\,cm，真机采集，标注初到邻域时刻与残余振荡）}
+\label{fig:track}
 \end{figure}
 
 % =====================================================================
 \section{结论}
 % =====================================================================
 
-本设计以 STM32H750 为主控，针对竖直直筒开环不稳定对象，采用悬停前馈 + PD（球速阻尼）+ 弱积分控制律实现气流悬浮定高，并以 25\,kHz PWM 线性化执行器、以 GC9A01 圆屏双色示波器曲线呈现控制过程。系统就绪时间 $\le2$\,s，结构与算法已具备完成基本要求与冲击进阶要求的条件。
+本设计以 STM32H750 为主控，针对竖直直筒开环不稳定对象，采用悬停前馈 + PD（球速阻尼）+ 弱积分控制律实现气流悬浮定高，以 VL53L0X 激光提供约 42\,Hz 干净反馈、以 25\,kHz PWM 线性化执行器、以 GC9A01 圆屏双色示波器曲线呈现控制过程。系统就绪时间 $\le5$\,s，单环基线定高三个高度稳态误差均 $\le\pm2$\,cm；在此之上以转速串级（外环高度 PID + 500\,Hz 转速内环）与 α-β 速度观测器，进一步将 15\,cm 定高标准差降至 $0.51\sim0.59$\,cm、约 $80\%\sim98\%$ 落入 $\pm1$\,cm 带，并因内环控制转速而非占空比，改善了对电池放电、供电下降的适应性。动态跟踪初始响应较快（约 2.2\,s 到达目标邻域），保持 $\pm1$\,cm 的时间仍受残余慢振荡限制（约 9\,s），与三个高度的 $\pm1$\,cm 全面定稿、抗强扰同列为优化项。
 
 \noindent\textbf{创新点：}
 \begin{enumerate}[leftmargin=2em,itemsep=2pt]
-  \item 定位"升力区间被量化压窄"根因并以 25\,kHz 改造，将控制分辨率提升约 10 倍；
-  \item 事件驱动的前馈+PD 闭环，以测距样本为节拍消除错相锯齿速度，针对双积分对象用球速阻尼镇定；
-  \item 圆屏双色示波器曲线叠加 $\pm1$\,cm 误差带，使达标情况可视化自证。
+  \item \textbf{辨识驱动的参数设计流程}：实测对象输入增益 $g$、风机时间常数 $\tau_{fan}$、PWM--转速关系，以极点配置给出参数量级与整定起点，再由真机按全高度稳定性下调定稿，即先辨识定量级、再实测精调，过程清晰可复现；
+  \item \textbf{转速串级提高电压适应性}：利用球离地转速与电压无关这一特性，把控制量从占空比改为转速，内环以 500\,Hz 跟踪 TACH 转速，使悬停点在电池放电、供电下降时基本不漂移；
+  \item \textbf{α-β 速度观测器}：以匀速模型加测量残差从激光数据中估计球速，速度噪声下降约 37\%，兼顾了裸差分的噪声放大与重滤波的相位滞后；
+  \item \textbf{执行器 25\,kHz 线性化}：定位升力区间被量化压窄的原因并改用风机规格频率，控制分辨率提升约 10 倍；保守增益对 $g(h)$ 随高度的变化不敏感，同一组增益适用于 10/15/20\,cm，无需增益调度；
+  \item \textbf{圆屏双色示波器曲线与在线整定}：红色目标、绿色实际的滚动曲线与控制环解耦、不阻塞闭环；全部参数支持串口在线调整，配合上位机定量采集与反馈看门狗，避免在无效反馈上整定。
 \end{enumerate}
 
 \noindent\textbf{不足与展望：}
 \begin{enumerate}[leftmargin=2em,itemsep=2pt]
-  \item 控制率受超声波限制为 12.5\,Hz，升级 TOF 可提升至 50\,Hz 以增大带宽；
-  \item 风机 TACH 转速线未接入，后续补风速串级闭环可进一步提升抗扰与一致性。
+  \item 转速串级已在 15\,cm 将标准差降至 $0.51\sim0.59$\,cm，但 10/20\,cm 的串级参数尚未同等充分整定，需补齐三个高度的串级数据与多次重启的重复性实验；
+  \item 进入并保持 $\pm1$\,cm 的调节时间约 9\,s（受约 2\,s 周期的残余慢振荡限制），需在串级框架下进一步整定外环带宽与前馈映射，使其降到 $\le5$\,s；
+  \item 抗强扰尚未系统测量，计划用串级内环的转速跟踪配合外环弱积分（或默认关闭、可切换的 LADRC 自抗扰，以扩张状态观测器估计并补偿总扰动）抑制吹气、拨球、遮挡等扰动，并量化恢复时间。
 \end{enumerate}
 
 % =====================================================================
 \section{参考文献}
 % =====================================================================
 \begin{thebibliography}{9}
-\bibitem{rule} 全国大学生电子设计竞赛组委会. 2026 年校赛 B 题 智能球平衡控制装置题目[Z]. 2026.
+\bibitem{rule} 2026 年电子设计竞赛（校内选拔赛）B 题：智能球平衡控制装置题目[Z]. 2026.
 \bibitem{rm} STMicroelectronics. STM32H750 Reference Manual RM0433[Z]. 2023.
-\bibitem{ds} STMicroelectronics. STM32H750xB Datasheet[Z]. 2023.
+\bibitem{tof} STMicroelectronics. VL53L0X Datasheet \& API User Manual[Z]. 2018.
 \bibitem{auto} 胡寿松. 自动控制原理(第 7 版)[M]. 北京: 科学出版社, 2019.
 \bibitem{astrom} Astrom K J, Murray R M. Feedback Systems: An Introduction for Scientists and Engineers[M]. Princeton University Press, 2008.
-\bibitem{gc} Galaxycore. GC9A01 Datasheet[Z].
-\bibitem{srf} HY-SRF05 超声波测距模块数据手册[Z].
+\bibitem{gao} Gao Z. Scaling and Bandwidth-Parameterization Based Controller Tuning[C]. Proc. American Control Conference, 2003.
+\bibitem{gc} Galaxycore. GC9A01 Datasheet[Z]. 2021.
 \end{thebibliography}
 
 % =====================================================================
 \appendix
-\renewcommand{\thesection}{附录\Alph{section}}
 \ctexset{section/number=\Alph{section},section/name={附录,}}
 \section{源代码目录结构}
 \begin{lstlisting}
 01_代码/
-  config.h           # PID/PWM/几何/节拍集中配置
-  Core/main.c        # UI + 控制状态机
-  Drivers/           # 超声波 / GC9A01 / 按键 / UART
-  Algorithm/         # 前馈+PD / 滤波 / 球速估计
+  config.h           # PID/PWM/几何/节拍/辨识模型 集中配置
+  Core/main.c        # UI + 控制状态机 + 预热 + 看门狗
+  Drivers/           # VL53L0X(tof/i2c+ST API) / GC9A01 / 按键 / UART / TIM3测速
+  Algorithm/         # 前馈+PD+弱I / 滤波 / 球速估计 / 抗饱和
 \end{lstlisting}
 
-\section{关键参数表（config.h）}
-\begin{longtable}{lll}
+\section{关键参数表（config.h 整定终值）}
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
 \toprule
 参数 & 取值 & 说明 \\
 \midrule
-\endhead
 PWM\_FULL\_SCALE & 9600 & 25\,kHz 满量程 \\
-PWM\_BASE ($u_{hover}$) & 3800 & 悬停前馈基准 [标定] \\
-BOOST\_PWM & 5800 & 起飞推力 [标定] \\
-$K_p,K_i,K_d$ & 150 / 8 / 120 & PID 起调值 [整定] \\
-积分限幅 & $\pm200$ & 抗饱和 \\
+PWM\_BASE ($u_{hover}$) & 3420 & 悬停前馈（辨识实测） \\
+PWM\_RUN\_MIN / MAX & 3300 / 3668 & 闭环运行限幅（约覆盖 0$\sim$25\,cm 升力区间） \\
+$K_p,K_i,K_d$ & 12 / 1.1 / 7 & 保守增益（通吃 10/15/20\,cm） \\
+球速 EMA $\alpha$ & 0.76 & 压 D 项微分噪声 \\
+PWM 斜率限幅 & 40 /周期 & 匹配风机滞后带宽 \\
+积分限幅 & $\pm200$ & 防积分饱和致风机满转/停转 \\
 误差死区 & $\pm0.3$\,cm & \\
-控制周期 & 80\,ms & 12.5\,Hz \\
+控制周期 & $\approx24$\,ms & 42\,Hz（激光高速模式） \\
+\midrule
+\multicolumn{3}{l}{\emph{转速串级（CTRL\_MODE=2）与观测器}} \\
+悬停转速 $r_{hover}$ & 6600 r/min & 串级外环基准（跨电压稳定） \\
+PWM$\to$转速映射 & $R{=}2.53u{-}3315$ & 当前供电（约 8.87\,V）实测；12\,V 时为 $2.0u{-}167$ \\
+内环 $K_p^r / K_i^r$ & 0.2 / 0.5 & 转速 PI \\
+内环更新率 & 500\,Hz & 独立定时器（TIM4），$>10\times$ 外环 \\
+转速反馈 EMA & 0.8 & 抑制 TACH 量化抖动 \\
+α-β 观测器 $\alpha/\beta$ & 0.35 / 0.05 & 干净球速估计 \\
 \bottomrule
-\end{longtable}
+\end{tabular}
+\end{table}
 
 \end{document}
