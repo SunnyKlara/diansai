@@ -148,6 +148,16 @@ static uint8_t reject_count = 0;
 volatile uint8_t  height_updated = 0;
 volatile uint32_t height_update_tick = 0;
 
+// 原始测距遥测（滤波前的回波距离，cm；用于诊断传感器跳变）
+volatile float g_ultra_raw = -1.0f;
+
+// 跳变剔除阈值(cm),运行时可调('j'命令):按物理极限丢弃假回波(球真实速度上限~150cm/s)
+volatile float g_max_jump = ULTRA_MAX_JUMP_CM;
+
+// 超声波触发周期(ms),运行时可调('p'命令):窄管回波混响需散尽,默认80ms;
+// 对不稳定对象采样率=生命线,可试 50/60ms 看 RAW 是否仍干净.
+volatile uint32_t g_ultra_trig_ms = ULTRA_TRIG_PERIOD_MS;
+
 // 原始测距中值滤波(3点)：剔除HC-SR04偶发尖刺
 static float med_buf[3];
 static uint8_t med_n = 0, med_idx = 0;
@@ -174,8 +184,8 @@ void Ultrasonic_Measure(void)
     static uint32_t measure_tick = 0;
     static uint8_t measure_state = 0; // 0: 空闲, 1: 等待测量完成
 
-    if (measure_state == 0 && uwTick - measure_tick >= ULTRA_TRIG_PERIOD_MS) {
-        // 每 ULTRA_TRIG_PERIOD_MS 触发一次测量（HC-SR04 最小间隔约60ms）
+    if (measure_state == 0 && uwTick - measure_tick >= g_ultra_trig_ms) {
+        // 每 g_ultra_trig_ms 触发一次测量（HC-SR04 最小间隔约60ms，运行时'p'可调）
         Ultrasonic_Trigger();
         measure_state = 1;
         measure_tick = uwTick;
@@ -184,11 +194,12 @@ void Ultrasonic_Measure(void)
         // 检查测量是否完成
         if (capture_state == 2) {
             float raw_distance = Ultrasonic_GetDistance();
+            g_ultra_raw = raw_distance;                   // telemetry: pre-filter raw echo distance
             if (raw_distance > ULTRA_RAW_MIN_CM && raw_distance < ULTRA_RAW_MAX_CM) {
                 raw_distance = Median3(raw_distance);     // 3点中值剔尖刺
                 // 传感器验证：跳变太大则丢弃（连续丢弃达上限后强制接受，防止卡死）
                 if (last_valid_distance > 0 &&
-                    fabsf(raw_distance - last_valid_distance) > ULTRA_MAX_JUMP_CM &&
+                    fabsf(raw_distance - last_valid_distance) > g_max_jump &&
                     reject_count < ULTRA_REJECT_LIMIT) {
                     reject_count++;
                 } else {
@@ -200,6 +211,7 @@ void Ultrasonic_Measure(void)
                     reject_count = 0;
                     height_updated = 1;                   // 通知闭环：有新样本
                     height_update_tick = uwTick;
+                    g_height_sample_count++;              // 帧率遥测(F:)
                 }
             }
             measure_state = 0;

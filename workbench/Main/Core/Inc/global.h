@@ -34,6 +34,7 @@ extern volatile uint8_t  manual_mode; // 1=手动标定直给PWM
 extern volatile uint16_t manual_pwm;  // 手动PWM值
 extern volatile uint8_t  height_updated;     // 新高度样本标志(事件驱动闭环)
 extern volatile uint32_t height_update_tick; // 新样本时间戳
+extern volatile uint32_t g_height_sample_count; // 有效高度样本累计数(实测帧率用)
 
 // PID参数
 extern float Kp;

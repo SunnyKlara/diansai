@@ -108,18 +108,28 @@ static void spi1_tx(const uint8_t *d, uint32_t n)
         for (uint32_t i = 0; i < chunk; i++) {
             g = SPI_WAIT_LIMIT;
             while (!(SPI1->SR & SPI_SR_TXP) && --g) { }
-            if (!g) g_lcd_spi_to++;
+            if (!g) { g_lcd_spi_to++; goto spi_abort; }  /* SPI not draining: bail + recover */
             *(volatile uint8_t *)&SPI1->TXDR = d[i];
         }
         g = SPI_WAIT_LIMIT;
         while (!(SPI1->SR & SPI_SR_EOT) && --g) { }
-        if (!g) g_lcd_spi_to++;
+        if (!g) { g_lcd_spi_to++; goto spi_abort; }
         SPI1->IFCR = SPI_IFCR_EOTC | SPI_IFCR_TXTFC;
         SPI1->CR1 &= ~SPI_CR1_SPE;
 
         d += chunk;
         n -= chunk;
     }
+    return;
+
+    /* Bounded-failure path: if SPI stalls (e.g. flaky dupont leads degrading
+     * over runtime), abort this transfer and re-init SPI1 instead of spinning
+     * SPI_WAIT_LIMIT per byte across a whole frame -> prevents the slow
+     * snowball into an apparent freeze. Worst-case stall is one byte's wait. */
+spi_abort:
+    SPI1->IFCR = SPI_IFCR_EOTC | SPI_IFCR_TXTFC;
+    SPI1->CR1 &= ~SPI_CR1_SPE;
+    spi1_init();
 }
 
 static void wr_cmd(uint8_t c)

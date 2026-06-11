@@ -23,6 +23,10 @@ void Ultrasonic_ResetState(void);   // 重置传感器验证状态（模式切�
  * (0 when stopped, i.e. no pulse within TACH_TIMEOUT_MS). */
 void     Tach_Init(void);
 uint32_t Fan_GetRPM(void);
+
+extern volatile float g_ultra_raw;   /* pre-filter raw echo distance (cm), telemetry */
+extern volatile float g_max_jump;    /* sensor jump-reject threshold (cm), runtime-tunable */
+extern volatile uint32_t g_ultra_trig_ms; /* ultrasonic trigger period (ms), runtime-tunable ('p') */
 #endif /* HCSR04_H_ */
 
 

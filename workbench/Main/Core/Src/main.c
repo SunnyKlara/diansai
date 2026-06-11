@@ -35,6 +35,7 @@
 #include <string.h>
 #include "global.h"
 #include "hc-sr04.h"
+#include "tof.h"
 #include "config.h"
 #include "cn_font.h"
 #include <math.h>
@@ -66,22 +67,22 @@ volatile uint8_t uart_cmd_ready = 0;
 SystemState system_state = SYSTEM_INIT;
 float current_height = 0.0f;       // 当前高度(cm)
 float target_height = TARGET_HEIGHT_DEFAULT; // 目标高度(cm)
+float sp_ramp = 0.0f;              // 软目标(轨迹斜坡)：从当前高度按限速爬向target,避免大误差冲程
 uint16_t pwm_output = 0;           // PWM输出值(0-1000)
 uint8_t control_enabled = 0;       // 控制使能标志（开机在菜单，风扇停）
 
-// UI 界面状态（开机进主页）
-UiState ui_state = UI_HOME;
+// UI 界面状态（开机直接进高度曲线界面——本题唯一需要的界面）
+UiState ui_state = UI_CURVE;
 static uint8_t home_sel = 0;        // 主页光标 0=CONTROL 1=CALIB 2=CURVE
 static uint8_t calib_step_idx = 1;  // 标定步长挡位 0=细 1=中 2=粗
 
-// Height scope -- oscilloscope-style SWEEP rendering. Only the newest column
-// plus a small blanking gap are redrawn and flushed each frame, so the panel
-// never does a full-area refresh (kills flicker) and the slow byte-polled SPI
-// never blocks the control loop with a big burst. State = sweep cursor + last point.
-static uint16_t curve_x = 0;        // sweep column index 0..SCOPE_W-1
-static uint8_t  curve_seeded = 0;   // prev_* valid (no connector across reset/wrap seam)
-static uint8_t  curve_prev_ay = 0;  // previous actual-trace y pixel
-static uint8_t  curve_prev_ty = 0;  // previous target-trace y pixel
+// Height scope -- LEFT-SCROLLING strip chart. Ring buffer of mapped y pixels;
+// newest sample sits at the right edge and the whole trace shifts left each
+// frame (continuous forward push, no sweep/wrap). 2*184 = 368 bytes.
+static uint8_t  curve_ay[SCOPE_W];  // actual-height y-pixel history
+static uint8_t  curve_ty[SCOPE_W];  // target-height y-pixel history
+static uint16_t curve_head = 0;     // index for the next sample
+static uint8_t  curve_count = 0;    // valid samples (<= SCOPE_W)
 static const uint16_t calib_steps[3] = { CALIB_STEP_FINE, CALIB_STEP_MID, CALIB_STEP_COARSE };
 
 // PID参数（数值定义集中在 config.h，这里只做实例化）
@@ -94,6 +95,14 @@ float pid_last_error = 0.0f;
 float pid_integral = 0.0f;
 float pid_filtered_deriv = 0.0f;
 float pid_output = 0.0f;
+// 运行时可调参数(串口在线调,免烧录)：从config取默认值
+float g_ramp_cms    = TARGET_RAMP_CM_S;   // 'r' 目标爬升速率 cm/s
+float g_deriv_alpha = PID_DERIV_ALPHA;    // 'f' 球速EMA系数(越大越平滑越滞后)
+float g_slew        = (float)PWM_SLEW_PER_TICK; // 'l' PWM每拍限幅
+float g_dmax        = D_TERM_CLAMP;        // 'c' D项(Kd*球速)最大PWM贡献钳位,挡假球速踹飞
+float g_pwm_min     = PWM_RUN_MIN;         // 'n' 闭环最低速(怠速地板,风扇不停转)
+float g_pwm_max     = PWM_RUN_MAX;         // 'x' 闭环最高速(推力天花板,防窜顶)
+volatile uint32_t g_height_sample_count = 0; // 有效高度样本累计数(用于实测帧率F:)
 float last_pwm_output = 0.0f;
 uint32_t pid_last_time = 0;        // 供 PID_Control 计算 dt（与控制节拍解耦）
 float pid_last_current = 0.0f;     // 上一次高度（微分基于高度变化，非误差）
@@ -114,6 +123,10 @@ uint8_t preset_idx = 1;            // 默认15cm
 // 手动标定模式（用于测 u_min / u_hover，串口命令控制，无需重新烧录）
 volatile uint8_t  manual_mode = 0; // 1=手动直给PWM，0=自动闭环
 volatile uint16_t manual_pwm  = 0; // 手动模式下的PWM值(0-900)
+
+// 风机预热：闭环从"停机"使能时，先让风机空转 FAN_PREHEAT_MS 越过冷启动死区再投入闭环。
+static uint32_t control_start_tick = 0; // 本次闭环使能(上升沿)的时刻
+static uint8_t  preheating = 0;         // 1=预热中(开环吹怠速,不跑闭环/不积分)
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -241,6 +254,7 @@ void PID_Reset(void)
     last_pwm_output = PWM_BASE;
     pid_last_time = uwTick;
     pid_last_current = current_height;  // 用当前高度，避免PID切入时D项突变
+    sp_ramp = current_height;           // 软目标从当前球位起步,随后按限速爬向target
     // 不重置filter_inited，让高度滤波器保持连续性
     Ultrasonic_ResetState();  // 重置传感器验证状态（模式切换后重新开始验证）
 }
@@ -271,30 +285,10 @@ static void CN_Center(int16_t y, const uint8_t *idx, uint8_t n, uint16_t fg)
     GC9A01_DrawCNStr(LCD_CX - n * 8, y, idx, n, fg, LCD_BLACK, 1);
 }
 
-static uint8_t curve_chrome = 0;   // CURVE static frame/grid drawn flag
-
-// paint one plot column's static background (black + graticule), waveform-free.
-// Vertical-grid columns are full dark-gray; other columns are black with a
-// dark-gray pixel at each horizontal grid line.
-static void Scope_BgCol(int16_t col)
-{
-    int16_t plot_h = SCOPE_Y1 - SCOPE_PLOT_Y0 + 1;
-    uint8_t is_v = 0;
-    for (uint8_t gx = 1; gx < SCOPE_DIV_X; gx++)
-        if (col == SCOPE_X0 + (int16_t)((uint32_t)gx * SCOPE_W / SCOPE_DIV_X)) { is_v = 1; break; }
-    if (is_v) {
-        GC9A01_DrawVLine(col, SCOPE_PLOT_Y0, plot_h, LCD_DGRAY);
-    } else {
-        GC9A01_DrawVLine(col, SCOPE_PLOT_Y0, plot_h, LCD_BLACK);
-        for (uint8_t gy = 1; gy < SCOPE_DIV_Y; gy++) {
-            int16_t y = SCOPE_PLOT_Y0 + (int16_t)((uint32_t)gy * (plot_h - 1) / SCOPE_DIV_Y);
-            GC9A01_DrawPixel(col, y, LCD_DGRAY);
-        }
-    }
-}
+static uint8_t curve_chrome = 0;   // CURVE static frame drawn flag
 
 // redraw static overlays (left cm labels + bottom color-key legend) whose x-range
-// intersects [bx0,bx1]; called after the sweep band so it never leaves text half-erased.
+// intersects [bx0,bx1]; drawn on top of the freshly-cleared plot each frame.
 static void Scope_Overlays(int16_t bx0, int16_t bx1)
 {
     if (!(bx1 < SCOPE_X0 + 2 || bx0 > SCOPE_X0 + 13)) {           // y-axis cm labels (left)
@@ -308,24 +302,28 @@ static void Scope_Overlays(int16_t bx0, int16_t bx1)
         GC9A01_DrawCNStr(SCOPE_X1 - 34, SCOPE_Y1 - 17, LBL_TARGET, 2, LCD_RED, LCD_BLACK, 1);
 }
 
-// CURVE: draw the static frame once (title + border + full graticule + labels/legend).
+// CURVE: draw the static frame once (title + border). Plot interior (grid +
+// scrolling traces + labels/legend) is redrawn every frame by Curve_Render.
 static void Curve_DrawStatic(void)
 {
     GC9A01_Clear(LCD_BLACK);
     CN_Center(4, LBL_CURVE, 4, LCD_WHITE);                              // title in top cap
     GC9A01_DrawRect(SCOPE_X0 - 1, SCOPE_Y0 - 1, SCOPE_W + 2, SCOPE_H + 2, LCD_GRAY);
-    for (int16_t c = SCOPE_X0; c <= SCOPE_X1; c++) Scope_BgCol(c);      // full graticule
-    Scope_Overlays(SCOPE_X0, SCOPE_X1);                                 // all labels + legend
     GC9A01_Flush();
 }
 
-// CURVE: sweep render. Per frame: refresh the small top readout strip only when a
-// value changed, then advance the sweep one column (newest sample + blanking gap),
-// restore any overlay the band touched, and flush just that narrow band.
+// CURVE: left-scrolling strip chart. Newest sample enters at the right edge,
+// the whole trace shifts left. Only horizontal cm grid lines (no vertical lines).
 static void Curve_Render(void)
 {
     char buf[20];
     if (!curve_chrome) { Curve_DrawStatic(); curve_chrome = 1; }
+
+    // push newest sample
+    curve_ay[curve_head] = Curve_MapY(current_height);
+    curve_ty[curve_head] = Curve_MapY(target_height);
+    curve_head = (curve_head + 1) % SCOPE_W;
+    if (curve_count < SCOPE_W) curve_count++;
 
     // ---- top readout strip (redraw + flush only on value change) ----
     static int16_t last_h10 = -30000, last_t10 = -30000;
@@ -336,56 +334,48 @@ static void Curve_Render(void)
         float err = current_height - target_height;
         GC9A01_FillRect(SCOPE_X0, SCOPE_Y0, SCOPE_W, SCOPE_RDH, LCD_BLACK);
         sprintf(buf, "%.1f", current_height);
-        GC9A01_DrawString(SCOPE_X0 + 28, SCOPE_Y0 + 1, buf, 8, LCD_GREEN, LCD_BLACK, 0);
+        GC9A01_DrawString(SCOPE_X0 + 2, SCOPE_Y0 + 1, buf, 16, LCD_GREEN, LCD_BLACK, 0);
         sprintf(buf, "%.1f", target_height);
-        GC9A01_DrawString(LCD_CX - 8, SCOPE_Y0 + 1, buf, 8, LCD_RED, LCD_BLACK, 0);
+        GC9A01_DrawString(LCD_CX - 16, SCOPE_Y0 + 1, buf, 16, LCD_RED, LCD_BLACK, 0);
         sprintf(buf, "e%+.1f", err);
         uint16_t ec = (err > -SCOPE_SPEC_CM && err < SCOPE_SPEC_CM) ? LCD_GREEN : LCD_YELLOW;
-        GC9A01_DrawString(SCOPE_X1 - 44, SCOPE_Y0 + 1, buf, 8, ec, LCD_BLACK, 0);
+        GC9A01_DrawString(SCOPE_X1 - 52, SCOPE_Y0 + 1, buf, 16, ec, LCD_BLACK, 0);
         GC9A01_FlushRegion(SCOPE_X0, SCOPE_Y0, SCOPE_X1, SCOPE_Y0 + SCOPE_RDH - 1);
     }
 
-    // ---- sweep: newest column + blanking gap ahead ----
-    uint8_t ay = Curve_MapY(current_height);
-    uint8_t ty = Curve_MapY(target_height);
-    int16_t x  = SCOPE_X0 + (int16_t)curve_x;
+    // ---- plot: clear, horizontal cm grid (no vertical lines), scrolling traces ----
+    int16_t plot_h = SCOPE_Y1 - SCOPE_PLOT_Y0 + 1;
+    GC9A01_FillRect(SCOPE_X0, SCOPE_PLOT_Y0, SCOPE_W, plot_h, LCD_BLACK);
+    GC9A01_DrawHLine(SCOPE_X0, (int16_t)Curve_MapY(10.0f), SCOPE_W, LCD_DGRAY);
+    GC9A01_DrawHLine(SCOPE_X0, (int16_t)Curve_MapY(20.0f), SCOPE_W, LCD_DGRAY);
+    GC9A01_DrawHLine(SCOPE_X0, (int16_t)Curve_MapY(30.0f), SCOPE_W, LCD_DGRAY);
 
-    Scope_BgCol(x);                                          // background for newest column
-    for (uint8_t k = 1; k <= SCOPE_GAP; k++)                 // blank the erase band ahead (wraps)
-        Scope_BgCol(SCOPE_X0 + (int16_t)((curve_x + k) % SCOPE_W));
-    // sweep cursor at the leading edge of the erase band: makes the new/old boundary unambiguous
-    int16_t cursor = SCOPE_X0 + (int16_t)((curve_x + SCOPE_GAP) % SCOPE_W);
-    GC9A01_DrawVLine(cursor, SCOPE_PLOT_Y0, (int16_t)(SCOPE_Y1 - SCOPE_PLOT_Y0 + 1), LCD_GRAY);
-
-    if (curve_seeded) {                                      // connect within this column
-        uint8_t t0 = (curve_prev_ty < ty) ? curve_prev_ty : ty;
-        uint8_t t1 = (curve_prev_ty < ty) ? ty : curve_prev_ty;
-        GC9A01_DrawVLine(x, t0, (int16_t)(t1 - t0 + 1), LCD_RED);
-        uint8_t a0 = (curve_prev_ay < ay) ? curve_prev_ay : ay;
-        uint8_t a1 = (curve_prev_ay < ay) ? ay : curve_prev_ay;
-        GC9A01_DrawVLine(x, a0, (int16_t)(a1 - a0 + 1), LCD_GREEN);
-    } else {
-        GC9A01_DrawPixel(x, ty, LCD_RED);
-        GC9A01_DrawPixel(x, ay, LCD_GREEN);
-        curve_seeded = 1;
-    }
-    curve_prev_ay = ay; curve_prev_ty = ty;
-
-    // restore overlays the band may have erased, then flush only the band (with wrap)
-    int16_t end_idx = (int16_t)curve_x + SCOPE_GAP;
-    if (end_idx < SCOPE_W) {
-        Scope_Overlays(x, SCOPE_X0 + end_idx);
-        GC9A01_FlushRegion(x, SCOPE_PLOT_Y0, SCOPE_X0 + end_idx, SCOPE_Y1);
-    } else {
-        int16_t wrap = end_idx - SCOPE_W;                    // columns past the right edge
-        Scope_Overlays(x, SCOPE_X1);
-        GC9A01_FlushRegion(x, SCOPE_PLOT_Y0, SCOPE_X1, SCOPE_Y1);
-        Scope_Overlays(SCOPE_X0, SCOPE_X0 + wrap);
-        GC9A01_FlushRegion(SCOPE_X0, SCOPE_PLOT_Y0, SCOPE_X0 + wrap, SCOPE_Y1);
+    // traces: newest at right edge, older to the left (diagonal connect)
+    for (uint16_t k = 1; k < curve_count; k++) {
+        uint16_t i_n = (curve_head - k + SCOPE_W) % SCOPE_W;          // newer point
+        uint16_t i_o = (curve_head - k - 1 + SCOPE_W) % SCOPE_W;      // older point
+        int16_t xn = SCOPE_X1 - (int16_t)(k - 1);
+        int16_t xo = SCOPE_X1 - (int16_t)k;
+        GC9A01_DrawLine(xo, curve_ty[i_o], xn, curve_ty[i_n], LCD_RED);
+        GC9A01_DrawLine(xo, curve_ay[i_o], xn, curve_ay[i_n], LCD_GREEN);
     }
 
-    curve_x++;
-    if (curve_x >= SCOPE_W) { curve_x = 0; curve_seeded = 0; }  // reset connector across seam
+    Scope_Overlays(SCOPE_X0, SCOPE_X1);                              // cm labels + legend
+    GC9A01_FlushRegion(SCOPE_X0, SCOPE_PLOT_Y0, SCOPE_X1, SCOPE_Y1);
+
+    // ---- PWM status strip below the box (redraw + flush only on change) ----
+    static uint16_t last_pwm_disp = 0xFFFF;
+    if (pwm_output != last_pwm_disp) {
+        last_pwm_disp = pwm_output;
+        GC9A01_FillRect(SCOPE_X0, SCOPE_PWM_Y0, SCOPE_W, SCOPE_PWM_H, LCD_BLACK);
+        sprintf(buf, "PWM%5u", (unsigned)pwm_output);                // numeric duty
+        GC9A01_DrawString(LCD_CX - 32, SCOPE_PWM_Y0, buf, 16, LCD_CYAN, LCD_BLACK, 0);
+        int16_t bx = LCD_CX - 55, by = SCOPE_PWM_Y0 + 18, bw = 110, bh = 8;  // duty bar
+        GC9A01_DrawRect(bx, by, bw, bh, LCD_GRAY);
+        int16_t fillw = (int16_t)((uint32_t)(bw - 2) * pwm_output / PWM_FULL_SCALE);
+        if (fillw > 0) GC9A01_FillRect(bx + 1, by + 1, fillw, bh - 2, LCD_CYAN);
+        GC9A01_FlushRegion(SCOPE_X0, SCOPE_PWM_Y0, SCOPE_X1, SCOPE_PWM_Y0 + SCOPE_PWM_H - 1);
+    }
 }
 
 // GC9A01 round-screen UI: four pages. Dirty-tracked full redraw; CURVE partial.
@@ -497,7 +487,7 @@ void UI_OnKey(uint8_t key)
             } else {                             // height curve (closed-loop + plot)
                 ui_state = UI_CURVE;
                 manual_mode = 0; control_enabled = 1; boost_mode = 1;
-                curve_x = 0; curve_seeded = 0; curve_chrome = 0;
+                curve_head = 0; curve_count = 0; curve_chrome = 0;
                 PID_Reset();
             }
         }
@@ -516,11 +506,16 @@ void UI_OnKey(uint8_t key)
             target_height = preset_heights[preset_idx];
             boost_mode = 1;
             PID_Reset();
-        } else if (key == 3) {                           // 返回主页，停机
-            ui_state = UI_HOME;
-            control_enabled = 0; manual_mode = 0;
-            pwm_output = 0;
-            __HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_2, 0);
+        } else if (key == 3) {                           // K3: 启停切换(始终留在曲线界面)
+            if (control_enabled) {
+                control_enabled = 0; manual_mode = 0;
+                pwm_output = 0;
+                __HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_2, 0);
+            } else {
+                control_enabled = 1; manual_mode = 0; boost_mode = 1;
+                curve_head = 0; curve_count = 0; curve_chrome = 0;
+                PID_Reset();
+            }
         }
         break;
 
@@ -557,7 +552,14 @@ void Control_Update(void)
     if (dt < 0.02f) dt = 0.02f;
     if (dt > 0.25f) dt = 0.25f;
 
-    float e = target_height - current_height;
+    // 软目标(轨迹斜坡)：sp_ramp 按 TARGET_RAMP_CM_S 限速爬向 target_height。
+    // 误差始终很小 → u 贴着 u_hover → 球速小 → D项不饱和，从根上避免满管极限环。
+    float step = g_ramp_cms * dt;
+    if (sp_ramp < target_height - step)      sp_ramp += step;
+    else if (sp_ramp > target_height + step) sp_ramp -= step;
+    else                                     sp_ramp = target_height;
+
+    float e = sp_ramp - current_height;
     pid_error = e;
 
     // 误差死区（抑制末端抖动）
@@ -566,29 +568,34 @@ void Control_Update(void)
 
     // 球速=高度变化率，EMA滤波（微分作用在测量上，避免目标突变"微分踢"）
     float raw_v = (current_height - pid_last_current) / dt;
-    pid_filtered_deriv = PID_DERIV_ALPHA * pid_filtered_deriv + (1.0f - PID_DERIV_ALPHA) * raw_v;
+    pid_filtered_deriv = g_deriv_alpha * pid_filtered_deriv + (1.0f - g_deriv_alpha) * raw_v;
 
-    // 前馈 + 比例 + 微分阻尼
-    float u_pd = u_hover + Kp * e_db - Kd * pid_filtered_deriv;
+    // 前馈 + 比例 + 微分阻尼（D项钳位:挡超声波假跳变喂出的非物理球速,防瞬间打满踹飞球）
+    float dterm = -Kd * pid_filtered_deriv;
+    if (dterm >  g_dmax) dterm =  g_dmax;
+    if (dterm < -g_dmax) dterm = -g_dmax;
+    float u_pd = u_hover + Kp * e_db + dterm;
 
-    // 弱积分（条件积分抗饱和：仅当总输出未顶限时才累加）
+    // 弱积分（条件积分抗饱和：仅当总输出未顶限时才累加，限幅按运行速度上下限）
     float u_try = u_pd + Ki * pid_integral;
-    if (u_try < PWM_OUTPUT_MAX && u_try > PWM_OUTPUT_MIN) {
+    if (u_try < g_pwm_max && u_try > g_pwm_min) {
         pid_integral += e_db * dt;
         if (pid_integral >  PID_INTEGRAL_LIMIT) pid_integral =  PID_INTEGRAL_LIMIT;
         if (pid_integral < -PID_INTEGRAL_LIMIT) pid_integral = -PID_INTEGRAL_LIMIT;
     }
 
+    // 输出限速：闭环运行时夹在 [g_pwm_min, g_pwm_max] 内（怠速地板+推力天花板），
+    // 而非物理满量程。怠速地板让风扇常转(免冷启动滞后)，天花板防窜顶。
     float u = u_pd + Ki * pid_integral;
-    if (u > PWM_OUTPUT_MAX) u = PWM_OUTPUT_MAX;
-    if (u < PWM_OUTPUT_MIN) u = PWM_OUTPUT_MIN;
+    if (u > g_pwm_max) u = g_pwm_max;
+    if (u < g_pwm_min) u = g_pwm_min;
     pid_output = u;
 
-    // PWM 斜率限幅（防起飞过冲）
+    // PWM 斜率限幅（防起飞过冲；g_slew 串口可调）
     {
         static float last_u = 0.0f;
-        if (u - last_u >  (float)PWM_SLEW_PER_TICK)      u = last_u + (float)PWM_SLEW_PER_TICK;
-        else if (last_u - u > (float)PWM_SLEW_PER_TICK)  u = last_u - (float)PWM_SLEW_PER_TICK;
+        if (u - last_u >  g_slew)      u = last_u + g_slew;
+        else if (last_u - u > g_slew)  u = last_u - g_slew;
         last_u = u;
     }
 
@@ -610,7 +617,7 @@ void Process_UART_Command(void)
     uart_cmd_ready = 0;
 
     char *c = uart_cmd_buf;
-    char msg[48];
+    char msg[160];
 
     switch (c[0]) {
         case 'm': case 'M': {
@@ -620,7 +627,7 @@ void Process_UART_Command(void)
             manual_pwm  = (uint16_t)v;
             manual_mode = 1;
             control_enabled = 1;
-            ui_state = UI_CALIB;
+            ui_state = UI_CURVE; curve_chrome = 0;
             sprintf(msg, ">>MANUAL PWM=%u\r\n", manual_pwm);
             UART_SendStr(msg);
             break;
@@ -642,7 +649,7 @@ void Process_UART_Command(void)
         case 'a': case 'A':
             manual_mode = 0;
             control_enabled = 1;
-            ui_state = UI_CONTROL;
+            ui_state = UI_CURVE; curve_head = 0; curve_count = 0; curve_chrome = 0;
             boost_mode  = 1;
             PID_Reset();
             UART_SendStr(">>AUTO (closed-loop)\r\n");
@@ -652,7 +659,7 @@ void Process_UART_Command(void)
             if (v < TARGET_HEIGHT_MIN) v = TARGET_HEIGHT_MIN;
             if (v > TARGET_HEIGHT_MAX) v = TARGET_HEIGHT_MAX;
             target_height = v;
-            ui_state = UI_CONTROL;
+            ui_state = UI_CURVE; curve_chrome = 0;
             manual_mode = 0;
             control_enabled = 1;
             boost_mode = 1;
@@ -664,7 +671,7 @@ void Process_UART_Command(void)
         case 's': case 'S':
             control_enabled = 0;
             manual_mode = 0;
-            ui_state = UI_HOME;
+            ui_state = UI_CURVE; curve_chrome = 0;
             pwm_output = 0;
             __HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_2, 0);
             UART_SendStr(">>STOP\r\n");
@@ -672,7 +679,7 @@ void Process_UART_Command(void)
         case 'g': case 'G':
             control_enabled = 1;
             manual_mode = 0;
-            ui_state = UI_CONTROL;
+            ui_state = UI_CURVE; curve_head = 0; curve_count = 0; curve_chrome = 0;
             boost_mode  = 1;
             PID_Reset();
             UART_SendStr(">>GO (closed-loop)\r\n");
@@ -689,8 +696,63 @@ void Process_UART_Command(void)
             sprintf(msg, ">>u_hover=%.0f\r\n", u_hover);
             UART_SendStr(msg);
             break;
+        case 'r': case 'R':            // rNN: 目标爬升速率 cm/s (软启动快慢)
+            g_ramp_cms = (float)atof(c + 1);
+            sprintf(msg, ">>ramp=%.1f cm/s\r\n", g_ramp_cms);
+            UART_SendStr(msg);
+            break;
+        case 'f': case 'F':            // fN.N: 球速EMA系数 0..1 (越大越平滑越滞后)
+            g_deriv_alpha = (float)atof(c + 1);
+            sprintf(msg, ">>deriv_alpha=%.2f\r\n", g_deriv_alpha);
+            UART_SendStr(msg);
+            break;
+        case 'l': case 'L':            // lNNN: PWM每拍限幅 (刹车速度)
+            g_slew = (float)atof(c + 1);
+            sprintf(msg, ">>slew=%.0f\r\n", g_slew);
+            UART_SendStr(msg);
+            break;
+        case 'c': case 'C':            // cNNNN: D项输出钳位(|Kd*球速|最大PWM贡献)
+            g_dmax = (float)atof(c + 1);
+            sprintf(msg, ">>dclamp=%.0f\r\n", g_dmax);
+            UART_SendStr(msg);
+            break;
+        case 'j': case 'J':            // jN.N: 测高跳变剔除阈值cm(物理护栏,挡假回波)
+            g_max_jump = (float)atof(c + 1);
+            sprintf(msg, ">>maxjump=%.1f\r\n", g_max_jump);
+            UART_SendStr(msg);
+            break;
+        case 'p': case 'P':            // pNN: 超声波触发周期ms(采样率,默认80;试50/60看RAW是否仍干净)
+            {
+                int v = atoi(c + 1);
+                if (v < 30) v = 30;            // 低于混响散尽极限会冻结读数
+                if (v > 200) v = 200;
+                g_ultra_trig_ms = (uint32_t)v;
+            }
+            sprintf(msg, ">>trig_period=%lu ms\r\n", (unsigned long)g_ultra_trig_ms);
+            UART_SendStr(msg);
+            break;
+        case 'n': case 'N':            // nNNNN: 闭环最低速(怠速地板,风扇不停转)
+            g_pwm_min = (float)atof(c + 1);
+            if (g_pwm_min < 0) g_pwm_min = 0;
+            if (g_pwm_min > PWM_OUTPUT_MAX) g_pwm_min = PWM_OUTPUT_MAX;
+            sprintf(msg, ">>pwm_min=%.0f\r\n", g_pwm_min);
+            UART_SendStr(msg);
+            break;
+        case 'x': case 'X':            // xNNNN: 闭环最高速(推力天花板,防窜顶)
+            g_pwm_max = (float)atof(c + 1);
+            if (g_pwm_max > PWM_OUTPUT_MAX) g_pwm_max = PWM_OUTPUT_MAX;
+            if (g_pwm_max < g_pwm_min) g_pwm_max = g_pwm_min;
+            sprintf(msg, ">>pwm_max=%.0f\r\n", g_pwm_max);
+            UART_SendStr(msg);
+            break;
+        case 'q': case 'Q':            // q: 打印当前全部可调参数
+            sprintf(msg, ">>PARAMS uh=%.0f kp=%.1f ki=%.1f kd=%.1f ramp=%.1f a=%.2f slew=%.0f dcl=%.0f min=%.0f max=%.0f jmp=%.1f trig=%lums T=%.1f\r\n",
+                    u_hover, Kp, Ki, Kd, g_ramp_cms, g_deriv_alpha, g_slew, g_dmax, g_pwm_min, g_pwm_max, g_max_jump,
+                    (unsigned long)g_ultra_trig_ms, target_height);
+            UART_SendStr(msg);
+            break;
         default:
-            UART_SendStr(">>? cmd: mNNN /+/-/a/tNN/s/g\r\n");
+            UART_SendStr(">>? cmd: mNNN /+/-/a/tNN/s/g/nNNNN(min)/xNNNN(max)\r\n");
             break;
     }
 }
@@ -741,7 +803,11 @@ int main(void)
   MX_TIM8_Init();
   /* USER CODE BEGIN 2 */
   HAL_UART_Receive_IT(&huart1, (uint8_t *)&uart_rx_byte, 1);
+#if HEIGHT_SENSOR_TOF
+  Tof_Init();                  // VL53L0X laser: bit-bang I2C (PD11/PD12), continuous ranging
+#else
   HAL_TIM_IC_Start_IT(&htim4, TIM_CHANNEL_1);
+#endif
   HAL_TIM_PWM_Start(&htim8,TIM_CHANNEL_2);
   GC9A01_Init();
   Tach_Init();                 // fan tach: TIM3_CH1 input capture on PC6
@@ -751,10 +817,17 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   static uint32_t display_tick = 0;
   static uint32_t serial_tick  = 0;
+  static uint32_t fps_tick     = 0;
+  static uint32_t fps_last_cnt = 0;
+  static float    g_height_fps = 0.0f;
   while (1)
   {
-    // 1. 超声波测量（非阻塞，约80ms一次，内部更新 current_height）
-    Ultrasonic_Measure();
+    // 1. 测高（非阻塞，内部更新 current_height + height_updated）
+#if HEIGHT_SENSOR_TOF
+    Tof_Measure();             // VL53L0X laser, continuous mode (~20-33ms)
+#else
+    Ultrasonic_Measure();      // HC-SR04 ultrasonic (~80ms)
+#endif
 
     // 2. 按键处理（内部20ms消抖）+ UI 分发
     KEY_Process();
@@ -769,16 +842,47 @@ int main(void)
     // 3. 控制环：事件驱动——每次有"新高度样本"到达就跑一次闭环。
     //    这样每步控制都用最新数据、dt 与采样真实间隔一致，球速(D项)估计干净，
     //    不会因固定节拍与传感器节拍错相而产生锯齿速度（不稳定对象靠D项稳定，这点关键）。
+    static uint8_t ctrl_en_prev = 0;       // 上一拍 control_enabled，用于检测使能上升沿
     if (!control_enabled) {
         height_updated = 0;            // 停机丢弃挂起样本
-    } else if (manual_mode) {
-        // 手动标定模式：直给PWM，跳过闭环（用于测 u_min / u_hover）
-        pwm_output = manual_pwm;
-        __HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_2, manual_pwm);
-        height_updated = 0;
-    } else if (height_updated) {
-        height_updated = 0;
-        Control_Update();
+        ctrl_en_prev = 0;              // 复位边沿：下次从停机使能时重新预热
+    } else {
+        // 使能上升沿（从停机/复位态启动）：先预热风机。手动模式风机本就在转，免预热。
+        if (!ctrl_en_prev) {
+            ctrl_en_prev = 1;
+            control_start_tick = uwTick;
+            preheating = manual_mode ? 0 : 1;
+        }
+
+        if (manual_mode) {
+            // 手动标定模式：直给PWM，跳过闭环（用于测 u_min / u_hover）
+            pwm_output = manual_pwm;
+            __HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_2, manual_pwm);
+            height_updated = 0;
+        } else if (preheating) {
+            // 预热期：风机空转在怠速地板(g_pwm_min)，不跑闭环、不积分，越过冷启动死区。
+            // D项基准跟随当前球位，投入闭环时不会因预热段位移喷出假球速。
+            if ((uint32_t)(uwTick - control_start_tick) < FAN_PREHEAT_MS) {
+                pwm_output = (uint16_t)g_pwm_min;
+                __HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_2, pwm_output);
+                height_updated = 0;
+                pid_last_current = current_height;
+            } else {
+                preheating = 0;
+                PID_Reset();           // 预热结束，以当前球位为基准干净投入闭环
+            }
+        } else if (height_updated) {
+            height_updated = 0;
+            Control_Update();
+        } else if ((uint32_t)(uwTick - height_update_tick) > CTRL_FEEDBACK_TIMEOUT_MS) {
+            // 反馈看门狗：闭环已使能但长时间收不到新有效样本（激光拒帧/卡死）。
+            // 不再让 PWM 静默僵在预热/旧值（那会把人骗去"调PID"），改为保持开环
+            // 悬停前馈 u_hover —— 执行器进入已知安全态；同时重置D项基准，使样本
+            // 恢复时不会因跨停滞段的大位移喷出假球速。心跳 A: 字段会同步飙升。
+            pwm_output = (uint16_t)u_hover;
+            __HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_2, pwm_output);
+            pid_last_current = current_height;
+        }
     }
 
     // 4. OLED显示更新
@@ -788,13 +892,36 @@ int main(void)
     }
 
     // 5. 串口心跳（喂给上位机/AI 的真机回报数据）
+    // 实测高度采样帧率（每秒统计一次有效样本数 → F: Hz）。这是判断激光是否真跑到
+    // 50Hz、还是被显示全刷/位带I2C拖慢的直接依据。
+    if ((uint32_t)(uwTick - fps_tick) >= 1000u) {
+        uint32_t cnt = g_height_sample_count;
+        g_height_fps = (float)(cnt - fps_last_cnt) * 1000.0f / (float)(uwTick - fps_tick);
+        fps_last_cnt = cnt;
+        fps_tick = uwTick;
+    }
     if (uwTick - serial_tick >= SERIAL_PERIOD_MS) {
         serial_tick = uwTick;
-        char sbuf[96];
-        int len = sprintf(sbuf, "H:%.1f T:%.1f E:%.1f P:%d M:%d D:%.1f R:%lu\r\n",
+        char sbuf[160];
+#if HEIGHT_SENSOR_TOF
+        float raw_cm = (g_tof_raw_mm < 0.0f) ? -1.0f : g_tof_raw_mm * 0.1f;  // mm->cm
+#else
+        float raw_cm = g_ultra_raw;
+#endif
+        int len = sprintf(sbuf, "H:%.1f T:%.1f E:%.1f P:%d M:%d D:%.1f R:%lu RAW:%.1f A:%lu F:%.1f PRE:%u"
+#if HEIGHT_SENSOR_TOF
+                          " TID:0x%02X TIN:%u TST:%u"
+#endif
+                          "\r\n",
                           current_height, target_height, pid_error,
                           pwm_output, boost_mode, pid_filtered_deriv,
-                          (unsigned long)Fan_GetRPM());
+                          (unsigned long)Fan_GetRPM(), raw_cm,
+                          (unsigned long)(uwTick - height_update_tick), g_height_fps,
+                          (unsigned)preheating
+#if HEIGHT_SENSOR_TOF
+                          , g_tof_id, g_tof_init, g_tof_status
+#endif
+                          );
         if (len > 0)
             HAL_UART_Transmit(&huart1, (uint8_t *)sbuf, (uint16_t)len, 50);
     }
