@@ -126,15 +126,14 @@
 /* ======================= PID 参数 [标定] ======================= */
 /* 不稳定直筒(双积分)对象：u = u_hover + Kp*e - Kd*球速 + Ki*积分。
  * D项(速度阻尼)是稳定关键。下列为起调值，务必用串口 kp/ki/kd/uh 在线整定。*/
-/* [辨识+计算+验证 2026-06-11] 极点配置算出并真机验证的外环增益。
- * sysid 实测 g≈0.333 cm/s²/计数(阶跃对数衰减法);设计 ζ=0.75 ts=2s → wn=2.67。
- *   Kp=wn²/g≈21、Kd=2ζwn/g≈12、f(球速EMA)角频≈5wn→0.76、l≈40、ki 弱积分≈1.1。
- * 真机验证 @15cm: std≈0.89 ptp≈3.2 D std≈3.9(比 kd6/f0.4 的 D std5.4 更干净)。pidcalc.ps1 可重算。
- * 残余 0.13cm/s 慢漂 + 2s振荡(amp~1.3)=悬停点漂移,外环增益治不了→需串级,但当前42Hz同速串级
- *   结构不成立(内环未比外环快,实测越开越差 std0.89→1.6)。冲±1cm 需先把内环解耦到独立高速定时器。 */
-#define PID_KP_DEFAULT        21.0f
+/* [辨识+计算+三高度验证 2026-06-11] 通吃 10/15/20cm 的保守基线。
+ * pidcalc 算出 kp21/kd12(ζ0.75 ts2s, g0.333@15cm),但实测对象增益随高度变(20cm更陡):
+ *   kp21/kd12 在 10/15cm std0.94 好,到 20cm 极限环 std2.82(PWM两轨bang-bang)。
+ * 降到 kp12/kd7 后三高度全稳:10cm std0.73 / 15cm std0.87 / 20cm std0.97,均±2cm内,无需增益调度。
+ * 即"略低于极点配置值的保守增益"对 g 的高度变化更鲁棒。冲±1cm 仍需内环高速定时器串级。 */
+#define PID_KP_DEFAULT        12.0f
 #define PID_KI_DEFAULT        1.1f
-#define PID_KD_DEFAULT        12.0f
+#define PID_KD_DEFAULT        7.0f
 #define PID_DERIV_ALPHA       0.76f   /* 球速EMA系数:filt=a*filt_prev+(1-a)*raw。[pidcalc算出=0.76,角频≈5wn]
                                        * 0=裸微分(噪声主导);0.76 真机验证把 D std 5.4→3.9。串口 'f' 在线调。 */
 #define PID_ERROR_DEADBAND    0.3f    /* 误差死区±cm */
