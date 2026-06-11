@@ -128,3 +128,10 @@ _archive/跨赛事方法论/scaffold/scaffold_test_out/
 
 # ---------- 误放入的仓库自身重复克隆（与根仓库同源同 HEAD） ----------
 /26/
+
+# ---------- workbench 第三方参考工程（学习用，体积大+含编译产物，不入库；保留 README 记录出处） ----------
+workbench/_参考工程/15.VL53L0X激光测距实验/
+workbench/_参考工程/9-4 串口收发文本数据包/
+# 兼容历史误放在 workbench 根目录的同名参考工程
+workbench/15.VL53L0X激光测距实验/
+workbench/9-4 串口收发文本数据包/
