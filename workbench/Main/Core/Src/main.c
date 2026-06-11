@@ -102,6 +102,7 @@ float g_slew        = (float)PWM_SLEW_PER_TICK; // 'l' PWM每拍限幅
 float g_dmax        = D_TERM_CLAMP;        // 'c' D项(Kd*球速)最大PWM贡献钳位,挡假球速踹飞
 float g_pwm_min     = PWM_RUN_MIN;         // 'n' 闭环最低速(怠速地板,风扇不停转)
 float g_pwm_max     = PWM_RUN_MAX;         // 'x' 闭环最高速(推力天花板,防窜顶)
+volatile uint32_t g_serial_ms = SERIAL_PERIOD_MS; // 'w' 串口心跳周期ms(默认80=12.5Hz;'w20'=50Hz快记录,采全分析数据)
 volatile uint32_t g_height_sample_count = 0; // 有效高度样本累计数(用于实测帧率F:)
 
 // 串级内环(转速闭环)：默认关闭=单环已验证行为；'y1'打开后内环用tach把风机线性化
@@ -694,9 +695,19 @@ void Control_Update(void)
             obs_x = current_height; obs_v = 0.0f;               // 观测器跟随,避免交接时喷假速度
             pid_last_current = current_height;
             pid_output = rpm_setpoint;
+            sp_ramp = current_height;        // 软目标跟随球位,boost交还后从此平滑爬向target
             boost_mode = 1;
             return;
         }
+        // 轨迹斜坡:软目标 sp_ramp 按限速(g_ramp_cms)爬向 target_height。大幅切目标
+        // (如 20->10)时球贴平滑轨迹运动,不会失速冲过头掉到底 -> 动态跟踪可控、能入±带。
+        {
+            float ramp_step = g_ramp_cms * dt;
+            if (sp_ramp < target_height - ramp_step)      sp_ramp += ramp_step;
+            else if (sp_ramp > target_height + ramp_step) sp_ramp -= ramp_step;
+            else                                          sp_ramp = target_height;
+        }
+        e = sp_ramp - current_height;        // 控制误差改用软目标(平滑轨迹)
         float e_db = e;
         if (e_db > -g_deadband && e_db < g_deadband) e_db = 0.0f;
         // α-β 速度观测器(与 CTRL_MODE==0 同一套,匀速模型+测量残差)
@@ -860,12 +871,17 @@ static void Exec_Cmd(char *c)
             float v = (float)atof(c + 1);
             if (v < TARGET_HEIGHT_MIN) v = TARGET_HEIGHT_MIN;
             if (v > TARGET_HEIGHT_MAX) v = TARGET_HEIGHT_MAX;
+            uint8_t t_was_running = (control_enabled && !manual_mode); // 运行中切目标?
             target_height = v;
             ui_state = UI_CURVE; curve_chrome = 0;
             manual_mode = 0;
             control_enabled = 1;
-            boost_mode = 1;
-            PID_Reset();
+            if (!t_was_running) {       // 仅从停机/手动启动:重置+boost起飞
+                boost_mode = 1;
+                PID_Reset();
+            }
+            // 运行中切目标:保留积分/速度状态,靠轨迹斜坡(sp_ramp)平滑过渡,不清积分不boost
+            // -> 避免切换瞬间球失去积分补偿先下沉,显著缩短动态跟踪调节时间。
             sprintf(msg, ">>TARGET=%.1f\r\n", target_height);
             UART_SendStr(msg);
             break;
@@ -898,9 +914,25 @@ static void Exec_Cmd(char *c)
             sprintf(msg, ">>u_hover=%.0f\r\n", u_hover);
             UART_SendStr(msg);
             break;
+        case 'r': case 'R':            // rN.N: 目标轨迹斜坡速率 cm/s(动态跟踪平滑度,越小越缓不过冲)
+            g_ramp_cms = (float)atof(c + 1);
+            sprintf(msg, ">>ramp=%.1f\r\n", g_ramp_cms);
+            UART_SendStr(msg);
+            break;
         case 'l': case 'L':            // lNNN: PWM每拍限幅 (刹车速度)
             g_slew = (float)atof(c + 1);
             sprintf(msg, ">>slew=%.0f\r\n", g_slew);
+            UART_SendStr(msg);
+            break;
+        case 'w': case 'W':            // wNN: 串口心跳周期ms(采样率)。w20=50Hz快记录(看清内环动态),w80=默认12.5Hz省带宽
+            {
+                int v = atoi(c + 1);
+                if (v < 10)  v = 10;          // 115200@~130B/帧 极限~88帧/s,10ms会丢帧
+                if (v > 500) v = 500;
+                g_serial_ms = (uint32_t)v;
+            }
+            sprintf(msg, ">>serial_ms=%lu (%.1f Hz)\r\n",
+                    (unsigned long)g_serial_ms, 1000.0f / (float)g_serial_ms);
             UART_SendStr(msg);
             break;
         case 'f': case 'F':            // fN.N: 球速EMA系数(0=裸微分 ->0.95=重滤波)。降D项噪声,增相位滞后
@@ -1002,7 +1034,7 @@ static void Exec_Cmd(char *c)
             UART_SendStr(msg);
             break;
         default:
-            UART_SendStr(">>? cmd: m/+/-/a/tNN/s/g/kpNN/kiNN/kdNN/uhNNNN/lNNN/nNNNN/xNNNN/y(cascade)/q\r\n");
+            UART_SendStr(">>? cmd: m/+/-/a/tNN/s/g/kpNN/kiNN/kdNN/uhNNNN/lNNN/wNN/nNNNN/xNNNN/y(cascade)/q\r\n");
             break;
     }
 }
@@ -1176,7 +1208,11 @@ int main(void)
     }
 
     // 4. OLED显示更新
-    if (uwTick - display_tick >= DISPLAY_PERIOD_MS) {
+    // 快记录模式(g_serial_ms<=40,即>=25Hz串口)下,屏幕示波器与PC采集冗余,且其~60ms
+    // 阻塞式整区刷新(184x152@7.5MHz SPI无DMA)会周期性卡住主循环、压低遥测帧率。
+    // 此时把刷新降到500ms,让50Hz遥测不被显示抢走节拍;正常模式仍用200ms。
+    uint32_t disp_ms = (g_serial_ms <= 40u) ? 500u : (uint32_t)DISPLAY_PERIOD_MS;
+    if ((uint32_t)(uwTick - display_tick) >= disp_ms) {
         display_tick = uwTick;
         OLED_Update();
     }
@@ -1190,7 +1226,7 @@ int main(void)
         fps_last_cnt = cnt;
         fps_tick = uwTick;
     }
-    if (uwTick - serial_tick >= SERIAL_PERIOD_MS) {
+    if (uwTick - serial_tick >= g_serial_ms) {
         serial_tick = uwTick;
         char sbuf[220];
 #if HEIGHT_SENSOR_TOF

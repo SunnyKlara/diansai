@@ -11,7 +11,7 @@
 #     amplitude, and RPM(tach) statistics -- the levers that matter once the
 #     single-loop hover is "good enough" and we chase the last +/-1cm.
 param(
-  [string]$Port = "COM8",
+  [string]$Port = "COM9",
   [int]$Baud = 115200,
   [string]$Setup = "",        # semicolon-separated param commands, sent once while stopped
   [int]$PreSpin = 1800,       # manual PWM to pre-spin the fan (eliminate cold-start), 0 = skip
@@ -20,6 +20,7 @@ param(
   [int]$CaptureS = 30,        # capture seconds after engage (longer = better stats)
   [string]$CsvOut = "",       # CSV path; "" => auto tools/logs/run_<target>_<stamp>.csv
   [double]$TailFrac = 0.5,    # fraction of the run (from the end) treated as steady-state
+  [int]$SerialMs = 0,         # >0 => set heartbeat period (ms) via 'w' before capture (e.g. 20=50Hz fast log); 0 = leave firmware default
   [switch]$NoStop             # leave loop running after capture (default: stop)
 )
 
@@ -33,6 +34,7 @@ function Send($c){ $sp.Write($c + [char]10); Start-Sleep -Milliseconds 120 }
 Start-Sleep -Milliseconds 150
 Send "s"
 if ($Setup -ne "") { foreach($c in $Setup.Split(';')){ if($c.Trim() -ne ""){ Send $c.Trim() } } }
+if ($SerialMs -gt 0) { Send ("w" + $SerialMs) }   # bump heartbeat rate for richer/faster capture
 if ($PreSpin -gt 0) { Send ("m" + $PreSpin); Start-Sleep -Milliseconds $PreSpinMs }
 
 # --- engage closed loop, timestamp every arriving heartbeat line from t=0 ---
@@ -49,35 +51,69 @@ while ($sw.Elapsed.TotalSeconds -lt $CaptureS) {
   Start-Sleep -Milliseconds 10
 }
 if (-not $NoStop) { $sp.Write("s" + [char]10) }
+if ($SerialMs -gt 0) { Start-Sleep -Milliseconds 60; $sp.Write("w80" + [char]10) }  # restore default heartbeat
 Start-Sleep -Milliseconds 100
 $sp.Close()
 
 $acks = $lines | Where-Object { $_.txt -match '>>' }
 Write-Output ("ACKS: " + ((($acks | Select-Object -Last 5) | ForEach-Object { $_.txt }) -join '  |  '))
 
-# --- parse telemetry: H T E P M D R RAW A (CAS/RS optional, ignored here) ---
-$T_ms=@(); $H=@(); $P=@(); $D=@(); $R=@(); $RAW=@(); $A=@()
-$rx = 'H:(-?[\d.]+) T:[-\d.]+ E:(-?[\d.]+) P:(\d+) M:\d+ D:(-?[\d.]+) R:(\d+) RAW:(-?[\d.]+) A:(\d+)'
+# --- parse telemetry: GENERIC key:value capture, keeps EVERY field the firmware sends ---
+# Firmware heartbeat: H T E P M D R RAW A F PRE CAS RS CM FH [TID TIN TST]
+# Old parser only kept 8 of these and silently dropped F/RS/FH/CM -> half-blind on
+# cascade + laser-rate. Now we capture all tokens generically into per-sample maps.
+# Canonical analysis arrays (consumed by stats below + analyze.py/plot scripts) are
+# filled from the map so downstream column names (H_cm,D_cms,RPM,...) stay stable.
+$samples = New-Object System.Collections.ArrayList   # @{ t=ms ; map=@{KEY=val} }
+$tok = [regex]'([A-Za-z]+):(0x[0-9A-Fa-f]+|-?[\d.]+)'
 foreach($rec in $lines){
-  if($rec.txt -match $rx){
-    $T_ms += $rec.ms; $H += [double]$matches[1]; $P += [double]$matches[3]
-    $D += [double]$matches[4]; $R += [double]$matches[5]; $RAW += [double]$matches[6]; $A += [double]$matches[7]
-  }
+  if($rec.txt -notmatch 'H:' -or $rec.txt -notmatch 'P:'){ continue }  # skip ACKs/garbage
+  $m = [ordered]@{}
+  foreach($mm in $tok.Matches($rec.txt)){ $m[$mm.Groups[1].Value] = $mm.Groups[2].Value }
+  if($m.Contains('H')){ [void]$samples.Add(@{ t = $rec.ms; map = $m }) }
 }
-$n=$H.Count
+$n = $samples.Count
 
-# --- dump per-sample CSV for offline analysis ---
+function Col($key){ # numeric column from sample maps; missing -> NaN (0x.. hex parsed too)
+  $a = New-Object 'System.Collections.Generic.List[double]'
+  foreach($s in $samples){
+    if($s.map.Contains($key)){
+      $v = $s.map[$key]
+      if($v -like '0x*'){ [void]$a.Add([Convert]::ToInt64($v,16)) }
+      else { [void]$a.Add([double]$v) }
+    } else { [void]$a.Add([double]::NaN) }
+  }
+  return $a
+}
+$T_ms = @($samples | ForEach-Object { $_.t })
+$H = Col 'H'; $P = Col 'P'; $D = Col 'D'; $R = Col 'R'; $RAW = Col 'RAW'; $A = Col 'A'
+$RS = Col 'RS'; $Fhz = Col 'F'   # rpm setpoint (cascade) + measured sample rate (laser)
+
+# --- dump per-sample CSV: canonical columns FIRST (back-compat with analyze.py /
+#     plot_report_figs.py), then EVERY remaining field discovered in the stream. ---
 if ($CsvOut -eq "") {
   $logdir = Join-Path $PSScriptRoot "logs"
   if (-not (Test-Path $logdir)) { New-Item -ItemType Directory -Path $logdir | Out-Null }
   $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
   $CsvOut = Join-Path $logdir ("run_t{0:N0}_{1}.csv" -f $Target, $stamp)
 }
+# canonical name map (firmware key -> CSV header expected by existing tools)
+$canon = [ordered]@{ H='H_cm'; T='T_cm'; E='E_cm'; P='P'; M='M'; D='D_cms'; R='RPM'; RAW='RAW_cm'; A='age_ms' }
+# discover any extra keys present in the stream but not in $canon, keep stable order
+$extra = New-Object System.Collections.ArrayList
+foreach($s in $samples){ foreach($k in $s.map.Keys){ if(-not $canon.Contains($k) -and -not $extra.Contains($k)){ [void]$extra.Add($k) } } }
+$keyOrder = @($canon.Keys) + @($extra)              # firmware keys in CSV column order
+$hdr = @('t_ms') + @($canon.Values) + @($extra)     # CSV header row
 $csv = New-Object System.Collections.ArrayList
-[void]$csv.Add("t_ms,H_cm,P,D_cms,RPM,RAW_cm,age_ms")
-for($i=0;$i -lt $n;$i++){ [void]$csv.Add(("{0},{1},{2},{3},{4},{5},{6}" -f $T_ms[$i],$H[$i],$P[$i],$D[$i],$R[$i],$RAW[$i],$A[$i])) }
+[void]$csv.Add(($hdr -join ','))
+foreach($s in $samples){
+  $row = New-Object System.Collections.ArrayList
+  [void]$row.Add($s.t)
+  foreach($k in $keyOrder){ [void]$row.Add( ($(if($s.map.Contains($k)){ $s.map[$k] } else { '' })) ) }
+  [void]$csv.Add(($row -join ','))
+}
 [System.IO.File]::WriteAllLines($CsvOut, $csv)
-Write-Output ("=== parsed=$n  target=$Target  csv=$CsvOut ===")
+Write-Output ("=== parsed=$n  fields=[" + (($keyOrder) -join ' ') + "]  target=$Target  csv=$CsvOut ===")
 
 # Auto-run the offline analyzer -> writes <csv>.summary.txt (clean, read via read_file).
 # This is the authoritative metrics output; the stdout below can be ignored if it wraps.
@@ -152,3 +188,29 @@ if(($tailR | Measure-Object -Maximum).Maximum -gt 0){
 } else { Write-Output "RPM tail: tach reads 0 (check PC6 wiring before enabling cascade)" }
 
 Write-Output ("P range: {0}..{1}   RPM range: {2}..{3}" -f ($P|Measure-Object -Minimum).Minimum,($P|Measure-Object -Maximum).Maximum,($R|Measure-Object -Minimum).Minimum,($R|Measure-Object -Maximum).Maximum)
+
+# --- NEW: cascade inner-loop tracking (was invisible before full-field capture) ---
+# RS = rpm_setpoint (outer loop's demand), R = measured rpm. In CTRL_MODE=2 the inner
+# loop should drive (RS - R) -> 0; a large persistent gap means the PWM->RPM feedforward
+# (ya/yb) is mis-calibrated or the inner PI (yp/yi) is too soft. This is the lever the
+# old 8-field parser threw away.
+$tailRS=$RS[$k0..($n-1)]
+$rsValid = ($tailRS | Where-Object { -not [double]::IsNaN($_) -and $_ -gt 0 })
+if($rsValid.Count -gt 0){
+  $rsav=($rsValid|Measure-Object -Average).Average
+  $gap = $rsav - $rav    # setpoint minus measured (rav from RPM tail above)
+  Write-Output ("cascade: rpm_sp avg={0:N0}  rpm_meas avg={1:N0}  inner-loop gap={2:N0} rpm" -f $rsav,$rav,$gap)
+  if([math]::Abs($gap) -gt 150){
+    Write-Output ("  -> INNER LOOP not tracking (gap {0:N0} rpm): re-cal PWM->RPM (ya/yb) or stiffen inner PI (yp/yi)" -f $gap)
+  }
+}
+
+# --- NEW: measured sample rate (F:) -- is the laser actually running fast enough? ---
+# If you ran with -SerialMs 20 expecting 50Hz logging but F: reports ~42, the ToF/loop
+# (not the UART) is the bottleneck; if F: is high but few rows landed, the UART/host is.
+$Fv = $Fhz | Where-Object { -not [double]::IsNaN($_) -and $_ -gt 0 }
+if($Fv.Count -gt 0){
+  $fav=($Fv|Measure-Object -Average).Average
+  $loghz = if($durS -gt 0){ $tail.Count/$durS } else { 0 }
+  Write-Output ("sample rate: firmware F avg={0:N1} Hz   logged rows ~{1:N1} Hz over tail" -f $fav,$loghz)
+}

@@ -147,12 +147,12 @@
  *   kp21/kd12 在 10/15cm std0.94 好,到 20cm 极限环 std2.82(PWM两轨bang-bang)。
  * 降到 kp12/kd7 后三高度全稳:10cm std0.73 / 15cm std0.87 / 20cm std0.97,均±2cm内,无需增益调度。
  * 即"略低于极点配置值的保守增益"对 g 的高度变化更鲁棒。冲±1cm 仍需内环高速定时器串级。 */
-#define PID_KP_DEFAULT        8.0f    /* [达标2026-06-12 串级mode2开机默认配方] 外环高度PID */
-#define PID_KI_DEFAULT        0.6f
-#define PID_KD_DEFAULT        12.0f
+#define PID_KP_DEFAULT        12.0f   /* [达标原始配方-鲁棒] 高增益无死区,中心精确居中、比kp8/d0.6可复现 */
+#define PID_KI_DEFAULT        1.5f
+#define PID_KD_DEFAULT        18.0f
 #define PID_DERIV_ALPHA       0.40f   /* 球速EMA系数:mode2用观测器速度,此为备用路径。[达标用0.40]
                                        * 0=裸微分(噪声主导);0.76 真机验证把 D std 5.4→3.9。串口 'f' 在线调。 */
-#define PID_ERROR_DEADBAND    0.6f    /* [达标2026-06-12] 误差死区±cm。d0.6掐断低频极限环又不留稳态误差;'d'在线调 */
+#define PID_ERROR_DEADBAND    0.0f    /* 无死区:死区会让球停在"到达位置"→中心忽高忽低不可复现。原始达标配方用 d0 */
 #define PID_INTEGRAL_LIMIT    200.0f  /* 积分限幅(对应PWM贡献=Ki*此值) */
 
 /* ======================= 速度观测器(α-β滤波,冲±1cm) ======================= */
@@ -177,7 +177,7 @@
 
 /* ======================= 轨迹软启动 ======================= */
 /* 软目标按此速率(cm/s)从当前球位爬向用户目标,使误差始终小、避免大冲程极限环 */
-#define TARGET_RAMP_CM_S      6.0f
+#define TARGET_RAMP_CM_S      3.0f
 
 /* D项输出钳位: |Kd*球速| 的最大PWM贡献。挡住超声波假跳变(非物理球速)把PWM瞬间打满踹飞球 */
 #define D_TERM_CLAMP          3000.0f
