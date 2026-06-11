@@ -69,7 +69,7 @@ float current_height = 0.0f;       // 当前高度(cm)
 float target_height = TARGET_HEIGHT_DEFAULT; // 目标高度(cm)
 float sp_ramp = 0.0f;              // 软目标(轨迹斜坡)：从当前高度按限速爬向target,避免大误差冲程
 uint16_t pwm_output = 0;           // PWM输出值(0-1000)
-uint8_t control_enabled = 0;       // 控制使能标志（开机在菜单，风扇停）
+uint8_t control_enabled = 0;       // 开机停止态(风扇不转,避免上电即EMI冲掉USB);曲线页按K3启动→预热→自动悬浮
 
 // UI 界面状态（开机直接进高度曲线界面——本题唯一需要的界面）
 UiState ui_state = UI_CURVE;
@@ -1143,13 +1143,12 @@ int main(void)
             // 预热期：风机空转在怠速地板(g_pwm_min)，不跑闭环、不积分，越过冷启动死区。
             // D项基准跟随当前球位，投入闭环时不会因预热段位移喷出假球速。
             if ((uint32_t)(uwTick - control_start_tick) < FAN_PREHEAT_MS) {
-                // mode2:预热吹"悬停转速对应PWM"(风机预转到~hover_rpm,球预浮到工作区),
-                // 投入闭环时转速连续、不暴跌;mode0:吹怠速地板。
-                float pre_pwm = (g_ctrl_mode == 2 && g_rpm_ff_a > 0.0f)
-                                ? (g_hover_rpm - g_rpm_ff_b) / g_rpm_ff_a
-                                : g_pwm_min;
+                // 预热只为暖机(让风机越过静摩擦+冷启动死区先转起来),绝不能吹起球——
+                // 否则球被预热顶到高位,投入后稳态偏高且持续上漂(实测停16.8/目标15)。
+                // 用低于悬停的暖机PWM(~5000转),预热后球仍在底,由mode2起飞boost(hover+600)
+                // 从底干净冲到目标(已验证最稳,稳15 std0.4)。注:预热PWM可低于闭环地板g_pwm_min。
+                float pre_pwm = FAN_PREHEAT_PWM;
                 if (pre_pwm > g_pwm_max) pre_pwm = g_pwm_max;
-                if (pre_pwm < g_pwm_min) pre_pwm = g_pwm_min;
                 pwm_output = (uint16_t)pre_pwm;
                 __HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_2, pwm_output);
                 height_updated = 0;
