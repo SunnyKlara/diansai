@@ -11,7 +11,7 @@
 #     amplitude, and RPM(tach) statistics -- the levers that matter once the
 #     single-loop hover is "good enough" and we chase the last +/-1cm.
 param(
-  [string]$Port = "COM9",
+  [string]$Port = "COM10",
   [int]$Baud = 115200,
   [string]$Setup = "",        # semicolon-separated param commands, sent once while stopped
   [int]$PreSpin = 1800,       # manual PWM to pre-spin the fan (eliminate cold-start), 0 = skip

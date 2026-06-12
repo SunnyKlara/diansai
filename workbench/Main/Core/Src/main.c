@@ -97,11 +97,14 @@ float pid_filtered_deriv = 0.0f;
 float pid_output = 0.0f;
 // 运行时可调参数(串口在线调,免烧录)：从config取默认值
 float g_ramp_cms    = TARGET_RAMP_CM_S;   // 'r' 目标爬升速率 cm/s
+float g_ramp_down_cms = TARGET_RAMP_DOWN_CM_S; // 'rd' 目标下行速率 cm/s(比上行慢,防降目标砸底)
 float g_deriv_alpha = PID_DERIV_ALPHA;    // 'f' 球速EMA系数(越大越平滑越滞后)
 float g_slew        = (float)PWM_SLEW_PER_TICK; // 'l' PWM每拍限幅
 float g_dmax        = D_TERM_CLAMP;        // 'c' D项(Kd*球速)最大PWM贡献钳位,挡假球速踹飞
 float g_pwm_min     = PWM_RUN_MIN;         // 'n' 闭环最低速(怠速地板,风扇不停转)
 float g_pwm_max     = PWM_RUN_MAX;         // 'x' 闭环最高速(推力天花板,防窜顶)
+float g_standby_pwm = STANDBY_PWM;         // 'b' 待机怠速PWM(停止态让风机常转在起飞临界下方,消冷启动死区)
+uint8_t g_scope_en = 1;                    // 'e' 闭环时示波器整区刷新使能(0=停刷零阻塞,A/B验证;1=节流刷新)
 volatile uint32_t g_serial_ms = SERIAL_PERIOD_MS; // 'w' 串口心跳周期ms(默认80=12.5Hz;'w20'=50Hz快记录,采全分析数据)
 volatile uint32_t g_height_sample_count = 0; // 有效高度样本累计数(用于实测帧率F:)
 
@@ -341,6 +344,7 @@ static void Scope_Overlays(int16_t bx0, int16_t bx1)
 
 // CURVE: draw the static frame once (title + border). Plot interior (grid +
 // scrolling traces + labels/legend) is redrawn every frame by Curve_Render.
+void Control_Update(void);   // 前置声明:示波器整区刷新分条时,条间插空跑外环控制(防flush阻塞控制环)
 static void Curve_DrawStatic(void)
 {
     GC9A01_Clear(LCD_BLACK);
@@ -398,7 +402,22 @@ static void Curve_Render(void)
     }
 
     Scope_Overlays(SCOPE_X0, SCOPE_X1);                              // cm labels + legend
-    GC9A01_FlushRegion(SCOPE_X0, SCOPE_PLOT_Y0, SCOPE_X1, SCOPE_Y1);
+    // 分条刷新示波器区:每推一条横带(~16行)就插空"读一次ToF + 跑一拍控制",使整区推屏(轮询SPI
+    // ~85ms)期间反馈仍在刷新(A保持低),不再"flush致反馈中断→观测器速度尖峰→触发超±2cm下坠"。
+    // 注:A是"距上次读到ToF新样本"的时长,故必须在条间调 Tof_Measure(只插Control_Update用的是旧高度,无效)。
+    for (int16_t yb = SCOPE_PLOT_Y0; yb <= SCOPE_Y1; yb += 16) {
+        int16_t yb2 = yb + 15; if (yb2 > SCOPE_Y1) yb2 = SCOPE_Y1;
+        GC9A01_FlushRegion(SCOPE_X0, yb, SCOPE_X1, yb2);
+#if HEIGHT_SENSOR_TOF
+        Tof_Measure();             // 条间继续读激光(非阻塞,有新样本才更新)
+#else
+        Ultrasonic_Measure();
+#endif
+        if (control_enabled && !manual_mode && !preheating && height_updated) {
+            height_updated = 0;
+            Control_Update();      // 有新样本则立刻跑一拍外环(与主循环同线程,安全)
+        }
+    }
 
     // ---- PWM status strip below the box (redraw + flush only on change) ----
     static uint16_t last_pwm_disp = 0xFFFF;
@@ -699,12 +718,13 @@ void Control_Update(void)
             boost_mode = 1;
             return;
         }
-        // 轨迹斜坡:软目标 sp_ramp 按限速(g_ramp_cms)爬向 target_height。大幅切目标
-        // (如 20->10)时球贴平滑轨迹运动,不会失速冲过头掉到底 -> 动态跟踪可控、能入±带。
+        // 轨迹斜坡:软目标 sp_ramp 按限速爬向 target_height。上行用 g_ramp_cms,下行用更慢的
+        // g_ramp_down_cms(降目标时球受重力助推易失速冲过头砸底,下行放缓让控制器始终能刹住)。
         {
-            float ramp_step = g_ramp_cms * dt;
-            if (sp_ramp < target_height - ramp_step)      sp_ramp += ramp_step;
-            else if (sp_ramp > target_height + ramp_step) sp_ramp -= ramp_step;
+            float up_step   = g_ramp_cms * dt;
+            float down_step = g_ramp_down_cms * dt;
+            if (sp_ramp < target_height - up_step)        sp_ramp += up_step;
+            else if (sp_ramp > target_height + down_step) sp_ramp -= down_step;
             else                                          sp_ramp = target_height;
         }
         e = sp_ramp - current_height;        // 控制误差改用软目标(平滑轨迹)
@@ -914,9 +934,14 @@ static void Exec_Cmd(char *c)
             sprintf(msg, ">>u_hover=%.0f\r\n", u_hover);
             UART_SendStr(msg);
             break;
-        case 'r': case 'R':            // rN.N: 目标轨迹斜坡速率 cm/s(动态跟踪平滑度,越小越缓不过冲)
-            g_ramp_cms = (float)atof(c + 1);
-            sprintf(msg, ">>ramp=%.1f\r\n", g_ramp_cms);
+        case 'r': case 'R':            // rN.N: 上行目标斜坡速率; rdN.N: 下行斜坡速率(防降目标砸底)
+            if (c[1] == 'd' || c[1] == 'D') {
+                g_ramp_down_cms = (float)atof(c + 2);
+                sprintf(msg, ">>ramp_down=%.1f\r\n", g_ramp_down_cms);
+            } else {
+                g_ramp_cms = (float)atof(c + 1);
+                sprintf(msg, ">>ramp=%.1f\r\n", g_ramp_cms);
+            }
             UART_SendStr(msg);
             break;
         case 'l': case 'L':            // lNNN: PWM每拍限幅 (刹车速度)
@@ -990,6 +1015,18 @@ static void Exec_Cmd(char *c)
             if (g_pwm_max > PWM_OUTPUT_MAX) g_pwm_max = PWM_OUTPUT_MAX;
             if (g_pwm_max < g_pwm_min) g_pwm_max = g_pwm_min;
             sprintf(msg, ">>pwm_max=%.0f\r\n", g_pwm_max);
+            UART_SendStr(msg);
+            break;
+        case 'b': case 'B':            // bNNNN: 待机怠速PWM(停止态风机常转的转速,起飞临界下方)
+            g_standby_pwm = (float)atof(c + 1);
+            if (g_standby_pwm < 0) g_standby_pwm = 0;
+            if (g_standby_pwm > PWM_OUTPUT_MAX) g_standby_pwm = PWM_OUTPUT_MAX;
+            sprintf(msg, ">>standby_pwm=%.0f\r\n", g_standby_pwm);
+            UART_SendStr(msg);
+            break;
+        case 'e': case 'E':            // e0/e1: 闭环时示波器整区刷新 关/开(关=控制环零阻塞,A/B验证显示阻塞是否致大摆)
+            g_scope_en = (c[1] == '1') ? 1 : 0;
+            sprintf(msg, ">>scope_en=%u\r\n", (unsigned)g_scope_en);
             UART_SendStr(msg);
             break;
         case 'y': case 'Y':            // 串级内环(转速闭环): y1/y0开关 ; yaN/ybN FF映射 ; ypN/yiN 内环PI
@@ -1156,6 +1193,18 @@ int main(void)
     if (!control_enabled) {
         height_updated = 0;            // 停机丢弃挂起样本
         ctrl_en_prev = 0;              // 复位边沿：下次从停机使能时重新预热
+        // 待机怠速:停止/待机态让风机常转在起飞临界下方(g_standby_pwm),球稳贴底但风机就绪,
+        // 消除冷启动死区→后续起飞秒级。上电后延迟 STANDBY_BOOT_DELAY_MS 再启动且PWM缓升,避EMI冲USB。
+        static uint32_t sb_tick = 0;
+        if ((uint32_t)(uwTick - sb_tick) >= STANDBY_RAMP_MS) {
+            sb_tick = uwTick;
+            float sb_target = (uwTick >= STANDBY_BOOT_DELAY_MS) ? g_standby_pwm : 0.0f;
+            float p = (float)pwm_output;
+            if (p < sb_target)      { p += STANDBY_RAMP_STEP; if (p > sb_target) p = sb_target; }
+            else if (p > sb_target) { p -= STANDBY_RAMP_STEP; if (p < sb_target) p = sb_target; }
+            pwm_output = (uint16_t)p;
+            __HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_2, pwm_output);
+        }
     } else {
         // 使能上升沿（从停机/复位态启动）：先预热风机。手动模式风机本就在转，免预热。
         if (!ctrl_en_prev) {
@@ -1163,7 +1212,10 @@ int main(void)
             control_start_tick = uwTick;
             // 预热:风机先转起来越过四线风扇冷启动爬升(数秒),控制接管时已在转。
             // mode2(串级)也预热——去掉预热则boost时风机从0硬爬~6s,起飞更慢。
-            preheating = manual_mode ? 0 : 1;
+            // 但若已在待机怠速(风机已转在g_standby_pwm附近),无冷启动可越,跳过预热直接起飞
+            //   (否则预热会把PWM从待机~4000降到3300再爬,反而更慢)。
+            uint8_t fan_warm = (pwm_output >= (uint16_t)(g_standby_pwm - 200.0f));
+            preheating = (manual_mode || fan_warm) ? 0 : 1;
         }
 
         if (manual_mode) {
@@ -1211,10 +1263,16 @@ int main(void)
     // 快记录模式(g_serial_ms<=40,即>=25Hz串口)下,屏幕示波器与PC采集冗余,且其~60ms
     // 阻塞式整区刷新(184x152@7.5MHz SPI无DMA)会周期性卡住主循环、压低遥测帧率。
     // 此时把刷新降到500ms,让50Hz遥测不被显示抢走节拍;正常模式仍用200ms。
+    // 进一步:闭环运行(球在受控)时整区刷新会冻结控制环致大摆(2026-06-12根因),故闭环时把刷新
+    // 节流到 SCOPE_RUN_PERIOD_MS;g_scope_en=0 则闭环时完全停刷(零阻塞,A/B验证)。停止/待机/手动态不节流。
+    uint8_t closed_running = (control_enabled && !manual_mode && !preheating);
     uint32_t disp_ms = (g_serial_ms <= 40u) ? 500u : (uint32_t)DISPLAY_PERIOD_MS;
+    if (closed_running) disp_ms = SCOPE_RUN_PERIOD_MS;
     if ((uint32_t)(uwTick - display_tick) >= disp_ms) {
         display_tick = uwTick;
-        OLED_Update();
+        if (!(closed_running && !g_scope_en)) {   // 闭环且g_scope_en=0:跳过显示,控制环零阻塞
+            OLED_Update();
+        }
     }
 
     // 5. 串口心跳（喂给上位机/AI 的真机回报数据）
