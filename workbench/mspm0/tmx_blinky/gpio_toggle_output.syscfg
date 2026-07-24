@@ -1,0 +1,48 @@
+/**
+ * 天猛星板载 SPI-LCD 接口(H8) 点屏配置。
+ * LCD: GC9A01 240x240 圆形彩屏(SPI)。接口脚:
+ *   SCL=PB9(SPI1_SCK)  SDA=PB8(SPI1_MOSI)  RES=PB10  DC=PB11  CS=PB14  BLK=PB26
+ * 另 PB22 = 板载状态灯(心跳)。
+ */
+//@cliArgs --device "MSPM0G350X" --package "LQFP-64(PM)" --part "Default"
+//@v2CliArgs --device "MSPM0G3507" --package "LQFP-64(PM)"
+// @cliArgs --board /ti/boards/LP_MSPM0G3507 --rtos nortos
+
+const GPIO   = scripting.addModule("/ti/driverlib/GPIO", {}, false);
+const GPIO1  = GPIO.addInstance();
+const SPI    = scripting.addModule("/ti/driverlib/SPI", {}, false);
+const SPI1   = SPI.addInstance();
+const SYSCTL = scripting.addModule("/ti/driverlib/SYSCTL");
+
+/* ---- LCD 控制脚 + 状态灯 (全 PORTB 输出) ---- */
+GPIO1.$name = "GPIO_LCD";
+GPIO1.port  = "PORTB";
+GPIO1.associatedPins.create(5);
+GPIO1.associatedPins[0].$name        = "LCD_RES";
+GPIO1.associatedPins[0].assignedPin  = "10";
+GPIO1.associatedPins[0].initialValue = "SET";
+GPIO1.associatedPins[1].$name        = "LCD_DC";
+GPIO1.associatedPins[1].assignedPin  = "11";
+GPIO1.associatedPins[1].initialValue = "SET";
+GPIO1.associatedPins[2].$name        = "LCD_CS";
+GPIO1.associatedPins[2].assignedPin  = "14";
+GPIO1.associatedPins[2].initialValue = "SET";
+GPIO1.associatedPins[3].$name        = "LCD_BLK";
+GPIO1.associatedPins[3].assignedPin  = "26";
+GPIO1.associatedPins[3].initialValue = "CLEARED";
+GPIO1.associatedPins[4].$name        = "STATUS_LED";
+GPIO1.associatedPins[4].assignedPin  = "22";
+GPIO1.associatedPins[4].initialValue = "CLEARED";
+
+const Board = scripting.addModule("/ti/driverlib/Board", {}, false);
+
+/* ---- 硬件 SPI1: SCK=PB9, MOSI=PB8 (只发不收,无 MISO;CS 用 GPIO 手控) ---- */
+SPI1.$name                      = "LCD_SPI";
+SPI1.spiClkSrc                  = "BUSCLK";
+SPI1.targetBitRate              = 8000000;
+SPI1.peripheral.$assign         = "SPI1";
+SPI1.peripheral.sclkPin.$assign = "PB9";
+SPI1.peripheral.mosiPin.$assign = "PB8";
+
+SYSCTL.forceDefaultClkConfig = true;
+SYSCTL.clockTreeEn  = true;

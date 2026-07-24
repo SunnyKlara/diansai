@@ -1,0 +1,109 @@
+/**
+ * 天猛星小车起步工程 car.syscfg
+ * ★ 引脚唯一真值源 = workbench/天猛星主板平台/00_载板接线设计_天猛星平台.md §10.1
+ *   本文件任何引脚必须与 §10.1 一致；改脚先改 §10.1 再回改这里。选脚过"引出∩空闲∩功能"三重闸。
+ *
+ * 【已配】显示(仪表盘): 板载 SPI-LCD H8 —— SCL=PB9(SPI1_SCK) SDA=PB8(SPI1_MOSI) RES=PB10 DC=PB11 CS=PB14 BLK=PB26
+ * 【已配】状态灯: PB22
+ * 【已配】双电机 PWM (DRV8231): TIMA0 4 通道 ——
+ *   M1: IN1=PA8(TIMA0_C0)  IN2=PA9(TIMA0_C1)
+ *   M2: IN1=PB12(TIMA0_C2) IN2=PB13(TIMA0_C3)
+ *   (电机脚 PA8/9/PB12/13 与显示脚 PB9/8/10/11/14/26 不冲突)
+ *
+ * 【待加，定版见 §10.1 / §5.7 / §5.8】
+ *   编码器1(硬件QEI): TIMG8 —— A相=PA7(TIMG8_C0)  B相=PB19(TIMG8_C1)
+ *   编码器2(GPIO中断): A相=PB20  B相=PB21
+ *   电磁铁(单向PWM):  TIMA1 —— IN1=PB0(TIMA1_C0)，IN2 硬件接GND，电流采样=PA24(ADC0)
+ *   超声波: TRIG=PB17 ECHO=PB18(经1k/2k分压)   数码管: CLK=PB24 DIO=PB25   蜂鸣器: PA22
+ *   ⚠️ 选脚黑名单(核心板未引出): PA3/4/5/6(晶振 LFXT/HFXT)、PA19/20(SWD)
+ */
+//@cliArgs --device "MSPM0G350X" --package "LQFP-64(PM)" --part "Default"
+//@v2CliArgs --device "MSPM0G3507" --package "LQFP-64(PM)"
+// @cliArgs --board /ti/boards/LP_MSPM0G3507 --rtos nortos
+
+const GPIO   = scripting.addModule("/ti/driverlib/GPIO", {}, false);
+const GPIO1  = GPIO.addInstance();
+const SPI    = scripting.addModule("/ti/driverlib/SPI", {}, false);
+const SPI1   = SPI.addInstance();
+const PWM    = scripting.addModule("/ti/driverlib/PWM", {}, false);
+const PWM1   = PWM.addInstance();
+const UART   = scripting.addModule("/ti/driverlib/UART", {}, false);
+const UART1  = UART.addInstance();
+const ADC12  = scripting.addModule("/ti/driverlib/ADC12", {}, false);
+const ADC121 = ADC12.addInstance();
+const SYSCTL = scripting.addModule("/ti/driverlib/SYSCTL");
+
+/* ---- LCD 控制脚 + 状态灯 (PORTB 输出) ---- */
+GPIO1.$name = "GPIO_LCD";
+GPIO1.port  = "PORTB";
+GPIO1.associatedPins.create(5);
+GPIO1.associatedPins[0].$name        = "LCD_RES";
+GPIO1.associatedPins[0].assignedPin  = "10";
+GPIO1.associatedPins[0].initialValue = "SET";
+GPIO1.associatedPins[1].$name        = "LCD_DC";
+GPIO1.associatedPins[1].assignedPin  = "11";
+GPIO1.associatedPins[1].initialValue = "SET";
+GPIO1.associatedPins[2].$name        = "LCD_CS";
+GPIO1.associatedPins[2].assignedPin  = "14";
+GPIO1.associatedPins[2].initialValue = "SET";
+GPIO1.associatedPins[3].$name        = "LCD_BLK";
+GPIO1.associatedPins[3].assignedPin  = "26";
+GPIO1.associatedPins[3].initialValue = "CLEARED";
+GPIO1.associatedPins[4].$name        = "STATUS_LED";
+GPIO1.associatedPins[4].assignedPin  = "22";
+GPIO1.associatedPins[4].initialValue = "CLEARED";
+
+const Board = scripting.addModule("/ti/driverlib/Board", {}, false);
+
+/* ---- 硬件 SPI1: SCK=PB9, MOSI=PB8 (显示屏) ---- */
+SPI1.$name                      = "LCD_SPI";
+SPI1.spiClkSrc                  = "BUSCLK";
+SPI1.targetBitRate              = 8000000;
+SPI1.peripheral.$assign         = "SPI1";
+SPI1.peripheral.sclkPin.$assign = "PB9";
+SPI1.peripheral.mosiPin.$assign = "PB8";
+
+/* ---- 双电机 PWM: TIMA0 4 通道, ~20kHz ---- */
+PWM1.$name                       = "PWM_MOTOR";
+PWM1.clockPrescale               = 1;
+PWM1.timerCount                  = 1600;      /* 32MHz/1/1600 ≈ 20kHz */
+PWM1.ccIndex                     = [0, 1, 2, 3];   /* 启用 4 个 CC 通道 */
+PWM1.peripheral.$assign          = "TIMA0";
+PWM1.peripheral.ccp0Pin.$assign  = "PA8";     /* M1 IN1 = TIMA0_C0 */
+PWM1.peripheral.ccp1Pin.$assign  = "PA9";     /* M1 IN2 = TIMA0_C1 */
+PWM1.peripheral.ccp2Pin.$assign  = "PB12";    /* M2 IN1 = TIMA0_C2 */
+PWM1.peripheral.ccp3Pin.$assign  = "PB13";    /* M2 IN2 = TIMA0_C3 */
+PWM1.PWM_CHANNEL_0.$name         = "PWM_M1_IN1";
+PWM1.PWM_CHANNEL_0.dutyCycle     = 0;
+PWM1.PWM_CHANNEL_1.$name         = "PWM_M1_IN2";
+PWM1.PWM_CHANNEL_1.dutyCycle     = 0;
+PWM1.PWM_CHANNEL_2.$name         = "PWM_M2_IN1";
+PWM1.PWM_CHANNEL_2.dutyCycle     = 0;
+PWM1.PWM_CHANNEL_3.$name         = "PWM_M2_IN2";
+PWM1.PWM_CHANNEL_3.dutyCycle     = 0;
+
+/* ---- 调试串口 UART0: TX=PA10 RX=PA11, 115200-8N1 (接 DAP VCOM 看 log) ---- */
+UART1.$name                    = "DBG_UART";
+UART1.enableFIFO               = true;
+UART1.targetBaudRate           = 115200;
+UART1.peripheral.$assign       = "UART0";
+UART1.peripheral.rxPin.$assign = "PA11";
+UART1.peripheral.txPin.$assign = "PA10";
+
+/* ---- 电流采样 ADC0: 序列采 2 路 DRV8231 IPROPI(H2.ADC 脚) ---- */
+/*   MEM0=CHAN_0=PA27(M1电流)  MEM1=CHAN_1=PA26(M2电流), 参考=VDDA 3.3V */
+ADC121.$name                      = "ADC_CUR";
+ADC121.sampClkSrc                 = "DL_ADC12_CLOCK_ULPCLK";
+ADC121.sampClkDiv                 = "DL_ADC12_CLOCK_DIVIDE_8";
+ADC121.powerDownMode              = "DL_ADC12_POWER_DOWN_MODE_MANUAL";
+ADC121.samplingOperationMode      = "sequence";
+ADC121.adcMem0chansel             = "DL_ADC12_INPUT_CHAN_0";
+ADC121.adcMem1chansel             = "DL_ADC12_INPUT_CHAN_1";
+ADC121.endAdd                     = 1;
+ADC121.sampleTime0                = "40 us";
+ADC121.peripheral.$assign         = "ADC0";
+ADC121.peripheral.adcPin0.$assign = "PA27";
+ADC121.peripheral.adcPin1.$assign = "PA26";
+
+SYSCTL.forceDefaultClkConfig = true;
+SYSCTL.clockTreeEn  = true;
