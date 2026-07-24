@@ -49,14 +49,17 @@ void motor_stop_all(void)
     motor_set(MOTOR_M2, 0);
 }
 
-/* ---- DRV8231 电流采样 (ADC0 序列: MEM0=PA27 M1, MEM1=PA26 M2) ---- */
+/* ---- DRV8231 电流采样 (ADC0 序列: MEM0=PA27, MEM1=PA26) ----
+ * ⚠ 真机实测(2026-07-24 探针自动轻转): 驱动 M1(PA8/PA9) 时电流出现在 MEM1(PA26)、
+ *   驱动 M2(PB12/PB13) 时在 MEM0(PA27) —— 即 M1 的 IPROPI 实际接 PA26、M2 接 PA27,
+ *   与起初 syscfg 注释假设相反。故此处按实测映射取值(m1←MEM1, m2←MEM0), 让上层"M1电流"名副其实。 */
 void motor_read_current_raw(uint16_t *m1_raw, uint16_t *m2_raw)
 {
     DL_ADC12_enableConversions(ADC_CUR_INST);
     DL_ADC12_startConversion(ADC_CUR_INST);
     delay_cycles(20000);   /* ~0.6ms @32MHz, 足够 2 通道序列转换完成 */
-    *m1_raw = DL_ADC12_getMemResult(ADC_CUR_INST, DL_ADC12_MEM_IDX_0);
-    *m2_raw = DL_ADC12_getMemResult(ADC_CUR_INST, DL_ADC12_MEM_IDX_1);
+    *m1_raw = DL_ADC12_getMemResult(ADC_CUR_INST, DL_ADC12_MEM_IDX_1);   /* PA26 = M1 IPROPI(实测) */
+    *m2_raw = DL_ADC12_getMemResult(ADC_CUR_INST, DL_ADC12_MEM_IDX_0);   /* PA27 = M2 IPROPI(实测) */
 }
 
 int32_t motor_current_ma(uint16_t raw)

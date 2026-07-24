@@ -31,8 +31,16 @@ static void delay_ms(uint32_t ms) { while (ms--) delay_cycles(CPUCLK_HZ / 1000UL
 #define POS_DIV       40        /* 位置环每 40 拍(~40ms=25Hz) */
 #define PRINT_DIV     100       /* 遥测每 ~100ms */
 #define DISP_DIV      25        /* LCD 计数刷新每 ~25ms(40Hz), 且仅在计数变化时才重绘 */
-#define ENC_CPR       225.0f    /* 每圈计数(1x解码占位, 待手转实测标定!) */
+#define ENC_CPR       899.0f    /* 输出轴每圈计数(4x正交解码). ~899=估计值(旧1x占位225×4);
+                                 * `待手转实测` : 手转输出轴整 N 圈、读计数增量/N 校准后改此值, RPM 才准。 */
 #define SPEED_WIN_MS  (SPEED_DIV * BASE_TICK_MS)
+
+/* ==== 编码器专项排查探针(临时) ====
+ * =1 开启: main() 一进来就跑 enc_probe_run()(永不返回, 电机全程不驱动),
+ *          直读 PA7/PB19/PB20/PB21 原始电平 + 软件轮询边沿计数 + ISR 计数,
+ *          一屏三视图把"信号没到脚(硬件) / 中断没触发(软件) / 其实在工作"三层分开。
+ * 排查完改回 0 即恢复完整控制固件。 */
+#define ENC_PROBE     0
 
 /* ==== 模式 ==== */
 enum { MODE_IDLE = 0, MODE_CURRENT, MODE_SPEED, MODE_POSITION, MODE_OPEN, MODE_N };
@@ -134,10 +142,150 @@ static void i32_to_field(char *b, int32_t v, int w)
     b[i] = 0;
 }
 
+#if ENC_PROBE
+/* 读一个引脚原始电平 -> 0/1 */
+static int rd(GPIO_Regs *port, uint32_t pin) { return DL_GPIO_readPins(port, pin) ? 1 : 0; }
+
+/* 把 "前缀=" + 固定宽计数 拼进 buf, 返回写入长度(不含末尾null由调用者收尾) */
+static int put_cnt(char *b, char c0, char c1, int32_t v, int w)
+{
+    b[0] = c0; b[1] = c1; b[2] = '=';
+    i32_to_field(b + 3, v, w);   /* 写 w 个字符 + null */
+    return 3 + w;
+}
+
+/*
+ * 编码器硬件/软件分层探针。永不返回, 全程不驱动电机(安全)。
+ * 屏上(从上到下):
+ *   ENC PROBE v1        <- 版本条(证明跑的是新固件)
+ *   <build time>        <- 编译时刻(每次重编必变, 双保险证明新固件)
+ *   A1=x A2=x           <- 两路 A 相(中断触发脚 PA7/PB20)原始电平, 手慢转看它 0/1 跳变
+ *   B1=x B2=x           <- 两路 B 相(判向脚 PB19/PB21)原始电平
+ *   E1=n E2=n           <- 软件轮询数到的 A 相上升沿(不经中断)
+ *   I1=n I2=n           <- 中断(ISR)数到的计数(encoder.c 的 g_cnt)
+ * 判读: 慢转某轮 -> 对应 A/B 电平在 0/1 间跳 = 信号已进 MCU 脚;
+ *   E 只涨 I 不涨 = 中断/软件层问题; E 与 I 都涨 = 该路其实在工作;
+ *   电平纹丝不动 & E/I 都 0 = 信号没到脚(硬件), 万用表逐段量。
+ *   四脚里"哪几个死"直接区分: A1/A2 都死+B 都死 => 共用供电/地; 只一路死 => 那路接线/器件。
+ */
+static void enc_probe_run(void)
+{
+    GC9A01_Backlight(1);
+    GC9A01_Init();
+    motor_init();
+    motor_stop_all();          /* 电机滑行停, 探针全程不给 PWM */
+    encoder_init();            /* 使能中断, 以便对比 ISR 计数 */
+
+    GC9A01_FillScreen(LCD_BLACK);
+    GC9A01_DrawStringCentered(14, "ENC PROBE v2", LCD_GREEN, LCD_BLACK, 2);
+    GC9A01_DrawStringCentered(40, __TIME__, LCD_GRAY, LCD_BLACK, 1);   /* 编译时刻: 每次重编必不同 */
+    GC9A01_DrawStringCentered(196, "AUTO-SPIN TEST", LCD_GRAY, LCD_BLACK, 1);
+
+    uart_dbg_puts("\n[probe] ENC PROBE v2 auto-spin  build "); uart_dbg_puts(__DATE__);
+    uart_dbg_puts(" "); uart_dbg_puts(__TIME__); uart_dbg_puts("\n");
+    uart_dbg_puts("[probe] auto-spin M1 3s -> stop -> M2 3s (40% PWM), stops after ~40s\n");
+    uart_dbg_puts("[probe] cols: DRV(driven motor) L(raw level) E(poll edge,no IRQ) I(ISR count)\n");
+
+    /* 软件轮询边沿计数(不经中断) */
+    uint32_t e_cnt[2] = { 0, 0 };
+    int prevA[2] = { -1, -1 };
+    /* LCD 变化检测缓存 */
+    int    last_lv[4]   = { -1, -1, -1, -1 };
+    int32_t last_e[2]   = { -1, -1 };
+    int32_t last_i[2]   = { -1, -1 };
+    uint32_t t = 0;
+
+    while (1) {
+        encoder_poll();   /* 定时采样正交解码(替代边沿中断): 每 tick 采一次 A/B 更新计数 */
+
+        int a1 = rd(GPIOA, GPIO_ENC_ENC1_A_PIN);   /* PA7  */
+        int b1 = rd(GPIOB, GPIO_ENC_ENC1_B_PIN);   /* PB19 */
+        int a2 = rd(GPIOB, GPIO_ENC_ENC2_A_PIN);   /* PB20 */
+        int b2 = rd(GPIOB, GPIO_ENC_ENC2_B_PIN);   /* PB21 */
+
+        /* 软件轮询: A 相 0->1 视为一次边沿(与中断完全独立的第二条通路) */
+        if (prevA[0] == 0 && a1 == 1) e_cnt[0]++;
+        if (prevA[1] == 0 && a2 == 1) e_cnt[1]++;
+        prevA[0] = a1; prevA[1] = a2;
+
+        /* --- 自动轻转: 电机替代手转(M1 转 3s -> 停 2s -> M2 转 3s -> 停 4s, 12s 循环).
+         * 40% PWM 保守(7.4V 电机/12V 母线); t>40s 后永久停, 防长转/防跑车. --- */
+        int drv = 0;                       /* 0=停 1=转M1 2=转M2 */
+        if (t < 40000) {
+            uint32_t cyc = t % 12000;
+            if      (cyc >= 2000 && cyc < 5000)  drv = 1;
+            else if (cyc >= 7000 && cyc < 10000) drv = 2;
+        }
+        motor_set(MOTOR_M1, drv == 1 ? 40 : 0);
+        motor_set(MOTOR_M2, drv == 2 ? 40 : 0);
+
+        int32_t i1 = encoder_count(ENC_1);
+        int32_t i2 = encoder_count(ENC_2);
+
+        /* --- LCD 刷新(仅变化才重绘, 固定宽度覆盖式, 不闪) --- */
+        if (t % 20 == 0) {
+            char buf[32];
+            if (a1 != last_lv[0] || a2 != last_lv[1]) {
+                buf[0]='A';buf[1]='1';buf[2]='=';buf[3]=(char)('0'+a1);
+                buf[4]=' ';buf[5]=' ';
+                buf[6]='A';buf[7]='2';buf[8]='=';buf[9]=(char)('0'+a2);buf[10]=0;
+                GC9A01_DrawStringCentered(72, buf, LCD_WHITE, LCD_BLACK, 2);
+                last_lv[0]=a1; last_lv[1]=a2;
+            }
+            if (b1 != last_lv[2] || b2 != last_lv[3]) {
+                buf[0]='B';buf[1]='1';buf[2]='=';buf[3]=(char)('0'+b1);
+                buf[4]=' ';buf[5]=' ';
+                buf[6]='B';buf[7]='2';buf[8]='=';buf[9]=(char)('0'+b2);buf[10]=0;
+                GC9A01_DrawStringCentered(100, buf, LCD_CYAN, LCD_BLACK, 2);
+                last_lv[2]=b1; last_lv[3]=b2;
+            }
+            if ((int32_t)e_cnt[0] != last_e[0] || (int32_t)e_cnt[1] != last_e[1]) {
+                int p = put_cnt(buf, 'E', '1', (int32_t)e_cnt[0], 6);
+                buf[p++]=' ';
+                p += put_cnt(buf + p, 'E', '2', (int32_t)e_cnt[1], 6);
+                GC9A01_DrawStringCentered(136, buf, LCD_YELLOW, LCD_BLACK, 1);
+                last_e[0]=(int32_t)e_cnt[0]; last_e[1]=(int32_t)e_cnt[1];
+            }
+            if (i1 != last_i[0] || i2 != last_i[1]) {
+                int p = put_cnt(buf, 'I', '1', i1, 8);
+                buf[p++]=' ';
+                p += put_cnt(buf + p, 'I', '2', i2, 8);
+                GC9A01_DrawStringCentered(160, buf, LCD_ORANGE, LCD_BLACK, 1);
+                last_i[0]=i1; last_i[1]=i2;
+            }
+        }
+
+        /* --- UART 第二通道(~200ms) + 电机电流(证明电机真的在通电/转) --- */
+        if (t % 200 == 0) {
+            uint16_t r0 = 0, r1 = 0;
+            motor_read_current_raw(&r0, &r1);
+            uart_dbg_puts("[probe] DRV="); uart_dbg_puts(drv==1?"M1":(drv==2?"M2":"--"));
+            uart_dbg_puts(" L A1="); uart_dbg_put_int(a1);
+            uart_dbg_puts(" B1=");          uart_dbg_put_int(b1);
+            uart_dbg_puts(" A2=");          uart_dbg_put_int(a2);
+            uart_dbg_puts(" B2=");          uart_dbg_put_int(b2);
+            uart_dbg_puts(" | E ");         uart_dbg_put_int((int32_t)e_cnt[0]);
+            uart_dbg_putc(',');             uart_dbg_put_int((int32_t)e_cnt[1]);
+            uart_dbg_puts(" | I ");         uart_dbg_put_int(i1);
+            uart_dbg_putc(',');             uart_dbg_put_int(i2);
+            uart_dbg_puts(" | mA ");        uart_dbg_put_int((int)motor_current_ma(r0));
+            uart_dbg_putc(',');             uart_dbg_put_int((int)motor_current_ma(r1));
+            uart_dbg_puts("\n");
+        }
+
+        t++;
+        delay_ms(1);   /* ~1kHz 轮询, 足够抓手转边沿 */
+    }
+}
+#endif /* ENC_PROBE */
+
 int main(void)
 {
     SYSCFG_DL_init();
     delay_ms(200);
+#if ENC_PROBE
+    enc_probe_run();   /* 临时: 编码器分层探针, 永不返回(排查完把 ENC_PROBE 改回 0) */
+#endif
     GC9A01_Backlight(1);
     GC9A01_Init();
     motor_init();
@@ -168,6 +316,7 @@ int main(void)
 
     while (1) {
         poll_uart();
+        encoder_poll();   /* 定时采样正交解码(替代边沿中断) */
 
         int32_t c0 = encoder_count(ENC_1);
         int32_t c1 = encoder_count(ENC_2);

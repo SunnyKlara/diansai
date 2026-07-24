@@ -16,7 +16,8 @@
 #define ENC_1  0
 #define ENC_2  1
 
-void    encoder_init(void);                 /* 使能 GPIOA/GPIOB 中断 */
+void    encoder_init(void);                 /* 初始化状态(采样式解码,不使能中断) */
+void    encoder_poll(void);                 /* 采一次A/B按正交状态机累加;须固定速率周期调用(主循环每tick) */
 int32_t encoder_count(uint8_t ch);          /* 读累计带符号计数 */
 void    encoder_reset(uint8_t ch);          /* 清零计数 */
 
