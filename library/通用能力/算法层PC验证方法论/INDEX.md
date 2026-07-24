@@ -1,8 +1,7 @@
 # 算法层 PC 验证方法论 —— 总入口
 
-> 这是从 5 道电赛真题（2024B/H、2025A/G、2021A）实战中沉淀的方法论。
+> 这是从历年真题**审题分析** + 校赛B 真机经验沉淀的方法论（除校赛B 外，下列算法均未真机验证）。
 > 核心信条：**算法 0 系统性误差是最低标准。误差预算全部留给硬件链路。**
-> 用 1 道 2026 模拟新题做了实战检验，方法论 + 脚手架 + snippets 全套打通。
 
 ---
 
@@ -16,18 +15,18 @@
 ├── 01_PC验证脚手架.md             # 直接复制粘贴的 algo_reference / cal_helper 模板
 ├── 02_UART调试协议规范.md         # STAT / CAL / DUMP / RST 4 命令标准
 ├── 03_合成信号工具集.md           # 各类典型负载 / 滤波器的 Python 合成代码
-├── snippets/                      # 可直接跑的算法参考实现
-├── snippets/                     # 跨题可复用代码片段（5 个 + README）
+├── snippets/                     # 跨题可复用算法参考（7 个 .py，各带 _example 自测）
 │   ├── README.md
 │   ├── pid_controller.py         # PID + anti-windup + ramp-up
 │   ├── dft_harmonic.py           # 单频 DFT × N 谐波 + THD
 │   ├── rms_meter.py              # 滑动窗口 RMS
 │   ├── sync_sample.py            # 同步采样率计算
-│   └── flat_top_window.py        # 平顶窗 / Hann / Hamming
+│   ├── flat_top_window.py        # 平顶窗 / Hann / Hamming
+│   ├── dual_loop_pi.py           # 双闭环 PI
+│   └── dcdc_simple_model.py      # DC-DC 平均模型
 └── tools/
     ├── README.md                 # 元工具说明
-    ├── run_all_validation.py     # 一键回归（5 真题 + 5 snippets + 1 模拟新题，1.22s）
-    └── new_problem.py            # 新题脚手架生成器
+    └── run_all_validation.py     # 一键回归（扫描 workbench/ + snippets 的 _example）
 ```
 
 ---
@@ -36,11 +35,7 @@
 
 ### 拿到新题
 
-```bash
-python library/通用能力/算法层PC验证方法论/tools/new_problem.py 2026 A 题名 --topic measure
-```
-
-→ 生成完整目录骨架（00/01/02/03/04），算法 + 测试占位齐全。
+按 `workbench/_工作台工作规范.md` 建题目目录，从 `snippets/` 拷所需算法参考到 `tests/` 起步。
 
 ### 改了某题算法
 
@@ -84,25 +79,9 @@ python <题目>/01_代码/tests/cal_helper.py --verify out.csv
 
 ---
 
-## 5 题成果一览（方法论的实战证明）
+## 验证状态（诚实标注）
 
-| 题目 | 算法层精度 | 题目要求 | 余量倍数 | cal_helper 特色 |
-|---|---|---|---|---|
-| 2024 B 单相功率分析仪 | 0.0008%（量化噪声底）| 1% | **1250×** | UART STAT/CAL/DUMP/RST 全套 |
-| 2024 H 自动行驶小车 | 1.14s 完成 1m 直线 | 限 15s | **13×** | --simulate yaw 仿真 PID 参数 |
-| 2025 A 能量回馈变流器 | SVPWM 100% 精度 | 0.25V | ∞ | --simulate 自动检测母线电压陷阱 |
-| 2025 G 电路模型探究装置 | 增益误差 0.035 | 0.10 | **3×** | --plot Bode 图，--classify 类型识别 |
-| 2021 A 信号失真度测量装置 | THD 误差 0.005% | 5%（基本）/ 3%（发挥） | **1000× / 600×** | 端到端 verify 已通过冒烟 |
-
----
-
-## 复利
-
-- 第一次刷题用 4 天
-- 第二次套这套模板刷类似题用 1 天
-- 跨届真题积累 5 套，2026 新题 80% 套路命中现成模板 → 节省 60% 时间
-
-**这是电赛备战最大的复利来源**。
+除 `实战复盘/校赛B`（STM32H750 真机）外，本方法论的 snippets / 工具仅在 **PC 层自测通过**（`_example` 断言）；接省赛题后再补真机数据。别把 PC 验证当成真机成绩。
 
 ---
 

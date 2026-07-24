@@ -6,17 +6,13 @@
 
 ## 你需要先理解的 3 件事
 
-### 1. 为什么国一队伍快人一档？
+### 1. 为什么"先 PC 验证"快人一档？
 
-不是因为他们更聪明，是因为他们的**调试反馈周期**短：
-- 你：改一行代码 → 烧录 → 看 OLED → 改 → 再烧 = **5~10 分钟一轮**
-- 他们：改一行 Python → `python algo_reference.py` = **1 秒一轮**
+不是谁更聪明，是**调试反馈周期**短：
+- 直接上 MCU：改一行 → 烧录 → 看 OLED → 改 → 再烧 = **5~10 分钟一轮**
+- 先 PC 验证：改一行 Python → `python algo_reference.py` = **约 1 秒一轮**
 
-一天调参 8 小时：
-- 你能调 96 轮
-- 他们能调 28800 轮
-
-**这是 300× 的差距**。
+同样 8 小时，PC 上能试的参数轮数高一两个数量级，边界工况也覆盖得更全。
 
 ### 2. 算法和硬件必须分开调
 
@@ -44,12 +40,7 @@
 
 **禁止**：读完题就写代码。
 
-**做**：复制脚手架，按 5 视角填 `00_深度审题与方案论证.md`：
-
-```bash
-python library/通用能力/算法层PC验证方法论/tools/new_problem.py \
-    2026 X 题名 --topic measure
-```
+**做**：按 `workbench/_工作台工作规范.md` 建题目目录，按 5 视角填 `00_深度审题与方案论证.md`。
 
 5 视角是：
 1. **题目精读**：分值 / 容差 / 隐含约束 / 评委怎么测
@@ -77,9 +68,11 @@ void measure_thd(uint16_t *adc_data, uint16_t len, float fs, ...);
 ```python
 import sys
 from pathlib import Path
-SNIPPETS = Path(__file__).resolve().parents[5] / \
-    "C_通用能力" / "算法层PC验证方法论" / "snippets"
-sys.path.insert(0, str(SNIPPETS))
+# 向上找到仓库根(含 library/)，再定位 snippets
+p = Path(__file__).resolve()
+while not (p / "library").exists() and p != p.parent:
+    p = p.parent
+sys.path.insert(0, str(p / "library" / "通用能力" / "算法层PC验证方法论" / "snippets"))
 
 from pid_controller import PIDController         # 控制题用
 from dft_harmonic import DFTHarmonic              # 谐波 / THD 用
@@ -192,21 +185,21 @@ python cal_helper.py --port COM3 --calibrate
 
 ## 实战练习
 
-### 练习 1：跑通 5 个真题的金标准（10 分钟）
+### 练习 1：跑通回归自测
 
 ```bash
 python library/通用能力/算法层PC验证方法论/tools/run_all_validation.py
 ```
 
-应输出 `11/11 ALL PASSED`。
+扫描 `workbench/` 下的 `algo_reference.py` + `snippets/` 的 `_example`，应全部 PASS。
 
-### 练习 2：用脚手架生成新题骨架（5 分钟）
+### 练习 2：拷一个 snippet 跑跑看
 
 ```bash
-python tools/new_problem.py 2026 测 测试题目 --topic generic
+python library/通用能力/算法层PC验证方法论/snippets/pid_controller.py
 ```
 
-看看生成了什么 + 跑跑看。
+看 `_example` 的自测输出，理解"参考实现 + 自带用例"的模式。
 
 ---
 

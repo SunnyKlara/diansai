@@ -1,6 +1,8 @@
 # FFT —— 从入门到电赛实战
 
 > FFT是电赛仪表类、电源类、通信类题目的核心算法
+>
+> **相关**：可跑参考实现 → [`snippets/`](../算法层PC验证方法论/snippets/)（`dft_harmonic.py` 单频DFT+THD、`flat_top_window.py` 平顶窗、`sync_sample.py` 同步采样）；PC 验证方法论入口 → [`算法层PC验证方法论/INDEX.md`](../算法层PC验证方法论/INDEX.md)。
 
 ## 一、为什么需要FFT
 

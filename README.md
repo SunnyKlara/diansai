@@ -51,6 +51,7 @@ diansai/
 
 ## 🚀 入门路径
 
+0. **看当前进度**（新对话第一件事）→ [`CONTINUATION_GUIDE.md`](CONTINUATION_GUIDE.md)（整个备赛做到哪 + 下一步 + 阻塞；有 hook 自动提醒 AI 先读它 + git 对账）
 1. **搞清全局** → [ARCHITECTURE.md](ARCHITECTURE.md)
 2. **学怎么审题** → [`skills/README.md`](skills/README.md)(方法论导航),或看 web 里的 narratives
 3. **学实战经验** → [`实战复盘/校赛B_智能球平衡控制装置/00_经验总结.md`](实战复盘/校赛B_智能球平衡控制装置/00_经验总结.md)(唯一真机实战,可迁移铁律)
@@ -69,6 +70,7 @@ diansai/
 3. **算法层无 HAL 依赖**,可 PC 单独验证;可调参数集中 `config.h`。
 4. **主干开发**:直接在 `main` 小步提交、高频 push,不开 PR;高危操作(force push/reset --hard/删目录)才需确认。
 5. **commit 格式**:`<feat|fix|docs|refactor|test|chore>(scope): <简述>`。
+6. **记忆与交接**:新对话先读 `CONTINUATION_GUIDE.md` + `git` 对账;提交即从 guide 清账。详见 [.kiro/steering/协作记忆与交接体系.md](.kiro/steering/协作记忆与交接体系.md)。
 
 ## 原则
 
