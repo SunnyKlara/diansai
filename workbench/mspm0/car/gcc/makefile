@@ -20,7 +20,7 @@ ifeq ($(VERBOSE), 1)
   V :=
 endif
 
-OBJECTS = car.obj motor.obj gc9a01.obj uart_dbg.obj $(patsubst %.c,%.obj,$(notdir $(SYSCFG_C_FILES)))
+OBJECTS = car.obj motor.obj gc9a01.obj uart_dbg.obj control.obj encoder.obj $(patsubst %.c,%.obj,$(notdir $(SYSCFG_C_FILES)))
 
 NAME = car
 
@@ -102,7 +102,7 @@ endef
 
 $(foreach c_file,$(SYSCFG_C_FILES),$(eval $(call C_RULE,$(c_file))))
 
-car.obj: ../car.c ../gc9a01.h ../motor.h ../uart_dbg.h $(SYSCFG_H_FILES)
+car.obj: ../car.c ../gc9a01.h ../motor.h ../uart_dbg.h ../control.h ../encoder.h $(SYSCFG_H_FILES)
 	@ echo Building $@
 	$(V) $(CC) $(CFLAGS) $< -c -o $@
 
@@ -115,6 +115,14 @@ gc9a01.obj: ../gc9a01.c ../gc9a01.h $(SYSCFG_H_FILES)
 	$(V) $(CC) $(CFLAGS) $< -c -o $@
 
 uart_dbg.obj: ../uart_dbg.c ../uart_dbg.h $(SYSCFG_H_FILES)
+	@ echo Building $@
+	$(V) $(CC) $(CFLAGS) $< -c -o $@
+
+control.obj: ../control.c ../control.h $(SYSCFG_H_FILES)
+	@ echo Building $@
+	$(V) $(CC) $(CFLAGS) $< -c -o $@
+
+encoder.obj: ../encoder.c ../encoder.h $(SYSCFG_H_FILES)
 	@ echo Building $@
 	$(V) $(CC) $(CFLAGS) $< -c -o $@
 

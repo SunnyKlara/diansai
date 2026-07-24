@@ -53,6 +53,29 @@ GPIO1.associatedPins[4].$name        = "STATUS_LED";
 GPIO1.associatedPins[4].assignedPin  = "22";
 GPIO1.associatedPins[4].initialValue = "CLEARED";
 
+/* ---- 编码器输入 (GPIO 中断 1x 解码): enc1 A=PA7 B=PB19 | enc2 A=PB20 B=PB21 ----
+ *  A 相(PA7/PB20)开中断上升沿计数, B 相(PB19/PB21)普通输入读电平判向。
+ *  ⚠ A/B 为 5V 电平, 接 MCU 前须 1k/2k 分压到 3.3V(否则灌坏脚)。// 待真机验证 */
+const GPIO2 = GPIO.addInstance();
+GPIO2.$name                          = "GPIO_ENC";
+GPIO2.associatedPins.create(4);
+GPIO2.associatedPins[0].$name        = "ENC1_A";
+GPIO2.associatedPins[0].direction    = "INPUT";
+GPIO2.associatedPins[0].interruptEn  = true;
+GPIO2.associatedPins[0].polarity     = "RISE";
+GPIO2.associatedPins[0].pin.$assign  = "PA7";
+GPIO2.associatedPins[1].$name        = "ENC1_B";
+GPIO2.associatedPins[1].direction    = "INPUT";
+GPIO2.associatedPins[1].pin.$assign  = "PB19";
+GPIO2.associatedPins[2].$name        = "ENC2_A";
+GPIO2.associatedPins[2].direction    = "INPUT";
+GPIO2.associatedPins[2].interruptEn  = true;
+GPIO2.associatedPins[2].polarity     = "RISE";
+GPIO2.associatedPins[2].pin.$assign  = "PB20";
+GPIO2.associatedPins[3].$name        = "ENC2_B";
+GPIO2.associatedPins[3].direction    = "INPUT";
+GPIO2.associatedPins[3].pin.$assign  = "PB21";
+
 const Board = scripting.addModule("/ti/driverlib/Board", {}, false);
 
 /* ---- 硬件 SPI1: SCK=PB9, MOSI=PB8 (显示屏) ---- */
