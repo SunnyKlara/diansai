@@ -16,7 +16,7 @@
 ├── 01_PC验证脚手架.md             # 直接复制粘贴的 algo_reference / cal_helper 模板
 ├── 02_UART调试协议规范.md         # STAT / CAL / DUMP / RST 4 命令标准
 ├── 03_合成信号工具集.md           # 各类典型负载 / 滤波器的 Python 合成代码
-├── 99_5题金标准实测数据.md        # 5 题的具体验证数值（基线）
+├── snippets/                      # 可直接跑的算法参考实现
 ├── snippets/                     # 跨题可复用代码片段（5 个 + README）
 │   ├── README.md
 │   ├── pid_controller.py         # PID + anti-windup + ramp-up
@@ -112,7 +112,7 @@ python <题目>/01_代码/tests/cal_helper.py --verify out.csv
 2. **要刷新题**：`tools/README.md` + `01_PC验证脚手架.md` + `snippets/README.md`
 3. **要写 UART**：`02_UART调试协议规范.md`
 4. **要找合成信号**：`03_合成信号工具集.md`
-5. **想看实战例子**：`99_5题金标准实测数据.md` + 5 真题 + 1 模拟新题的 `tests/` 目录
+5. **想看实战例子**：`snippets/` 下的参考实现;真机工程算法层见 `实战复盘/校赛B/工程_STM32H750/Core/`
 
 ---
 

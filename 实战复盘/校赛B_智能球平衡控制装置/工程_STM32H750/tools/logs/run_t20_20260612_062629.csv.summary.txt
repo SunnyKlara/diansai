@@ -1,0 +1,16 @@
+============================================================
+ANALYZE  run_t20_20260612_062629.csv
+============================================================
+samples=202  duration=19.9s  fps=10.1  tail=30% (61 samp, 6.0s)
+target=20.00 cm
+feedback: maxAge=198ms  stalled(>150ms)=1/202 (0%)  -> feedback OK
+tail H: avg=19.56 std=0.85 min=17.9 max=21.4 ptp=3.5  err=-0.44
+BAND (tail): within +/-1.0cm = 70%   within +/-2.0cm = 98%
+   +/-1cm: no    +/-2cm: PASS   (PASS=>=95% in band)
+tail D(vel cm/s): avg=0.43 std=2.21 ptp=11.0
+drift: slope=+0.351 cm/s  (over 6.0s tail => +2.10 cm)
+oscillation: zero-cross ~2.40s  amp~1.20cm  (zc=5); FFT-dominant ~8.00s
+RPM tail: avg=6647 std=33 min=6591 max=6700
+P(PWM) range: 3300..4100
+------------------------------------------------------------
+VERDICT: std=0.85cm  in+/-1cm=70%  drift=+0.35cm/s

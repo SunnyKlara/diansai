@@ -1,0 +1,17 @@
+============================================================
+ANALYZE  live_ki_20260612_002157.csv
+============================================================
+samples=199  duration=19.8s  fps=10.0  tail=95% (190 samp, 18.9s)
+target=15.00 cm
+feedback: maxAge=91ms  stalled(>150ms)=0/199 (0%)  -> feedback OK
+tail H: avg=13.96 std=1.05 min=11.0 max=16.9 ptp=5.9  err=-1.04
+BAND (tail): within +/-1.0cm = 43%   within +/-2.0cm = 89%
+   +/-1cm: no    +/-2cm: close   (PASS=>=95% in band)
+tail D(vel cm/s): avg=-0.07 std=1.69 ptp=11.4
+drift: slope=+0.070 cm/s  (over 18.9s tail => +1.33 cm)
+oscillation: zero-cross ~1.26s  amp~1.49cm  (zc=30); FFT-dominant ~8.00s
+RPM tail: avg=6624 std=35 min=6547 max=6697
+RPM track err |sp-meas|: avg=33 max=87  (inner-loop tightness)
+P(PWM) range: 3914..4022
+------------------------------------------------------------
+VERDICT: std=1.05cm  in+/-1cm=43%  drift=+0.07cm/s

@@ -118,7 +118,7 @@ _*_scan.txt
 serial_log.txt
 serial_cmd.txt
 # PID 调参串口抓数 CSV（tune_step.ps1 产出，按需手动归档关键几条到 04_调试记录）
-workbench/Main/tools/logs/
+实战复盘/校赛B_智能球平衡控制装置/工程_STM32H750/tools/logs/
 
 # 微信/即时通讯导出的临时截图（正式图请移入 02_硬件 等目录并改名）
 微信图片_*.jpg
@@ -140,3 +140,36 @@ workbench/9-4 串口收发文本数据包/
 
 # 工程整包备份（勿入库，体积大）
 *.zip
+
+# ---------- LaTeX 报告构建中间产物（保留 .tex/.pdf 源与产物,忽略中间件）----------
+*.aux
+*.toc
+*.out
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+
+# ===== MSPM0 工程构建产物 (源码保留, 编译产物/SysConfig生成物不进 git) =====
+# 注: MSPM0 代码放在全 ASCII 路径 workbench/mspm0/ —— GCC 工具链不认中文路径
+workbench/mspm0/**/gcc/*.obj
+workbench/mspm0/**/gcc/*.out
+workbench/mspm0/**/gcc/*.map
+workbench/mspm0/**/gcc/*.hex
+workbench/mspm0/**/gcc/*.bin
+workbench/mspm0/**/gcc/ti_msp_dl_config.c
+workbench/mspm0/**/gcc/ti_msp_dl_config.h
+workbench/mspm0/**/gcc/device.opt
+workbench/mspm0/**/gcc/device.lds.genlibs
+workbench/mspm0/**/gcc/Event.dot
+workbench/mspm0/**/gcc/*.log
+workbench/mspm0/**/gcc/_sctest/
+
+# ---------- 天猛星资料：第三方大包/固件/工具不入库（可重下，避免撑大仓库 + Windows 超长路径）----------
+workbench/天猛星主板平台/资料/ESP8266-01S/原装出厂固件库/
+workbench/天猛星主板平台/资料/ESP8266-01S/固件烧录工具/
+workbench/天猛星主板平台/资料/**/*.zip
+**/_temp_by_dltool/
+*.bin_rep
+
+# 临时 PDF 提取/转换中间目录（不入库）
+.tmp_pdf/

@@ -1,0 +1,17 @@
+============================================================
+ANALYZE  run_t20_20260612_035121.csv
+============================================================
+samples=348  duration=29.9s  fps=11.6  tail=50% (174 samp, 17.3s)
+target=20.00 cm
+feedback: maxAge=198ms  stalled(>150ms)=3/348 (1%)  -> feedback OK
+tail H: avg=20.70 std=1.84 min=17.8 max=25.2 ptp=7.4  err=+0.70
+BAND (tail): within +/-1.0cm = 41%   within +/-2.0cm = 74%
+   +/-1cm: no    +/-2cm: no   (PASS=>=95% in band)
+tail D(vel cm/s): avg=0.19 std=6.02 ptp=29.2
+   -> D NOISE-DOMINATED (vel std 6.0 while H std 1.84): filter velocity (raise 'f'/observer) before adding Kd
+drift: slope=+0.052 cm/s  (over 17.3s tail => +0.91 cm)
+oscillation: zero-cross ~1.92s  amp~2.60cm  (zc=18); FFT-dominant ~1.80s
+RPM tail: avg=6584 std=62 min=6432 max=6714
+P(PWM) range: 0..4100
+------------------------------------------------------------
+VERDICT: std=1.84cm  in+/-1cm=41%  drift=+0.05cm/s

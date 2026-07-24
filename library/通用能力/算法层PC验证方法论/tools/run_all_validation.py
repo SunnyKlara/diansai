@@ -2,7 +2,7 @@
 run_all_validation.py
 =====================
 
-一键回归测试：扫描 cases/ 下所有 algo_reference.py 并跑一遍。
+一键回归测试：扫描 workbench/ 下所有 algo_reference.py + snippets 里的 _example 并跑一遍。
 
 用途：
   1. 修改了某题的算法 → 跑一次确认其他题没受影响
@@ -39,13 +39,13 @@ def find_repo_root() -> Path:
 
 def discover_algo_refs(repo_root: Path) -> list:
     """扫描所有 algo_reference.py 和 snippets 下的 _example。"""
-    base = repo_root / "备赛系统" / "B_历年真题实战"
+    base = repo_root / "workbench"
     scripts = []
     if base.exists():
-        scripts.extend(sorted(base.glob("**/01_代码/tests/algo_reference.py")))
+        scripts.extend(sorted(base.glob("**/tests/algo_reference.py")))
 
     # 加 snippets 下的所有 .py（每个都有 _example）
-    snippets = repo_root / "备赛系统" / "C_通用能力" / "算法层PC验证方法论" / "snippets"
+    snippets = repo_root / "library" / "通用能力" / "算法层PC验证方法论" / "snippets"
     if snippets.exists():
         scripts.extend(sorted(snippets.glob("*.py")))
 
@@ -56,10 +56,10 @@ def run_one(script: Path, verbose: bool, repo_root: Path) -> tuple:
     """跑单个 algo_reference.py，返回 (ok, elapsed_s, summary)。"""
     rel = script.relative_to(repo_root)
     parts = rel.parts
-    # 真题：cases/<年份>/<题目>/...
+    # 题目：workbench/<题目文件夹>/...
     # snippet：library/通用能力/算法层PC验证方法论/snippets/<文件>.py
-    if len(parts) >= 4 and parts[1] == "B_历年真题实战":
-        title = "/".join(parts[2:4])
+    if len(parts) >= 2 and parts[0] == "workbench":
+        title = parts[1]
     else:
         title = "snippet/" + script.stem
 

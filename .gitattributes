@@ -1,0 +1,25 @@
+# 防止 EOL/文本转换破坏二进制文件（PDF/docx/图片/固件/编译产物在 checkout 时被 CRLF 损坏）
+*.pdf   binary
+*.docx  binary
+*.doc   binary
+*.xlsx  binary
+*.pptx  binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.bmp   binary
+*.ico   binary
+*.webp  binary
+*.zip   binary
+*.7z    binary
+*.rar   binary
+*.gz    binary
+*.bin   binary
+*.exe   binary
+*.dll   binary
+*.out   binary
+*.hex   binary
+*.elf   binary
+*.o     binary
+*.obj   binary

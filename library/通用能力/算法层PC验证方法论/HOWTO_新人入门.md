@@ -200,14 +200,7 @@ python library/通用能力/算法层PC验证方法论/tools/run_all_validation.
 
 应输出 `11/11 ALL PASSED`。
 
-### 练习 2：在 2024 B 上跑端到端冒烟（5 分钟）
-
-```bash
-cd cases/2024/B_单相功率分析仪/01_代码/tests
-# （根据 README 里的端到端冒烟说明）
-```
-
-### 练习 3：用脚手架生成新题骨架（5 分钟）
+### 练习 2：用脚手架生成新题骨架（5 分钟）
 
 ```bash
 python tools/new_problem.py 2026 测 测试题目 --topic generic
@@ -221,7 +214,7 @@ python tools/new_problem.py 2026 测 测试题目 --topic generic
 
 1. 先看 `00_算法层PC验证方法论.md`
 2. 再看 `01_PC验证脚手架.md`（直接复制粘贴的代码）
-3. 还不懂就模仿 `cases/2024/B_单相功率分析仪/`（最完整的参考样例）
+3. 参考真机工程的算法层组织：`实战复盘/校赛B_智能球平衡控制装置/工程_STM32H750/Core/`
 
 ---
 

@@ -1,0 +1,16 @@
+============================================================
+ANALYZE  run_t15_20260612_023255.csv
+============================================================
+samples=295  duration=24.9s  fps=11.8  tail=50% (148 samp, 14.7s)
+target=15.00 cm
+feedback: maxAge=205ms  stalled(>150ms)=3/295 (1%)  -> *** FEEDBACK STALLING - fix sensor before trusting tune ***
+tail H: avg=5.70 std=5.90 min=0.0 max=16.7 ptp=16.7  err=-9.30
+BAND (tail): within +/-1.0cm = 9%   within +/-2.0cm = 20%
+   +/-1cm: no    +/-2cm: no   (PASS=>=95% in band)
+tail D(vel cm/s): avg=-0.93 std=7.15 ptp=36.8
+drift: slope=+0.107 cm/s  (over 14.7s tail => +1.57 cm)
+oscillation: zero-cross ~4.89s  amp~8.35cm  (zc=6); FFT-dominant ~4.65s
+RPM tail: avg=6532 std=155 min=6264 max=6752
+P(PWM) range: 0..4050
+------------------------------------------------------------
+VERDICT: std=5.90cm  in+/-1cm=9%  drift=+0.11cm/s

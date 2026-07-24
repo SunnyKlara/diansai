@@ -27,13 +27,13 @@
 ```bash
 # 复制到你的真题工程
 cp library/通用能力/算法层PC验证方法论/snippets/pid_controller.py \
-   cases/2026/X_题名/01_代码/tests/pid_controller.py
+   workbench/2026-X_题名/工程_平台名/tests/pid_controller.py
 
 cp library/通用能力/算法层PC验证方法论/snippets/pid_controller.h \
-   cases/2026/X_题名/01_代码/Algorithm/
+   workbench/2026-X_题名/工程_平台名/Algorithm/
 
 cp library/通用能力/算法层PC验证方法论/snippets/pid_controller.c \
-   cases/2026/X_题名/01_代码/Algorithm/
+   workbench/2026-X_题名/工程_平台名/Algorithm/
 ```
 
 或者在 algo_reference.py 顶部直接 import：

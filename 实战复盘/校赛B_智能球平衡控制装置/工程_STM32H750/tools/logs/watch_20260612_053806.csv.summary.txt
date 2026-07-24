@@ -1,0 +1,17 @@
+============================================================
+ANALYZE  watch_20260612_053806.csv
+============================================================
+samples=150  duration=14.9s  fps=10.0  tail=50% (75 samp, 7.4s)
+target=10.00 cm
+feedback: maxAge=90ms  stalled(>150ms)=0/150 (0%)  -> feedback OK
+tail H: avg=8.63 std=1.32 min=6.6 max=11.1 ptp=4.5  err=-1.37
+BAND (tail): within +/-1.0cm = 25%   within +/-2.0cm = 68%
+   +/-1cm: no    +/-2cm: no   (PASS=>=95% in band)
+tail D(vel cm/s): avg=-0.59 std=1.80 ptp=8.5
+drift: slope=-0.561 cm/s  (over 7.4s tail => -4.15 cm)
+oscillation: zero-cross ~2.96s  amp~1.87cm  (zc=5); FFT-dominant ~8.00s
+RPM tail: avg=6618 std=35 min=6554 max=6674
+RPM track err |sp-meas|: avg=33 max=70  (inner-loop tightness)
+P(PWM) range: 3919..4043
+------------------------------------------------------------
+VERDICT: std=1.32cm  in+/-1cm=25%  drift=-0.56cm/s

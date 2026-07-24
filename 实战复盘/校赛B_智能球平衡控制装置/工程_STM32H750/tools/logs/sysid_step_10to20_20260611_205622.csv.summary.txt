@@ -1,0 +1,14 @@
+============================================================
+ANALYZE  sysid_step_10to20_20260611_205622.csv
+============================================================
+samples=100  duration=9.9s  fps=10.0  tail=50% (50 samp, 4.9s)
+target=20.00 cm
+tail H: avg=18.84 std=0.61 min=17.4 max=19.7 ptp=2.3  err=-1.16
+BAND (tail): within +/-1.0cm = 56%   within +/-2.0cm = 88%
+   +/-1cm: no    +/-2cm: close   (PASS=>=95% in band)
+tail D(vel cm/s): avg=-0.02 std=1.99 ptp=8.1
+drift: slope=+0.024 cm/s  (over 4.9s tail => +0.12 cm)
+oscillation: zero-cross ~2.44s  amp~0.87cm  (zc=4); FFT-dominant ~2.95s
+P(PWM) range: 3340..3555
+------------------------------------------------------------
+VERDICT: std=0.61cm  in+/-1cm=56%  drift=+0.02cm/s

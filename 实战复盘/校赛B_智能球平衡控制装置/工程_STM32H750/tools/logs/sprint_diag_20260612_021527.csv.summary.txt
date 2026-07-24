@@ -1,0 +1,17 @@
+============================================================
+ANALYZE  sprint_diag_20260612_021527.csv
+============================================================
+samples=160  duration=15.9s  fps=10.0  tail=95% (152 samp, 15.1s)
+target=15.00 cm
+feedback: maxAge=90ms  stalled(>150ms)=0/160 (0%)  -> feedback OK
+tail H: avg=19.41 std=6.57 min=8.7 max=31.6 ptp=22.9  err=+4.41
+BAND (tail): within +/-1.0cm = 3%   within +/-2.0cm = 8%
+   +/-1cm: no    +/-2cm: no   (PASS=>=95% in band)
+tail D(vel cm/s): avg=-0.84 std=3.85 ptp=20.2
+drift: slope=-1.233 cm/s  (over 15.1s tail => -18.66 cm)
+oscillation: none/flat (good); FFT-dominant ~5.25s
+RPM tail: avg=6581 std=55 min=6425 max=6683
+RPM track err |sp-meas|: avg=37 max=106  (inner-loop tightness)
+P(PWM) range: 3900..4011
+------------------------------------------------------------
+VERDICT: std=6.57cm  in+/-1cm=3%  drift=-1.23cm/s
