@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Cold Start Context Loader",
+      "description": "开始任何 spec 任务前，提醒 AI 先读宪法 + 仓库规范 + 当前交接，确保有上下文再动手写代码。",
+      "trigger": "PreTaskExec",
+      "action": {
+        "type": "agent",
+        "prompt": "任务开始前，确认你已读取必要上下文：1) ARCHITECTURE.md（项目定位 + 北极星 + 做题闭环）2) .kiro/steering/电赛备赛仓库规范.md（强制约束 + 诚实标注铁律）3) 根目录 CONTINUATION_GUIDE.md（当前进度 + 下一步 + 阻塞）。若是控制/调试类任务，还需读 .kiro/steering/AI协作调试方法论.md（单变量 + 定量裁决 + 自我推翻）。不要在没有上下文的情况下开始写代码；没真机验证的产出标『待验证』。"
+      },
+      "enabled": true
+    }
+  ]
+}

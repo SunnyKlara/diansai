@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Session Handoff Updater",
+      "description": "对话结束时自检并更新 CONTINUATION_GUIDE：重点是『本次提交/推送的工作线，立刻从 guide 清成完成、迭代史挪去归档』，杜绝过时记录带偏下一个对话",
+      "trigger": "Stop",
+      "action": {
+        "type": "agent",
+        "prompt": "对话即将结束。执行 session handoff 自检：1) 根目录 CONTINUATION_GUIDE.md 是否反映当前状态（当前阶段/下一步/阻塞）？2) 本次做了什么决策需要记录？3) 有没有新阻塞或下一步变化？4) 若改了代码：真机/PC 验证状态如何（没验证的标『待验证』）？5) 本次若有 git commit/push：立刻把对应 guide 记录标为完成、并把冗长迭代史/被推翻的决策挪去 `.kiro/steering/knowledge/决策与交接归档.md`——绝不留「未提交/进行中/待验证」等过时字样（这是下一个新对话被带偏、去重做已完成事的头号原因）。6) 若本次踩了可迁移到其它题的坑，追加进 `.kiro/steering/knowledge/跨题坑库.md`。7) guide 铁律＝只留「现在进行到哪＋下一步」，做完的压成一句并指向 commit/真值源。有变化就更新对应文件；纯讨论无代码变更可跳过——但第 5 条『提交了就清对应记录』必须做。"
+      },
+      "enabled": true
+    }
+  ]
+}

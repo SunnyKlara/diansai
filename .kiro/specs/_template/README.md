@@ -47,18 +47,13 @@ xcopy /E /I ".kiro\specs\_template" ".kiro\specs\2025-A-能量回馈变流器"
 05_参考资料/  （可选）
 ```
 
-### 5. 开新分支
+### 5. 直接在 main 上做（主干开发）
 
-按 steering 规范不能直接动 main：
-
-```cmd
-git checkout -b "feature/<年份>-<题号>-<题目名>"
-```
+按现行 steering 规范＝**主干开发**：直接在 `main` 小步提交、高频 push，不开 feature 分支、不开 PR（见 `电赛备赛仓库规范.md`「提交与推送规范」）。仅高风险大改才用短命 `exp/<简述>` 分支、验完即合回删除。
 
 ### 6. 按 tasks.md 顺序推进
 
-13 步严格不要跳，每个阶段完成立刻 commit。  
-完成所有 19 个 task 后合 main。
+各步严格不要跳，每个阶段完成立刻 `commit`（中文格式 `<类型>(scope): 简述`）。
 
 ## 与配套文档的关系
 
