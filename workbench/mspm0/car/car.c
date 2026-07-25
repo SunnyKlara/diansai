@@ -52,10 +52,12 @@ static volatile int g_mode   = MODE_IDLE;
 static volatile int g_target = 0;       /* mA / RPM / counts / PWM% (随模式) */
 static volatile int g_print_ms = PRINT_DIV;  /* 遥测周期(ms=tick数). 整定时 f20 调快抓暂态, f100 复原 */
 
-/* 增益: 索引 0=电流环 1=速度环 2=位置环. [1]速度环 2026-07-25 真机整定(target=500: std~3%,超调10%,rise~710ms); [0]电流/[2]位置待整定 */
-static float gkp[3] = { 0.20f, 0.03f, 0.02f };   /* 速度环 Kp=0.03 真机达标(原0.10会限幅振荡) */
-static float gki[3] = { 0.02f, 0.02f, 0.00f };
-static float gkd[3] = { 0.00f, 0.00f, 0.00f };
+/* 增益: 索引 0=电流环 1=速度环 2=位置环. [1]速度环+[2]位置环 2026-07-25 真机整定达标; [0]电流环待整定
+ * 速度环 target=500: std~3%/超调10%/rise~710ms | 位置环(级联速度内环) 到位±~40counts(~1.5%rev),无振荡/小超调;
+ * 精确定位(消死区停短的残余)后续加死区前馈或小积分,当前为粗定位可用基线 */
+static float gkp[3] = { 0.20f, 0.03f, 0.20f };   /* [1]速度Kp0.03(原0.10限幅振荡) [2]位置Kp0.20(原0.02太钝) 真机达标 */
+static float gki[3] = { 0.02f, 0.02f, 0.00f };   /* 位置环用纯PD、不加I(死区下积分易 hunt) */
+static float gkd[3] = { 0.00f, 0.00f, 0.05f };   /* [2]位置环轻阻尼 Kd0.05 */
 
 static pid_t pid_i[2], pid_v[2], pid_p[2];   /* 每电机一份 */
 static int   i_meas[2] = { 0, 0 };            /* 最近电流(遥测用) */
