@@ -27,8 +27,9 @@ static void delay_ms(uint32_t ms) { while (ms--) delay_cycles(CPUCLK_HZ / 1000UL
 /* ==== 安全 / 时序 ==== */
 #define PWM_CAP       60        /* PWM 上限%: 7.4V 电机 / 12V 母线, 封顶保护 */
 #define BASE_TICK_MS  1         /* 基础节拍 ~1ms */
-#define SPEED_DIV     20        /* 速度更新每 20 拍(~20ms=50Hz) */
-#define POS_DIV       40        /* 位置环每 40 拍(~40ms=25Hz) */
+#define SPEED_DIV     50        /* 速度测量窗+速度环每 50 拍(~50ms=20Hz). 加宽窗=更多counts/窗=降量化噪声
+                                 * (低速~30RPM时 20ms窗仅~10counts→±1count≈±3.3RPM噪声;50ms窗~25counts→噪声减~2.5x) */
+#define POS_DIV       100       /* 位置外环每 100 拍(~100ms=10Hz, 外环慢于速度内环) */
 #define PRINT_DIV     100       /* 遥测每 ~100ms */
 #define DISP_DIV      25        /* LCD 计数刷新每 ~25ms(40Hz), 且仅在计数变化时才重绘 */
 #define ENC_CPR       899.0f    /* 输出轴每圈计数(4x正交解码). ~899=估计值(旧1x占位225×4);
@@ -49,9 +50,10 @@ static const char *mode_name[MODE_N] = { "IDLE", "CURR", "SPD", "POS", "OPEN" };
 /* ==== 运行时(串口可改) ==== */
 static volatile int g_mode   = MODE_IDLE;
 static volatile int g_target = 0;       /* mA / RPM / counts / PWM% (随模式) */
+static volatile int g_print_ms = PRINT_DIV;  /* 遥测周期(ms=tick数). 整定时 f20 调快抓暂态, f100 复原 */
 
-/* 增益: 索引 0=电流环 1=速度环 2=位置环 (默认保守, 待整定) */
-static float gkp[3] = { 0.20f, 0.10f, 0.02f };
+/* 增益: 索引 0=电流环 1=速度环 2=位置环. [1]速度环 2026-07-25 真机整定(target=500: std~3%,超调10%,rise~710ms); [0]电流/[2]位置待整定 */
+static float gkp[3] = { 0.20f, 0.03f, 0.02f };   /* 速度环 Kp=0.03 真机达标(原0.10会限幅振荡) */
 static float gki[3] = { 0.02f, 0.02f, 0.00f };
 static float gkd[3] = { 0.00f, 0.00f, 0.00f };
 
@@ -113,6 +115,7 @@ static void run_cmd(const char *s, int n)
         case 'i': li = loop_index(); if (li >= 0) { gki[li] = v / 1000.0f; apply_gains(); } break;
         case 'd': li = loop_index(); if (li >= 0) { gkd[li] = v / 1000.0f; apply_gains(); } break;
         case 'z': g_mode = MODE_IDLE; g_target = 0; reset_all_pid(); break;
+        case 'f': if (v >= 5 && v <= 2000) g_print_ms = v; break;   /* 遥测周期 ms(整定抓暂态用) */
         case '?': break;
         default:  break;
     }
@@ -279,6 +282,11 @@ static void enc_probe_run(void)
 }
 #endif /* ENC_PROBE */
 
+/* 编码器采样由 SysTick 5kHz 定时中断驱动(不放主循环)——主循环的阻塞式 UART 遥测每次会
+ * stall 几 ms, 若在主循环 poll 会漏采/混叠 → 速度乱跳负值、环整不动。放 SysTick(会抢占主循环)
+ * 保证固定 5kHz 采样, 远超电机最高换向率(~1k/s@60%PWM), 不混叠。encoder_count() 读到干净计数。 */
+void SysTick_Handler(void) { encoder_poll(); }
+
 int main(void)
 {
     SYSCFG_DL_init();
@@ -290,6 +298,7 @@ int main(void)
     GC9A01_Init();
     motor_init();
     encoder_init();
+    SysTick_Config(CPUCLK_HZ / 5000);   /* 5kHz 编码器采样中断(见 SysTick_Handler) */
 
     GC9A01_FillScreen(LCD_BLACK);
     GC9A01_DrawStringCentered(24, "MOTOR CTL", LCD_GREEN, LCD_BLACK, 2);
@@ -303,8 +312,8 @@ int main(void)
     pid_init(&pid_p[1], gkp[2], gki[2], gkd[2], -300.0f, 300.0f);
 
     uart_dbg_puts("\n[ctl] boot | modes: m0 IDLE / m1 CURR / m2 SPD / m3 POS / m4 OPEN\n");
-    uart_dbg_puts("[ctl] cmds: t<v> target | p/i/d<x1000> gains | z stop | ? status\n");
-    uart_dbg_puts("[ctl] SPD/POS + encoder = WAIT-verify (encoder A/B via 1k/2k divider 5V->3.3V); ENC_CPR TBD\n");
+    uart_dbg_puts("[ctl] cmds: t<v> target | p/i/d<x1000> gains | f<ms> telem rate | z stop | ? status\n");
+    uart_dbg_puts("[ctl] encoder=sampled 4x quad(clean); ENC_CPR=899 est(hand-turn TBD); tune: m2 f20 t<rpm> p.. i..\n");
     print_status();
 
     int32_t lastc[2] = { 0, 0 };
@@ -316,7 +325,7 @@ int main(void)
 
     while (1) {
         poll_uart();
-        encoder_poll();   /* 定时采样正交解码(替代边沿中断) */
+        /* 编码器采样已移到 SysTick 5kHz 中断(见 SysTick_Handler), 主循环不再 poll */
 
         int32_t c0 = encoder_count(ENC_1);
         int32_t c1 = encoder_count(ENC_2);
@@ -376,7 +385,7 @@ int main(void)
         motor_set(MOTOR_M1, (int16_t)pwm_out[0]);
         motor_set(MOTOR_M2, (int16_t)pwm_out[1]);
 
-        if (tick % PRINT_DIV == 0) {
+        if (tick % (uint32_t)g_print_ms == 0) {
             uart_dbg_puts("[ctl] "); uart_dbg_puts(mode_name[g_mode]);
             uart_dbg_puts(" tgt=");  uart_dbg_put_int(g_target);
             uart_dbg_puts(" | I:"); uart_dbg_put_int(i_meas[0]); uart_dbg_putc(','); uart_dbg_put_int(i_meas[1]);

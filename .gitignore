@@ -163,6 +163,8 @@ workbench/mspm0/**/gcc/device.lds.genlibs
 workbench/mspm0/**/gcc/Event.dot
 workbench/mspm0/**/gcc/*.log
 workbench/mspm0/**/gcc/_sctest/
+# 整定/探活串口抓数临时输出(tune_step.ps1/probe_serial.ps1 产出; 关键数据手动归档到调试日志,不入库)
+workbench/mspm0/**/*_out.txt
 
 # ---------- 天猛星资料：第三方大包/固件/工具不入库（可重下，避免撑大仓库 + Windows 超长路径）----------
 workbench/天猛星主板平台/资料/ESP8266-01S/原装出厂固件库/
