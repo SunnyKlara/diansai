@@ -28,14 +28,17 @@ static void delay_ms(uint32_t ms) { while (ms--) delay_cycles(CPUCLK_HZ / 1000UL
 
 /* ==== 安全 / 时序 ==== */
 #define PWM_CAP       60        /* PWM 上限%: 7.4V 电机 / 12V 母线, 封顶保护 */
-#define BASE_TICK_MS  1         /* 基础节拍 ~1ms */
-#define SPEED_DIV     50        /* 速度测量窗+速度环每 50 拍(~50ms=20Hz). 加宽窗=更多counts/窗=降量化噪声
-                                 * (低速~30RPM时 20ms窗仅~10counts→±1count≈±3.3RPM噪声;50ms窗~25counts→噪声减~2.5x) */
-#define POS_DIV       100       /* 位置外环每 100 拍(~100ms=10Hz, 外环慢于速度内环) */
-#define PRINT_DIV     100       /* 遥测每 ~100ms */
-#define DISP_DIV      25        /* LCD 计数刷新每 ~25ms(40Hz), 且仅在计数变化时才重绘 */
-#define ENC_CPR       800.0f    /* 输出轴每圈计数(4x正交解码). 2026-07-25 真机手转标定: 转8圈计数增量6402 -> 800.25, 取800(原估899偏高~12%)。 */
-#define SPEED_WIN_MS  (SPEED_DIV * BASE_TICK_MS)
+/* ★2026-07-26 时基修正(真机测出的 bug): 旧版用"主循环拍数 × 假设1ms"计时, 但 LCD 逐像素重绘
+ * (~100ms/次)把每拍拖到~5ms => (1)速度窗按50ms算、实为~250ms => 报的RPM虚高~5x; (2)速度/位置环
+ * 退化到~4Hz => 抗扰迟钝。改用 SysTick 5kHz(200us/拍, 准)做真实时基: 调度按真实ms、速度用真实dt;
+ * LCD 刷新大幅调慢, 不再拖死主循环。真机验证: 见调试日志 2026-07-26 抗扰测试。 */
+#define ST_HZ         5000UL    /* SysTick 频率: 编码器采样 + 控制主时基 */
+#define ST_PER_MS     5UL       /* 每 ms 的 SysTick 数 (ST_HZ/1000) */
+#define SPEED_MS      50        /* 速度测量窗 + 速度环周期(ms 真实时间, ~20Hz) */
+#define POS_MS        100       /* 位置外环周期(ms 真实时间, ~10Hz) */
+#define PRINT_MS      100       /* 遥测默认周期(ms), 命令 f<ms> 改 */
+#define DISP_MS       500       /* LCD 计数刷新周期(ms): 逐像素重绘~100ms/次, 调慢(旧~25拍)防再拖死控制环 */
+#define ENC_CPR       800.0f    /* 输出轴每圈计数(4x正交解码). 2026-07-25 真机手转标定: 转8圈增量6402 -> 800(原估899偏高~12%)。 */
 
 /* ==== 编码器专项排查探针(临时) ====
  * =1 开启: main() 一进来就跑 enc_probe_run()(永不返回, 电机全程不驱动),
@@ -51,7 +54,7 @@ static const char *mode_name[MODE_N] = { "IDLE", "CURR", "SPD", "POS", "OPEN", "
 /* ==== 运行时(串口可改) ==== */
 static volatile int g_mode   = MODE_IDLE;
 static volatile int g_target = 0;       /* mA / RPM / counts / PWM% (随模式) */
-static volatile int g_print_ms = PRINT_DIV;  /* 遥测周期(ms=tick数). 整定时 f20 调快抓暂态, f100 复原 */
+static volatile int g_print_ms = PRINT_MS;   /* 遥测周期(真实ms). 整定时 f20 调快抓暂态, f100 复原 */
 /* 位置环精定位(2026-07-25, 运行时可调免重烧): 死区前馈% + 到位死区counts */
 static int g_pwm_dz  = 12;   /* 死区前馈%(实测电机死区~10%PWM). 位置内环按【位置误差方向】叠此值->推越死区、末端不停短. 命令 w<v>. 2026-07-25真机整定=12 */
 static int g_pos_tol = 15;   /* 到位死区counts(~7°@800cpr). |位置误差|<此值即停+复位PID, 防末端抖/creep. 命令 e<v>. 真机整定=15(两轮到位±6~15) */
@@ -60,7 +63,7 @@ static int g_m1duty  = 0, g_m2duty = 0;  /* MODE_DUAL 调试(m5): 独立每电�
 /* 增益: 索引 0=电流环 1=速度环 2=位置环. [1]速度环+[2]位置环 2026-07-25 真机整定达标; [0]电流环待整定
  * 速度环 target=500: std~3%/超调10%/rise~710ms | 位置环(级联速度内环) 到位±~40counts(~1.5%rev),无振荡/小超调;
  * 精确定位(消死区停短的残余)后续加死区前馈或小积分,当前为粗定位可用基线 */
-static float gkp[3] = { 0.20f, 0.03f, 0.20f };   /* [1]速度Kp0.03(原0.10限幅振荡) [2]位置Kp0.20(原0.02太钝) 真机达标 */
+static float gkp[3] = { 0.20f, 0.15f, 0.20f };   /* [1]速度Kp0.15(2026-07-26真机重整定: 修完5x时基bug后反馈小5x, 旧0.03实际弱5x->抬到0.15; 0.20会振; 松手过冲276->207) [2]位置Kp0.20 真机达标 */
 static float gki[3] = { 0.02f, 0.02f, 0.00f };   /* 位置环用纯PD、不加I(死区下积分易 hunt) */
 static float gkd[3] = { 0.00f, 0.00f, 0.05f };   /* [2]位置环轻阻尼 Kd0.05 */
 
@@ -319,7 +322,10 @@ static void enc_probe_run(void)
 /* 编码器采样由 SysTick 5kHz 定时中断驱动(不放主循环)——主循环的阻塞式 UART 遥测每次会
  * stall 几 ms, 若在主循环 poll 会漏采/混叠 → 速度乱跳负值、环整不动。放 SysTick(会抢占主循环)
  * 保证固定 5kHz 采样, 远超电机最高换向率(~1k/s@60%PWM), 不混叠。encoder_count() 读到干净计数。 */
-void SysTick_Handler(void) { encoder_poll(); }
+/* SysTick 5kHz: 编码器采样 + 递增主时基计数 g_st(200us/拍)。控制调度改读 g_st 算真实时间,
+ * 不再数会被 LCD/UART 拖慢的主循环拍数(见时基修正说明)。 */
+static volatile uint32_t g_st = 0;
+void SysTick_Handler(void) { encoder_poll(); g_st++; }
 
 /* 位置环内环一步(精定位): |位置误差|<=到位死区 -> 停+复位速度PID(防末端抖/creep);
  * 否则 速度PID输出 + 死区前馈(按方向叠 g_pwm_dz, 推电机越过死区, 末端不停短)。
@@ -375,11 +381,11 @@ int main(void)
     int     pwm_out[2]   = { 0, 0 };
     int32_t pos_ref[2]   = { 0, 0 };          /* 位置模式入模零点(相对定位) */
     int     prev_mode    = MODE_IDLE;
-    uint32_t tick = 0;
+    uint32_t last_spd = 0, last_pos = 0, last_prn = 0, last_dsp = 0;   /* 各周期上次触发时刻(g_st单位=200us) */
 
     while (1) {
         poll_uart();
-        /* 编码器采样已移到 SysTick 5kHz 中断(见 SysTick_Handler), 主循环不再 poll */
+        uint32_t now = g_st;   /* 真实时基快照(SysTick 5kHz); 编码器采样在同一 ISR */
 
         int32_t c0 = encoder_count(ENC_1);
         int32_t c1 = encoder_count(ENC_2);
@@ -388,13 +394,18 @@ int main(void)
         if (g_mode == MODE_POSITION && prev_mode != MODE_POSITION) { pos_ref[0] = c0; pos_ref[1] = c1; }
         prev_mode = g_mode;
 
-        /* 速度测量(固定窗口) */
-        if (tick % SPEED_DIV == 0) {
-            float k = 60000.0f / (ENC_CPR * (float)SPEED_WIN_MS);  /* counts/窗口 -> RPM */
+        /* 调度节拍(按真实时间, 不再数会被 LCD/UART 拖慢的主循环拍): 速度窗/环 SPEED_MS, 位置外环 POS_MS */
+        int spd_tick = 0, pos_tick = 0;
+        if ((uint32_t)(now - last_spd) >= SPEED_MS * ST_PER_MS) {
+            float dt_ms = (float)(uint32_t)(now - last_spd) / (float)ST_PER_MS;   /* 真实经过 ms(修正5x scaling) */
+            float k = 60000.0f / (ENC_CPR * dt_ms);                               /* counts/窗 -> RPM(真实dt) */
             speed_rpm[0] = (float)(c0 - lastc[0]) * k;
             speed_rpm[1] = (float)(c1 - lastc[1]) * k;
             lastc[0] = c0; lastc[1] = c1;
+            last_spd = now;
+            spd_tick = 1;
         }
+        if ((uint32_t)(now - last_pos) >= POS_MS * ST_PER_MS) { last_pos = now; pos_tick = 1; }
 
         switch (g_mode) {
         case MODE_IDLE:
@@ -429,7 +440,7 @@ int main(void)
             break; }
 
         case MODE_SPEED:                /* g_target = 目标转速 RPM(带符号) */
-            if (tick % SPEED_DIV == 0) {
+            if (spd_tick) {
                 pwm_out[0] = (int)pid_step(&pid_v[0], (float)g_target, speed_rpm[0]);
                 pwm_out[1] = (int)pid_step(&pid_v[1], (float)g_target, speed_rpm[1]);
             }
@@ -437,11 +448,11 @@ int main(void)
 
         case MODE_POSITION: {           /* g_target = 目标位置 counts(相对入模点) */
             int32_t rel0 = c0 - pos_ref[0], rel1 = c1 - pos_ref[1];
-            if (tick % POS_DIV == 0) {  /* 外环: 相对位置->速度目标 */
+            if (pos_tick) {             /* 外环: 相对位置->速度目标 */
                 v_target[0] = pid_step(&pid_p[0], (float)g_target, (float)rel0);
                 v_target[1] = pid_step(&pid_p[1], (float)g_target, (float)rel1);
             }
-            if (tick % SPEED_DIV == 0) {/* 内环: 速度环 + 死区前馈 + 到位死区(精定位) */
+            if (spd_tick) {             /* 内环: 速度环 + 死区前馈 + 到位死区(精定位) */
                 pwm_out[0] = pos_inner_step(&pid_v[0], v_target[0], speed_rpm[0], g_target - rel0);
                 pwm_out[1] = pos_inner_step(&pid_v[1], v_target[1], speed_rpm[1], g_target - rel1);
             }
@@ -453,7 +464,8 @@ int main(void)
         motor_set(MOTOR_M1, (int16_t)pwm_out[0]);
         motor_set(MOTOR_M2, (int16_t)pwm_out[1]);
 
-        if (tick % (uint32_t)g_print_ms == 0) {
+        if ((uint32_t)(now - last_prn) >= (uint32_t)g_print_ms * ST_PER_MS) {
+            last_prn = now;
             uart_dbg_puts("[ctl] "); uart_dbg_puts(mode_name[g_mode]);
             uart_dbg_puts(" tgt=");  uart_dbg_put_int(g_target);
             uart_dbg_puts(" | I:"); uart_dbg_put_int(i_meas[0]); uart_dbg_putc(','); uart_dbg_put_int(i_meas[1]);
@@ -465,7 +477,8 @@ int main(void)
 
         /* LCD 计数刷新: 仅在计数变化时重绘对应行(静止零刷=不闪烁),
          * 固定宽度右对齐 + 不透明黑底 => 覆盖式绘制, 免 FillRect 清屏、无残影、位置不漂。 */
-        if (tick % DISP_DIV == 0) {
+        if ((uint32_t)(now - last_dsp) >= DISP_MS * ST_PER_MS) {
+            last_dsp = now;
             char db[16];
             if (c0 != last_disp[0]) {
                 db[0] = 'C'; db[1] = '1'; db[2] = '='; i32_to_field(db + 3, c0, 6);
@@ -479,7 +492,6 @@ int main(void)
             }
         }
 
-        tick++;
-        delay_ms(BASE_TICK_MS);
+        delay_ms(1);   /* 轻延时防空转; 控制/遥测/LCD 均按 g_st 真实时间调度, 不依赖此延时的精度 */
     }
 }
