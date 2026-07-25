@@ -80,15 +80,31 @@ GPIO2.associatedPins[3].direction        = "INPUT";
 GPIO2.associatedPins[3].internalResistor = "PULL_UP";
 GPIO2.associatedPins[3].pin.$assign      = "PB21";
 
+/* ---- IMU(ICM42688) 软件片选 CS=PB6 (GPIO 输出, 低有效, 初始高=未选中) ----
+ *  与 LCD 共用 SPI1(SCK PB9/MOSI PB8/MISO PB7)。ICM 的 INT=PA29(原理图 §12)当前驱动用
+ *  轮询、暂不接入(要用中断驱动时再在此加一个 INPUT 脚 PA29)。 // 待真机验证(陀螺未到货) */
+const GPIO3 = GPIO.addInstance();
+GPIO3.$name                          = "GPIO_IMU";
+GPIO3.associatedPins.create(1);
+GPIO3.associatedPins[0].$name        = "IMU_CS";
+GPIO3.associatedPins[0].direction    = "OUTPUT";
+GPIO3.associatedPins[0].initialValue = "SET";
+GPIO3.associatedPins[0].pin.$assign  = "PB6";
+
 const Board = scripting.addModule("/ti/driverlib/Board", {}, false);
 
-/* ---- 硬件 SPI1: SCK=PB9, MOSI=PB8 (显示屏) ---- */
+/* ---- 硬件 SPI1: SCK=PB9, MOSI=PB8 (LCD + IMU 共享总线) ----
+ *  LCD(gc9a01) 只用 SCK/MOSI(只写不读); IMU(ICM42688) 复用同总线, 额外加 MISO=PB7 读回。
+ *  两者各用独立 GPIO 软件片选(LCD=PB14, IMU=PB6) —— 多设备共享总线必须软件片选,
+ *  硬件 CS0 会在每次传输翻转、会误选另一设备。故硬件 CS0 保留默认(自动分到 PA2, 不接线、空转无害)。
+ *  默认帧格式 mode0, ICM42688 支持 mode0, 与 LCD 同模式可无缝共享。 */
 SPI1.$name                      = "LCD_SPI";
 SPI1.spiClkSrc                  = "BUSCLK";
 SPI1.targetBitRate              = 8000000;
 SPI1.peripheral.$assign         = "SPI1";
 SPI1.peripheral.sclkPin.$assign = "PB9";
 SPI1.peripheral.mosiPin.$assign = "PB8";
+SPI1.peripheral.misoPin.$assign = "PB7";      /* ICM42688 SDO/MISO (IMU 专用, LCD 不接) */
 
 /* ---- 双电机 PWM: TIMA0 4 通道, ~20kHz ---- */
 PWM1.$name                       = "PWM_MOTOR";

@@ -20,7 +20,7 @@ ifeq ($(VERBOSE), 1)
   V :=
 endif
 
-OBJECTS = car.obj motor.obj gc9a01.obj uart_dbg.obj control.obj encoder.obj $(patsubst %.c,%.obj,$(notdir $(SYSCFG_C_FILES)))
+OBJECTS = car.obj motor.obj gc9a01.obj uart_dbg.obj control.obj encoder.obj imu.obj attitude.obj $(patsubst %.c,%.obj,$(notdir $(SYSCFG_C_FILES)))
 
 NAME = car
 
@@ -102,7 +102,15 @@ endef
 
 $(foreach c_file,$(SYSCFG_C_FILES),$(eval $(call C_RULE,$(c_file))))
 
-car.obj: ../car.c ../gc9a01.h ../motor.h ../uart_dbg.h ../control.h ../encoder.h $(SYSCFG_H_FILES)
+car.obj: ../car.c ../gc9a01.h ../motor.h ../uart_dbg.h ../control.h ../encoder.h ../imu.h ../attitude.h $(SYSCFG_H_FILES)
+	@ echo Building $@
+	$(V) $(CC) $(CFLAGS) $< -c -o $@
+
+imu.obj: ../imu.c ../imu.h $(SYSCFG_H_FILES)
+	@ echo Building $@
+	$(V) $(CC) $(CFLAGS) $< -c -o $@
+
+attitude.obj: ../attitude.c ../attitude.h
 	@ echo Building $@
 	$(V) $(CC) $(CFLAGS) $< -c -o $@
 

@@ -20,6 +20,8 @@
 #include "uart_dbg.h"
 #include "control.h"
 #include "encoder.h"
+#include "imu.h"        /* ICM42688 六轴驱动 (// 待真机验证, 陀螺未到货) */
+#include "attitude.h"   /* 六轴姿态解算 (纯算法层, 已 PC 单测验证) */
 
 #define CPUCLK_HZ 32000000UL
 static void delay_ms(uint32_t ms) { while (ms--) delay_cycles(CPUCLK_HZ / 1000UL); }
@@ -109,6 +111,28 @@ static void print_status(void)
     }
     uart_dbg_puts(" (PWM_CAP="); uart_dbg_put_int(PWM_CAP); uart_dbg_puts("%)\n");
 }
+/* IMU 验活读数(命令 'g'): 陀螺仪到货后第一步 bring-up。
+ * 打印 WHO_AM_I(应=71=0x47) + 陀螺(0.01°/s) + 加速度(mg) + 温度(0.1℃)。
+ * 无芯片时 WHOAMI 读 0 或 255 -> 查 CS(PB6)/MISO(PB7)接线与供电。 // 待真机验证 */
+static void imu_dump(void)
+{
+    uint8_t id = imu_whoami();
+    uart_dbg_puts("[imu] WHOAMI="); uart_dbg_put_int((int)id);
+    if (id == ICM42688_WHOAMI_VAL) {
+        imu_raw_t r; float gd[3], ag[3];
+        imu_read_raw(&r);
+        imu_convert(&r, gd, ag);
+        uart_dbg_puts(" OK(0x47)\n[imu] gyro cdps:");
+        uart_dbg_put_int((int)(gd[0]*100)); uart_dbg_putc(','); uart_dbg_put_int((int)(gd[1]*100)); uart_dbg_putc(','); uart_dbg_put_int((int)(gd[2]*100));
+        uart_dbg_puts(" | accel mg:");
+        uart_dbg_put_int((int)(ag[0]*1000)); uart_dbg_putc(','); uart_dbg_put_int((int)(ag[1]*1000)); uart_dbg_putc(','); uart_dbg_put_int((int)(ag[2]*1000));
+        uart_dbg_puts(" | temp0.1C:"); uart_dbg_put_int((int)(imu_temp_c(r.temp)*10));
+        uart_dbg_puts("\n");
+    } else {
+        uart_dbg_puts(" (期望71=0x47; 读到0或255=无响应,查CS/MISO接线与供电)\n");
+    }
+}
+
 static void run_cmd(const char *s, int n)
 {
     char c = s[0];
@@ -125,6 +149,7 @@ static void run_cmd(const char *s, int n)
         case 'e': if (v >= 0 && v <= 300) g_pos_tol = v; break;     /* 位置到位死区 counts */
         case 'x': g_m1duty = clampi(v, -PWM_CAP, PWM_CAP); break;   /* DUAL(m5): M1 直驱 PWM% */
         case 'y': g_m2duty = clampi(v, -PWM_CAP, PWM_CAP); break;   /* DUAL(m5): M2 直驱 PWM% */
+        case 'g': imu_dump(); return;   /* IMU 验活读数(陀螺到货后 bring-up 用) */
         case '?': break;
         default:  break;
     }
@@ -323,6 +348,7 @@ int main(void)
     motor_init();
     encoder_init();
     SysTick_Config(CPUCLK_HZ / 5000);   /* 5kHz 编码器采样中断(见 SysTick_Handler) */
+    int imu_id = imu_init();   /* ICM42688 初始化; 陀螺未到货时读不到0x47 -> 返回非0, 不阻塞主程序。// 待真机验证 */
 
     GC9A01_FillScreen(LCD_BLACK);
     GC9A01_DrawStringCentered(24, "MOTOR CTL", LCD_GREEN, LCD_BLACK, 2);
@@ -336,8 +362,10 @@ int main(void)
     pid_init(&pid_p[1], gkp[2], gki[2], gkd[2], -300.0f, 300.0f);
 
     uart_dbg_puts("\n[ctl] boot | modes: m0 IDLE / m1 CURR / m2 SPD / m3 POS / m4 OPEN / m5 DUAL(x/y indep)\n");
-    uart_dbg_puts("[ctl] cmds: t<v> tgt | p/i/d<x1000> gains | w<%>dz e<cnt>tol(pos精定位) | f<ms> | z stop | ?\n");
+    uart_dbg_puts("[ctl] cmds: t<v> tgt | p/i/d<x1000> gains | w<%>dz e<cnt>tol(pos精定位) | f<ms> | g IMU | z stop | ?\n");
     uart_dbg_puts("[ctl] enc=4x quad ENC_CPR=800(cal) | build "); uart_dbg_puts(__DATE__); uart_dbg_puts(" "); uart_dbg_puts(__TIME__); uart_dbg_puts("\n");
+    uart_dbg_puts("[imu] init WHOAMI="); uart_dbg_put_int(imu_id);
+    uart_dbg_puts(imu_id == ICM42688_WHOAMI_VAL ? " OK(ICM42688)\n" : " 未就绪(陀螺未到货/接线未通, 用 g 命令复测)\n");
     print_status();
 
     int32_t lastc[2] = { 0, 0 };
