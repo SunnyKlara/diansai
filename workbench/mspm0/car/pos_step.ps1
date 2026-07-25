@@ -9,7 +9,8 @@
 #   -SpdKp/-SpdKi inner SPEED-loop gains to assert first (default tuned 30/20 = 0.03/0.02)
 #   -Sec     capture seconds
 param([int]$Target = 900, [int]$Kp = 50, [int]$Ki = 0, [int]$Kd = 0,
-      [int]$SpdKp = 30, [int]$SpdKi = 20, [int]$Sec = 5, [string]$Port = "COM30")
+      [int]$SpdKp = 30, [int]$SpdKi = 20, [int]$W = -1, [int]$E = -1,
+      [int]$Sec = 5, [string]$Port = "COM30")
 
 $out = "pos_out.txt"
 Set-Content -Path $out -Value "== pos step Target=$Target Kp=$Kp Ki=$Ki Kd=$Kd (milli) spd=$SpdKp/$SpdKi =="
@@ -38,6 +39,8 @@ Send-Cmd $p "m3"
 Send-Cmd $p ("p" + $Kp)
 Send-Cmd $p ("i" + $Ki)
 Send-Cmd $p ("d" + $Kd)
+if ($W -ge 0) { Send-Cmd $p ("w" + $W) }   # deadzone feedforward % (-1 = leave firmware default)
+if ($E -ge 0) { Send-Cmd $p ("e" + $E) }   # arrival tolerance counts (-1 = leave default)
 Start-Sleep -Milliseconds 1500          # let it settle at the entry zero
 try { $p.DiscardInBuffer() } catch {}
 

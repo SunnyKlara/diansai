@@ -32,8 +32,7 @@ static void delay_ms(uint32_t ms) { while (ms--) delay_cycles(CPUCLK_HZ / 1000UL
 #define POS_DIV       100       /* 位置外环每 100 拍(~100ms=10Hz, 外环慢于速度内环) */
 #define PRINT_DIV     100       /* 遥测每 ~100ms */
 #define DISP_DIV      25        /* LCD 计数刷新每 ~25ms(40Hz), 且仅在计数变化时才重绘 */
-#define ENC_CPR       899.0f    /* 输出轴每圈计数(4x正交解码). ~899=估计值(旧1x占位225×4);
-                                 * `待手转实测` : 手转输出轴整 N 圈、读计数增量/N 校准后改此值, RPM 才准。 */
+#define ENC_CPR       800.0f    /* 输出轴每圈计数(4x正交解码). 2026-07-25 真机手转标定: 转8圈计数增量6402 -> 800.25, 取800(原估899偏高~12%)。 */
 #define SPEED_WIN_MS  (SPEED_DIV * BASE_TICK_MS)
 
 /* ==== 编码器专项排查探针(临时) ====
@@ -51,6 +50,9 @@ static const char *mode_name[MODE_N] = { "IDLE", "CURR", "SPD", "POS", "OPEN" };
 static volatile int g_mode   = MODE_IDLE;
 static volatile int g_target = 0;       /* mA / RPM / counts / PWM% (随模式) */
 static volatile int g_print_ms = PRINT_DIV;  /* 遥测周期(ms=tick数). 整定时 f20 调快抓暂态, f100 复原 */
+/* 位置环精定位(2026-07-25, 运行时可调免重烧): 死区前馈% + 到位死区counts */
+static int g_pwm_dz  = 12;   /* 死区前馈%(实测电机死区~10%PWM). 位置内环按【位置误差方向】叠此值->推越死区、末端不停短. 命令 w<v>. 2026-07-25真机整定=12 */
+static int g_pos_tol = 15;   /* 到位死区counts(~7°@800cpr). |位置误差|<此值即停+复位PID, 防末端抖/creep. 命令 e<v>. 真机整定=15(两轮到位±6~15) */
 
 /* 增益: 索引 0=电流环 1=速度环 2=位置环. [1]速度环+[2]位置环 2026-07-25 真机整定达标; [0]电流环待整定
  * 速度环 target=500: std~3%/超调10%/rise~710ms | 位置环(级联速度内环) 到位±~40counts(~1.5%rev),无振荡/小超调;
@@ -118,6 +120,8 @@ static void run_cmd(const char *s, int n)
         case 'd': li = loop_index(); if (li >= 0) { gkd[li] = v / 1000.0f; apply_gains(); } break;
         case 'z': g_mode = MODE_IDLE; g_target = 0; reset_all_pid(); break;
         case 'f': if (v >= 5 && v <= 2000) g_print_ms = v; break;   /* 遥测周期 ms(整定抓暂态用) */
+        case 'w': if (v >= 0 && v <= 30)  g_pwm_dz  = v; break;     /* 位置死区前馈% */
+        case 'e': if (v >= 0 && v <= 300) g_pos_tol = v; break;     /* 位置到位死区 counts */
         case '?': break;
         default:  break;
     }
@@ -289,6 +293,21 @@ static void enc_probe_run(void)
  * 保证固定 5kHz 采样, 远超电机最高换向率(~1k/s@60%PWM), 不混叠。encoder_count() 读到干净计数。 */
 void SysTick_Handler(void) { encoder_poll(); }
 
+/* 位置环内环一步(精定位): |位置误差|<=到位死区 -> 停+复位速度PID(防末端抖/creep);
+ * 否则 速度PID输出 + 死区前馈(按方向叠 g_pwm_dz, 推电机越过死区, 末端不停短)。
+ * 死区前馈=对电机死区非线性的补偿, 让内环在低速命令下也能真的动->位置能收到目标附近。 */
+static int pos_inner_step(pid_t *pv, float v_tgt, float v_meas, int32_t pos_err)
+{
+    int32_t ae = pos_err < 0 ? -pos_err : pos_err;
+    if (ae <= (int32_t)g_pos_tol) { pid_reset(pv); return 0; }
+    int pc = (int)pid_step(pv, v_tgt, v_meas);
+    /* 死区前馈按【位置误差方向】叠(不按速度PID输出符号): 到位死区外误差方向恒定,
+     * 前馈不随速度PID在0附近抖动而反复翻号 -> 不再诱发末端震荡(旧版按pc符号翻号把快电机M2搞震)。 */
+    if (pos_err > 0) pc += g_pwm_dz;
+    else             pc -= g_pwm_dz;
+    return pc;
+}
+
 int main(void)
 {
     SYSCFG_DL_init();
@@ -314,8 +333,8 @@ int main(void)
     pid_init(&pid_p[1], gkp[2], gki[2], gkd[2], -300.0f, 300.0f);
 
     uart_dbg_puts("\n[ctl] boot | modes: m0 IDLE / m1 CURR / m2 SPD / m3 POS / m4 OPEN\n");
-    uart_dbg_puts("[ctl] cmds: t<v> target | p/i/d<x1000> gains | f<ms> telem rate | z stop | ? status\n");
-    uart_dbg_puts("[ctl] encoder=sampled 4x quad(clean); ENC_CPR=899 est(hand-turn TBD); tune: m2 f20 t<rpm> p.. i..\n");
+    uart_dbg_puts("[ctl] cmds: t<v> tgt | p/i/d<x1000> gains | w<%>dz e<cnt>tol(pos精定位) | f<ms> | z stop | ?\n");
+    uart_dbg_puts("[ctl] enc=4x quad ENC_CPR=800(cal) | build "); uart_dbg_puts(__DATE__); uart_dbg_puts(" "); uart_dbg_puts(__TIME__); uart_dbg_puts("\n");
     print_status();
 
     int32_t lastc[2] = { 0, 0 };
@@ -323,6 +342,8 @@ int main(void)
     float   speed_rpm[2] = { 0.0f, 0.0f };
     float   v_target[2]  = { 0.0f, 0.0f };   /* 位置环产出的速度目标 */
     int     pwm_out[2]   = { 0, 0 };
+    int32_t pos_ref[2]   = { 0, 0 };          /* 位置模式入模零点(相对定位) */
+    int     prev_mode    = MODE_IDLE;
     uint32_t tick = 0;
 
     while (1) {
@@ -331,6 +352,10 @@ int main(void)
 
         int32_t c0 = encoder_count(ENC_1);
         int32_t c1 = encoder_count(ENC_2);
+
+        /* 进位置模式: 捕获当前计数为零点 -> 目标是"相对入模点位移"(入模=保持当前位, 不驱回boot零点; 大计数也安全) */
+        if (g_mode == MODE_POSITION && prev_mode != MODE_POSITION) { pos_ref[0] = c0; pos_ref[1] = c1; }
+        prev_mode = g_mode;
 
         /* 速度测量(固定窗口) */
         if (tick % SPEED_DIV == 0) {
@@ -370,16 +395,17 @@ int main(void)
             }
             break;
 
-        case MODE_POSITION:             /* g_target = 目标位置 counts(相对启动) */
-            if (tick % POS_DIV == 0) {  /* 外环: 位置->速度目标 */
-                v_target[0] = pid_step(&pid_p[0], (float)g_target, (float)c0);
-                v_target[1] = pid_step(&pid_p[1], (float)g_target, (float)c1);
+        case MODE_POSITION: {           /* g_target = 目标位置 counts(相对入模点) */
+            int32_t rel0 = c0 - pos_ref[0], rel1 = c1 - pos_ref[1];
+            if (tick % POS_DIV == 0) {  /* 外环: 相对位置->速度目标 */
+                v_target[0] = pid_step(&pid_p[0], (float)g_target, (float)rel0);
+                v_target[1] = pid_step(&pid_p[1], (float)g_target, (float)rel1);
             }
-            if (tick % SPEED_DIV == 0) {/* 内环: 速度环跟随 */
-                pwm_out[0] = (int)pid_step(&pid_v[0], v_target[0], speed_rpm[0]);
-                pwm_out[1] = (int)pid_step(&pid_v[1], v_target[1], speed_rpm[1]);
+            if (tick % SPEED_DIV == 0) {/* 内环: 速度环 + 死区前馈 + 到位死区(精定位) */
+                pwm_out[0] = pos_inner_step(&pid_v[0], v_target[0], speed_rpm[0], g_target - rel0);
+                pwm_out[1] = pos_inner_step(&pid_v[1], v_target[1], speed_rpm[1], g_target - rel1);
             }
-            break;
+            break; }
         }
 
         pwm_out[0] = clampi(pwm_out[0], -PWM_CAP, PWM_CAP);
