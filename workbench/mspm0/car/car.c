@@ -43,8 +43,8 @@ static void delay_ms(uint32_t ms) { while (ms--) delay_cycles(CPUCLK_HZ / 1000UL
 #define ENC_PROBE     0
 
 /* ==== 模式 ==== */
-enum { MODE_IDLE = 0, MODE_CURRENT, MODE_SPEED, MODE_POSITION, MODE_OPEN, MODE_N };
-static const char *mode_name[MODE_N] = { "IDLE", "CURR", "SPD", "POS", "OPEN" };
+enum { MODE_IDLE = 0, MODE_CURRENT, MODE_SPEED, MODE_POSITION, MODE_OPEN, MODE_DUAL, MODE_N };
+static const char *mode_name[MODE_N] = { "IDLE", "CURR", "SPD", "POS", "OPEN", "DUAL" };
 
 /* ==== 运行时(串口可改) ==== */
 static volatile int g_mode   = MODE_IDLE;
@@ -53,6 +53,7 @@ static volatile int g_print_ms = PRINT_DIV;  /* 遥测周期(ms=tick数). 整定
 /* 位置环精定位(2026-07-25, 运行时可调免重烧): 死区前馈% + 到位死区counts */
 static int g_pwm_dz  = 12;   /* 死区前馈%(实测电机死区~10%PWM). 位置内环按【位置误差方向】叠此值->推越死区、末端不停短. 命令 w<v>. 2026-07-25真机整定=12 */
 static int g_pos_tol = 15;   /* 到位死区counts(~7°@800cpr). |位置误差|<此值即停+复位PID, 防末端抖/creep. 命令 e<v>. 真机整定=15(两轮到位±6~15) */
+static int g_m1duty  = 0, g_m2duty = 0;  /* MODE_DUAL 调试(m5): 独立每电机 PWM%(命令 x/y), 每拍读双电流, 专门测通道串扰 */
 
 /* 增益: 索引 0=电流环 1=速度环 2=位置环. [1]速度环+[2]位置环 2026-07-25 真机整定达标; [0]电流环待整定
  * 速度环 target=500: std~3%/超调10%/rise~710ms | 位置环(级联速度内环) 到位±~40counts(~1.5%rev),无振荡/小超调;
@@ -113,7 +114,7 @@ static void run_cmd(const char *s, int n)
     char c = s[0];
     int v = parse_int(s + 1, n - 1), li;
     switch (c) {
-        case 'm': if (v >= 0 && v < MODE_N) { g_mode = v; g_target = 0; reset_all_pid(); } break;
+        case 'm': if (v >= 0 && v < MODE_N) { g_mode = v; g_target = 0; g_m1duty = 0; g_m2duty = 0; reset_all_pid(); } break;
         case 't': g_target = v; reset_all_pid(); break;
         case 'p': li = loop_index(); if (li >= 0) { gkp[li] = v / 1000.0f; apply_gains(); } break;
         case 'i': li = loop_index(); if (li >= 0) { gki[li] = v / 1000.0f; apply_gains(); } break;
@@ -122,6 +123,8 @@ static void run_cmd(const char *s, int n)
         case 'f': if (v >= 5 && v <= 2000) g_print_ms = v; break;   /* 遥测周期 ms(整定抓暂态用) */
         case 'w': if (v >= 0 && v <= 30)  g_pwm_dz  = v; break;     /* 位置死区前馈% */
         case 'e': if (v >= 0 && v <= 300) g_pos_tol = v; break;     /* 位置到位死区 counts */
+        case 'x': g_m1duty = clampi(v, -PWM_CAP, PWM_CAP); break;   /* DUAL(m5): M1 直驱 PWM% */
+        case 'y': g_m2duty = clampi(v, -PWM_CAP, PWM_CAP); break;   /* DUAL(m5): M2 直驱 PWM% */
         case '?': break;
         default:  break;
     }
@@ -332,7 +335,7 @@ int main(void)
     pid_init(&pid_p[0], gkp[2], gki[2], gkd[2], -300.0f, 300.0f);   /* 位置->速度目标(RPM) */
     pid_init(&pid_p[1], gkp[2], gki[2], gkd[2], -300.0f, 300.0f);
 
-    uart_dbg_puts("\n[ctl] boot | modes: m0 IDLE / m1 CURR / m2 SPD / m3 POS / m4 OPEN\n");
+    uart_dbg_puts("\n[ctl] boot | modes: m0 IDLE / m1 CURR / m2 SPD / m3 POS / m4 OPEN / m5 DUAL(x/y indep)\n");
     uart_dbg_puts("[ctl] cmds: t<v> tgt | p/i/d<x1000> gains | w<%>dz e<cnt>tol(pos精定位) | f<ms> | z stop | ?\n");
     uart_dbg_puts("[ctl] enc=4x quad ENC_CPR=800(cal) | build "); uart_dbg_puts(__DATE__); uart_dbg_puts(" "); uart_dbg_puts(__TIME__); uart_dbg_puts("\n");
     print_status();
@@ -373,6 +376,15 @@ int main(void)
         case MODE_OPEN:                 /* g_target = PWM%(带符号) */
             pwm_out[0] = pwm_out[1] = clampi(g_target, -PWM_CAP, PWM_CAP);
             break;
+
+        case MODE_DUAL: {               /* 调试(m5): 独立驱动两电机(x/y) + 每拍读双电流, 专测通道串扰 */
+            uint16_t r0 = 0, r1 = 0;
+            motor_read_current_raw(&r0, &r1);
+            i_meas[0] = (int)motor_current_ma(r0);
+            i_meas[1] = (int)motor_current_ma(r1);
+            pwm_out[0] = clampi(g_m1duty, -PWM_CAP, PWM_CAP);
+            pwm_out[1] = clampi(g_m2duty, -PWM_CAP, PWM_CAP);
+            break; }
 
         case MODE_CURRENT: {            /* g_target = 目标电流 mA(带符号=方向) */
             uint16_t r0 = 0, r1 = 0;
