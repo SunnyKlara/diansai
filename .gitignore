@@ -169,6 +169,13 @@ workbench/mspm0/**/gcc/*.log
 workbench/mspm0/**/gcc/_sctest/
 # 整定/探活串口抓数临时输出(tune_step.ps1/probe_serial.ps1 产出; 关键数据手动归档到调试日志,不入库)
 workbench/mspm0/**/*_out.txt
+# 脚本运行产物（串口/AT 会话记录、扫描/探测转储），不是资产
+# 命名放宽到 esp_*_com*.txt：实际出现过 esp_probe_comN / esp_scan_comN 两种前缀
+workbench/mspm0/**/esp_*_com*.txt
+workbench/mspm0/**/*_log.txt
+# 每台机自己的工具链路径覆盖（industry pattern: local.properties / .env.local / CMakeUserPresets）
+# 机器配置不进版本控制，但它的"形状"要进 ⇒ 模板 _tools.local.example.ps1 是入库的。
+workbench/mspm0/**/_tools.local.ps1
 
 # ---------- 天猛星资料：第三方大包/固件/工具不入库（可重下，避免撑大仓库 + Windows 超长路径）----------
 workbench/天猛星主板平台/资料/ESP8266-01S/原装出厂固件库/
@@ -186,10 +193,25 @@ workbench/天猛星主板平台/资料/**/*.zip
 library/**/参考工程_2024H电赛车_MIT/rollout-*.jsonl
 
 # ---------- 外部参考仓库镜像 library/vendor_ref/ ----------
-# 只入库「索引 + 刷新脚本」，克隆下来的第三方代码本体一律不入库。
-# 原因(合规，非洁癖)：清单里多数仓库【没有 LICENSE 文件】，无权在我们这个公开仓库里
-#   再分发；本地留副本用于"读思路/赛场离线查阅"是合规的。许可逐仓看 00_INDEX.md。
+# 只入库「总索引 + 刷新脚本 + 四个桶各自的 README」，克隆下来的第三方代码本体一律不入库。
+# 原因(合规，非洁癖)：30 个仓库里 22 个【没有 LICENSE 文件】，无权在我们这个公开仓库里
+#   再分发；本地留副本用于"读思路/赛场离线查阅"是合规的。许可逐仓看 00_INDEX.md §3。
 # 需要重建镜像：cd library/vendor_ref && .\_refresh.ps1
+# 注：git 规则是「父目录被排除后，子文件无法再被 ! 重新包含」，所以必须逐层
+#     先 !目录/ 再 目录/* 再 !目录/README.md —— 别改成通配，会把第三方仓库自带的
+#     README 也一起 staged 进来。
 library/vendor_ref/*
 !library/vendor_ref/00_INDEX.md
 !library/vendor_ref/_refresh.ps1
+!library/vendor_ref/car/
+!library/vendor_ref/topics/
+!library/vendor_ref/agent/
+!library/vendor_ref/other/
+library/vendor_ref/car/*
+!library/vendor_ref/car/README.md
+library/vendor_ref/topics/*
+!library/vendor_ref/topics/README.md
+library/vendor_ref/agent/*
+!library/vendor_ref/agent/README.md
+library/vendor_ref/other/*
+!library/vendor_ref/other/README.md

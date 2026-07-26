@@ -22,8 +22,13 @@ Set-Location $PSScriptRoot
 $env:PYTHONIOENCODING = 'utf-8'
 
 $skill   = Join-Path (Resolve-Path "$PSScriptRoot\..\..\..") '.kiro\skills\mspm0-ccs\scripts'
-$tool    = 'C:\ti\sysconfig_1.28.0\sysconfig_cli.bat'          # = SDK imports.mak SYSCONFIG_TOOL
-$product = 'C:\ti\mspm0-sdk\.metadata\product.json'
+# Toolchain paths resolved in ONE place (_tools.ps1) - hardcoding them broke these
+# scripts outright on the other dev machine (incl. the unbrick path). See _tools.ps1.
+. "$PSScriptRoot\_tools.ps1"
+# Find-SysConfigCli reads the SDK's own imports.mak SYSCONFIG_TOOL first - authoritative
+# when a machine has several SysConfig installs (this one does).
+$tool    = Find-SysConfigCli
+$product = Join-Path (Find-SdkRoot) '.metadata\product.json'
 $outFile = Join-Path $PSScriptRoot 'syscfg_check_out.txt'
 
 # python stdout through a PowerShell pipe gets mangled (GBK) or silently swallowed
