@@ -23,29 +23,12 @@
 #include "imu.h"        /* ICM42688 六轴驱动 (// 待真机验证, 陀螺未到货) */
 #include "attitude.h"   /* 六轴姿态解算 (纯算法层, 已 PC 单测验证) */
 
-#define CPUCLK_HZ 32000000UL
+/* ★所有可调参数(时基/周期/PWM上限/ENC_CPR/PID增益/死区/容差/调试开关)已集中到 config.h。
+ * 本文件只写逻辑, 不再散落 #define —— 赛场调参只翻 config.h(工作台规范 §2 铁律)。
+ * 参数的出处/实测依据写在 config.h 每个宏旁边; 事实真值源见 .kiro/steering/工程事实SSOT.md。 */
+#include "config.h"
+
 static void delay_ms(uint32_t ms) { while (ms--) delay_cycles(CPUCLK_HZ / 1000UL); }
-
-/* ==== 安全 / 时序 ==== */
-#define PWM_CAP       60        /* PWM 上限%: 7.4V 电机 / 12V 母线, 封顶保护 */
-/* ★2026-07-26 时基修正(真机测出的 bug): 旧版用"主循环拍数 × 假设1ms"计时, 但 LCD 逐像素重绘
- * (~100ms/次)把每拍拖到~5ms => (1)速度窗按50ms算、实为~250ms => 报的RPM虚高~5x; (2)速度/位置环
- * 退化到~4Hz => 抗扰迟钝。改用 SysTick 5kHz(200us/拍, 准)做真实时基: 调度按真实ms、速度用真实dt;
- * LCD 刷新大幅调慢, 不再拖死主循环。真机验证: 见调试日志 2026-07-26 抗扰测试。 */
-#define ST_HZ         5000UL    /* SysTick 频率: 编码器采样 + 控制主时基 */
-#define ST_PER_MS     5UL       /* 每 ms 的 SysTick 数 (ST_HZ/1000) */
-#define SPEED_MS      50        /* 速度测量窗 + 速度环周期(ms 真实时间, ~20Hz) */
-#define POS_MS        100       /* 位置外环周期(ms 真实时间, ~10Hz) */
-#define PRINT_MS      100       /* 遥测默认周期(ms), 命令 f<ms> 改 */
-#define DISP_MS       500       /* LCD 计数刷新周期(ms): 逐像素重绘~100ms/次, 调慢(旧~25拍)防再拖死控制环 */
-#define ENC_CPR       800.0f    /* 输出轴每圈计数(4x正交解码). 2026-07-25 真机手转标定: 转8圈增量6402 -> 800(原估899偏高~12%)。 */
-
-/* ==== 编码器专项排查探针(临时) ====
- * =1 开启: main() 一进来就跑 enc_probe_run()(永不返回, 电机全程不驱动),
- *          直读 PA7/PB19/PB20/PB21 原始电平 + 软件轮询边沿计数 + ISR 计数,
- *          一屏三视图把"信号没到脚(硬件) / 中断没触发(软件) / 其实在工作"三层分开。
- * 排查完改回 0 即恢复完整控制固件。 */
-#define ENC_PROBE     0
 
 /* ==== 模式 ==== */
 enum { MODE_IDLE = 0, MODE_CURRENT, MODE_SPEED, MODE_POSITION, MODE_OPEN, MODE_DUAL, MODE_N };
@@ -56,16 +39,15 @@ static volatile int g_mode   = MODE_IDLE;
 static volatile int g_target = 0;       /* mA / RPM / counts / PWM% (随模式) */
 static volatile int g_print_ms = PRINT_MS;   /* 遥测周期(真实ms). 整定时 f20 调快抓暂态, f100 复原 */
 /* 位置环精定位(2026-07-25, 运行时可调免重烧): 死区前馈% + 到位死区counts */
-static int g_pwm_dz  = 12;   /* 死区前馈%(实测电机死区~10%PWM). 位置内环按【位置误差方向】叠此值->推越死区、末端不停短. 命令 w<v>. 2026-07-25真机整定=12 */
-static int g_pos_tol = 15;   /* 到位死区counts(~7°@800cpr). |位置误差|<此值即停+复位PID, 防末端抖/creep. 命令 e<v>. 真机整定=15(两轮到位±6~15) */
+static int g_pwm_dz  = CFG_POS_FF_DZ;   /* 死区前馈%(默认值+依据见 config.h). 运行时命令 w<v> 可改 */
+static int g_pos_tol = CFG_POS_TOL;     /* 到位死区counts(默认值+依据见 config.h). 运行时命令 e<v> 可改 */
 static int g_m1duty  = 0, g_m2duty = 0;  /* MODE_DUAL 调试(m5): 独立每电机 PWM%(命令 x/y), 每拍读双电流, 专门测通道串扰 */
 
-/* 增益: 索引 0=电流环 1=速度环 2=位置环. [1]速度环+[2]位置环 2026-07-25 真机整定达标; [0]电流环待整定
- * 速度环 target=500: std~3%/超调10%/rise~710ms | 位置环(级联速度内环) 到位±~40counts(~1.5%rev),无振荡/小超调;
- * 精确定位(消死区停短的残余)后续加死区前馈或小积分,当前为粗定位可用基线 */
-static float gkp[3] = { 0.20f, 0.15f, 0.20f };   /* [1]速度Kp0.15(2026-07-26真机重整定: 修完5x时基bug后反馈小5x, 旧0.03实际弱5x->抬到0.15; 0.20会振; 松手过冲276->207) [2]位置Kp0.20 真机达标 */
-static float gki[3] = { 0.02f, 0.02f, 0.00f };   /* 位置环用纯PD、不加I(死区下积分易 hunt) */
-static float gkd[3] = { 0.00f, 0.00f, 0.05f };   /* [2]位置环轻阻尼 Kd0.05 */
+/* 增益: 索引 0=电流环 1=速度环 2=位置环。默认值 + 整定依据/实测数据全在 config.h。
+ * 运行时可用 p/i/d<×1000> 改"当前模式对应环"的增益; 整定达标后回填 config.h 锁死。 */
+static float gkp[3] = { CFG_KP_CUR, CFG_KP_SPD, CFG_KP_POS };
+static float gki[3] = { CFG_KI_CUR, CFG_KI_SPD, CFG_KI_POS };
+static float gkd[3] = { CFG_KD_CUR, CFG_KD_SPD, CFG_KD_POS };
 
 static pid_t pid_i[2], pid_v[2], pid_p[2];   /* 每电机一份 */
 static int   i_meas[2] = { 0, 0 };            /* 最近电流(遥测用) */
@@ -353,7 +335,7 @@ int main(void)
     GC9A01_Init();
     motor_init();
     encoder_init();
-    SysTick_Config(CPUCLK_HZ / 5000);   /* 5kHz 编码器采样中断(见 SysTick_Handler) */
+    SysTick_Config(CPUCLK_HZ / ST_HZ);   /* 控制主时基中断(频率见 config.h ST_HZ; 见 SysTick_Handler) */
     int imu_id = imu_init();   /* ICM42688 初始化; 陀螺未到货时读不到0x47 -> 返回非0, 不阻塞主程序。// 待真机验证 */
 
     GC9A01_FillScreen(LCD_BLACK);
@@ -364,8 +346,8 @@ int main(void)
     pid_init(&pid_i[1], gkp[0], gki[0], gkd[0], 0.0f, (float)PWM_CAP);
     pid_init(&pid_v[0], gkp[1], gki[1], gkd[1], -(float)PWM_CAP, (float)PWM_CAP);
     pid_init(&pid_v[1], gkp[1], gki[1], gkd[1], -(float)PWM_CAP, (float)PWM_CAP);
-    pid_init(&pid_p[0], gkp[2], gki[2], gkd[2], -300.0f, 300.0f);   /* 位置->速度目标(RPM) */
-    pid_init(&pid_p[1], gkp[2], gki[2], gkd[2], -300.0f, 300.0f);
+    pid_init(&pid_p[0], gkp[2], gki[2], gkd[2], -CFG_POS_VOUT_MAX, CFG_POS_VOUT_MAX);   /* 位置->速度目标(RPM) */
+    pid_init(&pid_p[1], gkp[2], gki[2], gkd[2], -CFG_POS_VOUT_MAX, CFG_POS_VOUT_MAX);
 
     uart_dbg_puts("\n[ctl] boot | modes: m0 IDLE / m1 CURR / m2 SPD / m3 POS / m4 OPEN / m5 DUAL(x/y indep)\n");
     uart_dbg_puts("[ctl] cmds: t<v> tgt | p/i/d<x1000> gains | w<%>dz e<cnt>tol(pos精定位) | f<ms> | g IMU | z stop | ?\n");

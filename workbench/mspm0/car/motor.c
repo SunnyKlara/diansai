@@ -56,9 +56,7 @@ void motor_stop_all(void)
 /* 多次采样取平均: 电机 PWM 斩波使 IPROPI 电流呈脉冲(导通相高/续流相~0), 单次异步采样
  * 会随机抓在脉冲任意点 → 读数在 0~峰值间狂跳(实测 t150 时 I 抖 0~627mA)。连采 N 次
  * (跨多个 PWM 周期)取平均, 把斩波纹波平掉, 电流环才拿得到干净反馈。
- * N=16 × ~90us ≈ 1.5ms/次(跨多个PWM周期); 电流环速率因此降到~几百Hz, 整定/嵌套够用,
- * 要更快再上"ADC 触发同步到 PWM 定相采样"(正解, 后续)。 */
-#define CUR_AVG_N  16
+ * 采样次数 CUR_AVG_N 及其取值依据见 config.h(要更快需上"ADC 触发同步 PWM 定相采样")。 */
 void motor_read_current_raw(uint16_t *m1_raw, uint16_t *m2_raw)
 {
     uint32_t s0 = 0, s1 = 0;
@@ -75,6 +73,7 @@ void motor_read_current_raw(uint16_t *m1_raw, uint16_t *m2_raw)
 
 int32_t motor_current_ma(uint16_t raw)
 {
-    /* V=raw/4096*3300mV; I(mA)=V/(1.575mA/A*0.680kΩ? )  -> raw*3300/(4096*1.071) */
-    return (int32_t)((uint32_t)raw * 3300u / 4387u);
+    /* V=raw/4096*3300mV; I(mA)=V/(1.575mA/A × 0.680kΩ) -> raw*3300/CUR_MA_DIV。
+     * 除数 CUR_MA_DIV 及其定标依据(待实测校准)见 config.h。 */
+    return (int32_t)((uint32_t)raw * 3300u / CUR_MA_DIV);
 }

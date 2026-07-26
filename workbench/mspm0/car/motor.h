@@ -8,12 +8,10 @@
 #define MOTOR_H
 
 #include <stdint.h>
+#include "config.h"   /* MOTOR_PWM_PERIOD / CUR_AVG_N / CUR_MA_DIV 等参数集中在此 */
 
 #define MOTOR_M1  0
 #define MOTOR_M2  1
-
-/* PWM 周期计数(与 car.syscfg 的 timerCount 一致) */
-#define MOTOR_PWM_PERIOD  1600
 
 void motor_init(void);                        /* 启动PWM,占空归0(停) */
 void motor_set(uint8_t ch, int16_t duty);     /* duty: -100..100, >0前进 <0后退 0滑行 */
