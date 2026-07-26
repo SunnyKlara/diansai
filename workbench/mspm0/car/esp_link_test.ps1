@@ -73,6 +73,16 @@ function Clean([string]$s) { return ($s -replace "`r`n", " | ").Trim() }
 
 L "================ ESP-01S UDP bridge test  $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ================"
 L "A(car/SoftAP) = $PortA @ $IpA    B(PC/STA) = $PortB @ $IpB    UDP port $UdpPort    baud $Baud"
+# ---- scope warning: this tool opens BOTH modules as local COM ports, so BY CONSTRUCTION both
+# ---- of them sit on this PC. That makes it a BENCH SELF-LOOP test. It can never verify the
+# ---- real "PC <-> car" path (2026-07-27: a PASS here was once misread as "the car link works",
+# ---- while the module on the board was not even powered). See pit library entry
+# ---- "wireless link test may close the loop on the wrong loop".
+L "SCOPE: BENCH SELF-LOOP - both modules are on THIS PC (two local COM ports)."
+L "       It verifies the AT config / bridge mechanism / host tooling ONLY."
+L "       It does NOT verify the car link (board 3.3V, motor EMI, real distance, the on-board module)."
+L "       To verify the car link: power the car-side module from the BOARD, then from the PC side use"
+L "       'esp_at.ps1 -Cmds AT+CWLAP' (is it broadcasting?) and 'AT+CWJAP?' (associated? RSSI?)."
 
 $A = NewPort $PortA $Baud
 $B = NewPort $PortB $Baud
