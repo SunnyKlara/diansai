@@ -31,8 +31,9 @@
 static void delay_ms(uint32_t ms) { while (ms--) delay_cycles(CPUCLK_HZ / 1000UL); }
 
 /* ==== 模式 ==== */
-enum { MODE_IDLE = 0, MODE_CURRENT, MODE_SPEED, MODE_POSITION, MODE_OPEN, MODE_DUAL, MODE_N };
-static const char *mode_name[MODE_N] = { "IDLE", "CURR", "SPD", "POS", "OPEN", "DUAL" };
+enum { MODE_IDLE = 0, MODE_CURRENT, MODE_SPEED, MODE_POSITION, MODE_OPEN, MODE_DUAL,
+       MODE_DRIVE, MODE_DRIVE_CL, MODE_N };
+static const char *mode_name[MODE_N] = { "IDLE", "CURR", "SPD", "POS", "OPEN", "DUAL", "DRV", "DRVC" };
 
 /* ==== 运行时(串口可改) ==== */
 static volatile int g_mode   = MODE_IDLE;
@@ -42,6 +43,10 @@ static volatile int g_print_ms = PRINT_MS;   /* 遥测周期(真实ms). 整定�
 static int g_pwm_dz  = CFG_POS_FF_DZ;   /* 死区前馈%(默认值+依据见 config.h). 运行时命令 w<v> 可改 */
 static int g_pos_tol = CFG_POS_TOL;     /* 到位死区counts(默认值+依据见 config.h). 运行时命令 e<v> 可改 */
 static int g_m1duty  = 0, g_m2duty = 0;  /* MODE_DUAL 调试(m5): 独立每电机 PWM%(命令 x/y), 每拍读双电流, 专门测通道串扰 */
+/* 差速层(m6 DRIVE 开环 / m7 DRIVE_CL 闭环)的车级指令: 命令 v<线速度> / r<角速度>。
+ * m6 单位=PWM%(开环, 用来验差速层与左右分组是否正确, 离地即可验);
+ * m7 单位=RPM(左右目标各喂一个已达标的速度环 —— 两轮机械不匹配, 同 PWM 走不直, 必须双轮独立闭环)。 */
+static int g_dv = 0, g_dw = 0;
 
 /* 增益: 索引 0=电流环 1=速度环 2=位置环。默认值 + 整定依据/实测数据全在 config.h。
  * 运行时可用 p/i/d<×1000> 改"当前模式对应环"的增益; 整定达标后回填 config.h 锁死。 */
@@ -68,6 +73,7 @@ static int loop_index(void)   /* 当前模式对应的增益索引; 无环返回
 {
     if (g_mode == MODE_CURRENT)  return 0;
     if (g_mode == MODE_SPEED)    return 1;
+    if (g_mode == MODE_DRIVE_CL) return 1;   /* 闭环差速走的就是速度环 -> p/i/d 直接调它 */
     if (g_mode == MODE_POSITION) return 2;
     return -1;
 }
@@ -123,7 +129,7 @@ static void run_cmd(const char *s, int n)
     char c = s[0];
     int v = parse_int(s + 1, n - 1), li;
     switch (c) {
-        case 'm': if (v >= 0 && v < MODE_N) { g_mode = v; g_target = 0; g_m1duty = 0; g_m2duty = 0; reset_all_pid(); } break;
+        case 'm': if (v >= 0 && v < MODE_N) { g_mode = v; g_target = 0; g_m1duty = 0; g_m2duty = 0; g_dv = 0; g_dw = 0; reset_all_pid(); } break;
         case 't': g_target = v; reset_all_pid(); break;
         case 'p': li = loop_index(); if (li >= 0) { gkp[li] = v / 1000.0f; apply_gains(); } break;
         case 'i': li = loop_index(); if (li >= 0) { gki[li] = v / 1000.0f; apply_gains(); } break;
@@ -134,6 +140,8 @@ static void run_cmd(const char *s, int n)
         case 'e': if (v >= 0 && v <= 300) g_pos_tol = v; break;     /* 位置到位死区 counts */
         case 'x': g_m1duty = clampi(v, -PWM_CAP, PWM_CAP); break;   /* DUAL(m5): M1 直驱 PWM% */
         case 'y': g_m2duty = clampi(v, -PWM_CAP, PWM_CAP); break;   /* DUAL(m5): M2 直驱 PWM% */
+        case 'v': g_dv = clampi(v, -600, 600); break;   /* 差速(m6/m7): 线速度. m6=PWM% m7=RPM */
+        case 'r': g_dw = clampi(v, -600, 600); break;   /* 差速(m6/m7): 角速度(左转为正). v0 r30=原地左转 */
         case 'g': imu_dump(); return;   /* IMU 验活读数(陀螺到货后 bring-up 用) */
         case '?': break;
         default:  break;
@@ -309,6 +317,23 @@ static void enc_probe_run(void)
 static volatile uint32_t g_st = 0;
 void SysTick_Handler(void) { encoder_poll(); g_st++; }
 
+/* ==== 差速运动学层(车级指令 -> 左右组量) ====
+ * 输入: v=线速度(前进为正), w=角速度(左转/逆时针为正)。输出: 左组量 / 右组量。
+ *   左组 = v - w ,  右组 = v + w
+ * 分组约定(四驱定版方案A "输入并联扇出"): MOTOR_M1 = 左组, MOTOR_M2 = 右组 —— 后轮 M3/M4 的
+ *   IN 脚并到前轮的 PWM 网络上, 所以 motor.c 一行不改, 现 2WD 与将来 4WD 用同一套代码。
+ * v=0 时左右反向等速 => 原地转弯(半径≈0), 这正是"四轮差速/坦克转向"要的东西。
+ * ⚠ 单位随模式: MODE_DRIVE(m6)=PWM%(开环) / MODE_DRIVE_CL(m7)=RPM(各喂一个速度环)。
+ * ⚠ 为什么必须有 m7 闭环: 两轮机械不匹配(本车 M2 明显快; 同款参考工程实测左右计数比 1.11),
+ *   同一个 PWM 喂两边**走不出直线**, 只有"左右各一个独立速度环"才能走直。
+ * // 待真机验证(2026-07-27 新增, 编译过未上板)
+ */
+static void car_drive_mix(int v, int w, int *left, int *right)
+{
+    *left  = v - w;
+    *right = v + w;
+}
+
 /* 位置环内环一步(精定位): |位置误差|<=到位死区 -> 停+复位速度PID(防末端抖/creep);
  * 否则 速度PID输出 + 死区前馈(按方向叠 g_pwm_dz, 推电机越过死区, 末端不停短)。
  * 死区前馈=对电机死区非线性的补偿, 让内环在低速命令下也能真的动->位置能收到目标附近。 */
@@ -350,7 +375,8 @@ int main(void)
     pid_init(&pid_p[1], gkp[2], gki[2], gkd[2], -CFG_POS_VOUT_MAX, CFG_POS_VOUT_MAX);
 
     uart_dbg_puts("\n[ctl] boot | modes: m0 IDLE / m1 CURR / m2 SPD / m3 POS / m4 OPEN / m5 DUAL(x/y indep)\n");
-    uart_dbg_puts("[ctl] cmds: t<v> tgt | p/i/d<x1000> gains | w<%>dz e<cnt>tol(pos精定位) | f<ms> | g IMU | z stop | ?\n");
+    uart_dbg_puts("[ctl]              m6 DRV(open, v/r in PWM%) / m7 DRVC(closed, v/r in RPM via speed loops)\n");
+    uart_dbg_puts("[ctl] cmds: t<v> tgt | v<lin> r<ang> drive | p/i/d<x1000> gains | w<%>dz e<cnt>tol(pos精定位) | f<ms> | g IMU | z stop | ?\n");
     uart_dbg_puts("[ctl] enc=4x quad ENC_CPR=800(cal) | build "); uart_dbg_puts(__DATE__); uart_dbg_puts(" "); uart_dbg_puts(__TIME__); uart_dbg_puts("\n");
     uart_dbg_puts("[imu] init WHOAMI="); uart_dbg_put_int(imu_id);
     uart_dbg_puts(imu_id == ICM42688_WHOAMI_VAL ? " OK(ICM42688)\n" : " 未就绪(陀螺未到货/接线未通, 用 g 命令复测)\n");
@@ -407,6 +433,25 @@ int main(void)
             pwm_out[1] = clampi(g_m2duty, -PWM_CAP, PWM_CAP);
             break; }
 
+        case MODE_DRIVE: {              /* m6: 开环差速. v/r 单位=PWM%. 用来验"差速层+左右分组"对不对(离地即可验) */
+            int l, r;
+            car_drive_mix(g_dv, g_dw, &l, &r);
+            pwm_out[0] = clampi(l, -PWM_CAP, PWM_CAP);   /* 左组 = MOTOR_M1 */
+            pwm_out[1] = clampi(r, -PWM_CAP, PWM_CAP);   /* 右组 = MOTOR_M2 */
+            break; }
+
+        case MODE_DRIVE_CL: {           /* m7: 闭环差速. v/r 单位=RPM, 左右各喂一个已达标的速度环(走直线用这个) */
+            int l, r;
+            car_drive_mix(g_dv, g_dw, &l, &r);
+            if (spd_tick) {
+                /* 目标 0 时强制停 + 清积分: 否则停车指令下积分残留会让轮子 creep(参考工程同做法)。 */
+                if (l == 0) { pid_reset(&pid_v[0]); pwm_out[0] = 0; }
+                else        { pwm_out[0] = (int)pid_step(&pid_v[0], (float)l, speed_rpm[0]); }
+                if (r == 0) { pid_reset(&pid_v[1]); pwm_out[1] = 0; }
+                else        { pwm_out[1] = (int)pid_step(&pid_v[1], (float)r, speed_rpm[1]); }
+            }
+            break; }
+
         case MODE_CURRENT: {            /* g_target = 目标电流 mA(带符号=方向) */
             uint16_t r0 = 0, r1 = 0;
             motor_read_current_raw(&r0, &r1);
@@ -454,6 +499,8 @@ int main(void)
             uart_dbg_puts(" | V:"); uart_dbg_put_int((int)speed_rpm[0]); uart_dbg_putc(','); uart_dbg_put_int((int)speed_rpm[1]);
             uart_dbg_puts(" | PWM:"); uart_dbg_put_int(pwm_out[0]); uart_dbg_putc(','); uart_dbg_put_int(pwm_out[1]);
             uart_dbg_puts(" | C:"); uart_dbg_put_int(c0); uart_dbg_putc(','); uart_dbg_put_int(c1);
+            /* 车级指令(v,w) 追加在行尾: 现有脚本按 "V:"/"PWM:"/"C:" 取值, 末尾加 "D:" 字段不破它们的解析 */
+            uart_dbg_puts(" | D:"); uart_dbg_put_int(g_dv); uart_dbg_putc(','); uart_dbg_put_int(g_dw);
             uart_dbg_puts("\n");
         }
 
