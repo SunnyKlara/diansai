@@ -1,0 +1,158 @@
+/**
+ * These arguments were used when this file was generated. They will be automatically applied on subsequent loads
+ * via the GUI or CLI. Run CLI with '--help' for additional information on how to override these arguments.
+ */
+//@cliArgs --device "MSPM0G350X" --package "LQFP-64(PM)" --part "Default"
+//@v2CliArgs --device "MSPM0G3507" --package "LQFP-64(PM)"
+// @cliArgs --board /ti/boards/LP_MSPM0G3507 --rtos nortos
+
+/**
+ * Import the modules used in this configuration.
+ */
+const SYSCTL       = scripting.addModule("/ti/driverlib/SYSCTL");
+const Board        = scripting.addModule("/ti/driverlib/Board", {}, false);
+const GPIO         = scripting.addModule("/ti/driverlib/GPIO", {}, false);
+const GPIO_MOTOR   = GPIO.addInstance();
+const GPIO_ENCODER = GPIO.addInstance();
+const GPIO_GRAY    = GPIO.addInstance();
+const GPIO_USER    = GPIO.addInstance();
+const PWM          = scripting.addModule("/ti/driverlib/PWM", {}, false);
+const MOTOR_PWM    = PWM.addInstance();
+const ADC12        = scripting.addModule("/ti/driverlib/ADC12", {}, false);
+const GRAY_ADC     = ADC12.addInstance();
+const UART         = scripting.addModule("/ti/driverlib/UART", {}, false);
+const UART_DEBUG   = UART.addInstance();
+const I2C          = scripting.addModule("/ti/driverlib/I2C", {}, false);
+const IMU_I2C      = I2C.addInstance();
+const TIMER        = scripting.addModule("/ti/driverlib/TIMER", {}, false);
+const CONTROL_TICK = TIMER.addInstance();
+
+/**
+ * TB6612 direction and standby outputs. Defaults are low/safe.
+ */
+GPIO_MOTOR.$name = "GPIO_MOTOR";
+GPIO_MOTOR.associatedPins.create(5);
+GPIO_MOTOR.associatedPins[0].$name       = "AIN1";
+GPIO_MOTOR.associatedPins[0].pin.$assign = "PA12";
+GPIO_MOTOR.associatedPins[1].$name       = "AIN2";
+GPIO_MOTOR.associatedPins[1].pin.$assign = "PA13";
+GPIO_MOTOR.associatedPins[2].$name       = "BIN1";
+GPIO_MOTOR.associatedPins[2].pin.$assign = "PA14";
+GPIO_MOTOR.associatedPins[3].$name       = "BIN2";
+GPIO_MOTOR.associatedPins[3].pin.$assign = "PA15";
+GPIO_MOTOR.associatedPins[4].$name       = "STBY";
+GPIO_MOTOR.associatedPins[4].pin.$assign = "PA16";
+
+/**
+ * Both quadrature encoders use GPIO rising/falling-edge interrupts.
+ */
+GPIO_ENCODER.$name = "GPIO_ENCODER";
+GPIO_ENCODER.associatedPins.create(4);
+GPIO_ENCODER.associatedPins[0].$name       = "LEFT_A";
+GPIO_ENCODER.associatedPins[0].direction   = "INPUT";
+GPIO_ENCODER.associatedPins[0].interruptEn = true;
+GPIO_ENCODER.associatedPins[0].polarity    = "RISE_FALL";
+GPIO_ENCODER.associatedPins[0].pin.$assign = "PA29";
+GPIO_ENCODER.associatedPins[1].$name       = "LEFT_B";
+GPIO_ENCODER.associatedPins[1].direction   = "INPUT";
+GPIO_ENCODER.associatedPins[1].interruptEn = true;
+GPIO_ENCODER.associatedPins[1].polarity    = "RISE_FALL";
+GPIO_ENCODER.associatedPins[1].pin.$assign = "PA30";
+GPIO_ENCODER.associatedPins[2].$name       = "RIGHT_A";
+GPIO_ENCODER.associatedPins[2].direction   = "INPUT";
+GPIO_ENCODER.associatedPins[2].interruptEn = true;
+GPIO_ENCODER.associatedPins[2].polarity    = "RISE_FALL";
+GPIO_ENCODER.associatedPins[2].pin.$assign = "PB0";
+GPIO_ENCODER.associatedPins[3].$name       = "RIGHT_B";
+GPIO_ENCODER.associatedPins[3].direction   = "INPUT";
+GPIO_ENCODER.associatedPins[3].interruptEn = true;
+GPIO_ENCODER.associatedPins[3].polarity    = "RISE_FALL";
+GPIO_ENCODER.associatedPins[3].pin.$assign = "PB1";
+
+/**
+ * 74HC4051 address and low-active enable outputs for the grayscale array.
+ */
+GPIO_GRAY.$name = "GPIO_GRAY";
+GPIO_GRAY.associatedPins.create(4);
+GPIO_GRAY.associatedPins[0].$name       = "AD0";
+GPIO_GRAY.associatedPins[0].pin.$assign = "PB16";
+GPIO_GRAY.associatedPins[1].$name       = "AD1";
+GPIO_GRAY.associatedPins[1].pin.$assign = "PB17";
+GPIO_GRAY.associatedPins[2].$name       = "AD2";
+GPIO_GRAY.associatedPins[2].pin.$assign = "PB18";
+GPIO_GRAY.associatedPins[3].$name       = "EN";
+GPIO_GRAY.associatedPins[3].pin.$assign = "PB19";
+
+/**
+ * Tianmengxing onboard button and status LED.
+ */
+GPIO_USER.$name = "GPIO_USER";
+GPIO_USER.associatedPins.create(2);
+GPIO_USER.associatedPins[0].$name            = "BUTTON";
+GPIO_USER.associatedPins[0].direction        = "INPUT";
+GPIO_USER.associatedPins[0].internalResistor = "PULL_UP";
+GPIO_USER.associatedPins[0].pin.$assign      = "PB21";
+GPIO_USER.associatedPins[1].$name            = "LED";
+GPIO_USER.associatedPins[1].pin.$assign      = "PB22";
+
+/**
+ * Two 10 kHz edge-aligned PWM channels on TIMA0.
+ */
+MOTOR_PWM.$name                      = "MOTOR_PWM";
+MOTOR_PWM.timerCount                 = 3200;
+MOTOR_PWM.timerStartTimer            = true;
+MOTOR_PWM.ccIndex                    = [1,2];
+MOTOR_PWM.peripheral.$assign         = "TIMA0";
+MOTOR_PWM.peripheral.ccp1Pin.$assign = "PB20";
+MOTOR_PWM.peripheral.ccp2Pin.$assign = "PB4";
+MOTOR_PWM.PWM_CHANNEL_1.$name        = "LEFT_PWM";
+MOTOR_PWM.PWM_CHANNEL_1.dutyCycle    = 0;
+MOTOR_PWM.PWM_CHANNEL_2.$name        = "RIGHT_PWM";
+MOTOR_PWM.PWM_CHANNEL_2.dutyCycle    = 0;
+
+/**
+ * Single ADC input fed by the grayscale board's 74HC4051 OUT pin.
+ */
+GRAY_ADC.$name                      = "GRAY_ADC";
+GRAY_ADC.sampClkSrc                 = "DL_ADC12_CLOCK_ULPCLK";
+GRAY_ADC.sampClkDiv                 = "DL_ADC12_CLOCK_DIVIDE_8";
+GRAY_ADC.adcMem0chansel             = "DL_ADC12_INPUT_CHAN_2";
+GRAY_ADC.sampleTime0                = "1us";
+GRAY_ADC.powerDownMode              = "DL_ADC12_POWER_DOWN_MODE_MANUAL";
+GRAY_ADC.peripheral.$assign         = "ADC0";
+GRAY_ADC.peripheral.adcPin2.$assign = "PA25";
+
+/**
+ * Primary debug/command serial port on the Tianmengxing UART pins.
+ */
+UART_DEBUG.$name                    = "UART_DEBUG";
+UART_DEBUG.targetBaudRate           = 115200;
+UART_DEBUG.enableFIFO               = false;
+UART_DEBUG.enabledInterrupts        = ["RX"];
+UART_DEBUG.peripheral.$assign       = "UART0";
+UART_DEBUG.peripheral.rxPin.$assign = "PA11";
+UART_DEBUG.peripheral.txPin.$assign = "PA10";
+
+/**
+ * ICM-45686 controller bus. INT1/INT2 are wired but polling is used for the
+ * first bring-up so bus and sensor faults remain easy to isolate.
+ */
+IMU_I2C.$name                     = "IMU_I2C";
+IMU_I2C.basicEnableController     = true;
+IMU_I2C.basicControllerBusSpeed   = 400000;
+IMU_I2C.advAnalogGlitchFilter     = "DISABLED";
+IMU_I2C.peripheral.$assign        = "I2C1";
+IMU_I2C.peripheral.sclPin.$assign = "PB2";
+IMU_I2C.peripheral.sdaPin.$assign = "PB3";
+
+/**
+ * 1 ms scheduler and 10 ms encoder-speed window source.
+ */
+CONTROL_TICK.$name              = "CONTROL_TICK";
+CONTROL_TICK.timerMode          = "PERIODIC";
+CONTROL_TICK.timerPeriod        = "1 ms";
+CONTROL_TICK.interrupts         = ["ZERO"];
+CONTROL_TICK.peripheral.$assign = "TIMG12";
+
+SYSCTL.forceDefaultClkConfig = true;
+SYSCTL.clockTreeEn           = true;

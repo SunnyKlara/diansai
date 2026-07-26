@@ -1,0 +1,22 @@
+# SysConfig and compiler output
+Debug/
+Release/
+build/
+*.o
+*.obj
+*.d
+*.out
+*.elf
+*.map
+*.hex
+*.bin
+
+# Temporary manual extraction; source PDFs remain available locally.
+work_pdf_text/
+module_manuals/*.pdf
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
