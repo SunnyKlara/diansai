@@ -175,3 +175,17 @@ workbench/天猛星主板平台/资料/**/*.zip
 
 # 临时 PDF 提取/转换中间目录（不入库）
 .tmp_pdf/
+
+# ---------- 第三方参考工程 2024H：原始 Agent 会话记录 10.8MB 不入库 ----------
+# 已提炼成 01_人类提问序列_提炼.md(28KB, 入库)；原始 jsonl 留本地可深挖，
+# 不推是为了别让赛场手机热点 push 更容易超时（见 CONTINUATION_GUIDE 协作条）。
+library/**/参考工程_2024H电赛车_MIT/rollout-*.jsonl
+
+# ---------- 外部参考仓库镜像 library/vendor_ref/ ----------
+# 只入库「索引 + 刷新脚本」，克隆下来的第三方代码本体一律不入库。
+# 原因(合规，非洁癖)：清单里多数仓库【没有 LICENSE 文件】，无权在我们这个公开仓库里
+#   再分发；本地留副本用于"读思路/赛场离线查阅"是合规的。许可逐仓看 00_INDEX.md。
+# 需要重建镜像：cd library/vendor_ref && .\_refresh.ps1
+library/vendor_ref/*
+!library/vendor_ref/00_INDEX.md
+!library/vendor_ref/_refresh.ps1
