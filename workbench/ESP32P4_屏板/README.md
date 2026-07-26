@@ -105,7 +105,33 @@ python tools\parse_flash_dump.py
 > 脚本设计遵循本仓库坑库：**一次性事务式**串口脚本（发/复位 → 采 N 秒 → 写文件 → 最后 Close，避免 `SerialPort.Close()` 在流数据下死锁）；全 ASCII 注释（避 PS 5.1 编码坑）；`DTR` 保持 de-assert 以免误进下载模式。
 > `厂家固件备份/*.bin` 与参考工程 clone **不入库**（`.gitignore` 已覆盖），资料 PDF/图/日志入库（原理图曾因未入库随重装蒸发过一次，这次留档）。
 
-## 六、工程改动清单
+## 六、固件源码在哪 / 换机后怎么重建
+
+⚠️ **工程本体 `workbench/esp32p4/p4_lcd/` 是第三方 clone（473MB，含 `.git` 与编译产物），按 `.gitignore` 不入库** ⇒ 换机 / 重装 / 误删后它**不会**随仓库回来。为此本目录 `firmware/` 存了**重建所需的全部差异**（本仓库"纸面不 commit 即蒸发"铁律，原理图 v1.3 已经这么丢过一次）：
+
+| 文件 | 说明 |
+|---|---|
+| `firmware/ai_panel.c` · `ai_panel.h` | **我们原创**的自绘验证面板（含背光判决实验，`AI_PANEL_BL_TEST` 默认 0）。完整源码，直接入库 |
+| `firmware/upstream_local.patch` | 对上游 5 个文件的全部改动（`CMakeLists.txt` / `lcd_panel_select.h` / `lvgl_demo.c` / `lvgl_demo.h` / `main.c`，共 47 insertions） |
+
+**换机重建步骤**：
+
+```powershell
+# 1. 取上游（路径必须全 ASCII 且短，ESP-IDF 不吃非 ASCII 路径）
+git clone -b mipi_lcd https://gitee.com/Ergou-/esp32-p4-c5-aibox.git d:\diansai\workbench\esp32p4\p4_lcd
+cd d:\diansai\workbench\esp32p4\p4_lcd
+
+# 2. 打回本地改动 + 放回原创源码
+git apply "..\..\ESP32P4_屏板\firmware\upstream_local.patch"
+Copy-Item "..\..\ESP32P4_屏板\firmware\ai_panel.*" main\
+
+# 3. 装 IDF（若机器上没有）→ 编译烧录
+#    见第五节：fetch_idf_tools_via_curl.ps1 → install_idf554.ps1 → build_p4.ps1
+```
+
+> patch 若因上游前进而冲突：改动只有 47 行、且每处都在文件注释里写明了意图，按下面第七节的清单手工重做即可。
+
+## 七、工程改动清单
 
 | 状态 | 项 |
 |---|---|

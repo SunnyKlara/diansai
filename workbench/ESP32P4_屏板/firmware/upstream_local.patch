@@ -1,0 +1,133 @@
+diff --git a/main/CMakeLists.txt b/main/CMakeLists.txt
+index 276b313..c7716d2 100644
+--- a/main/CMakeLists.txt
++++ b/main/CMakeLists.txt
+@@ -1,5 +1,5 @@
+ idf_component_register(
+-    SRCS "fl7703_4in_lcd.c" "jd9366_10_1in_lcd.c" "jd9365_10_1in_lcd.c" "gx610_12in_lcd.c" "st7703_4in_lcd.c" "axs15260_6_2in_lcd.c" "st7701_2_76in_lcd.c" "st7701_2_1in_lcd.c" "lvgl_demo.c" "main.c"
++    SRCS "fl7703_4in_lcd.c" "jd9366_10_1in_lcd.c" "jd9365_10_1in_lcd.c" "gx610_12in_lcd.c" "st7703_4in_lcd.c" "axs15260_6_2in_lcd.c" "st7701_2_76in_lcd.c" "st7701_2_1in_lcd.c" "lvgl_demo.c" "ai_panel.c" "main.c"
+     INCLUDE_DIRS "."
+     PRIV_REQUIRES esp_lcd esp_lcd_st7703 esp_lcd_axs15260 esp_lcd_st7701 esp_lcd_gx610 esp_lcd_jd9366 esp_lcd_jd9365 esp_lcd_fl7703 esp_hw_support esp_psram esp_driver_gpio
+                   lvgl esp_lvgl_port esp_lcd_touch esp_lcd_touch_gt911 esp_lcd_touch_cst826
+diff --git a/main/lcd_panel_select.h b/main/lcd_panel_select.h
+index 5c4b550..7f5a9aa 100644
+--- a/main/lcd_panel_select.h
++++ b/main/lcd_panel_select.h
+@@ -16,11 +16,13 @@
+ #include "lcd_panel.h"
+ 
+ // ====== 在这里选择当前使用的屏幕 ======
+-#define LCD_PANEL_ACTIVE   lcd_panel_jd9366_10_1in
++// 本机板子 = FRENIX ESP32-P4 R5 + 6.2寸 HL062CTIPS-M(AXS15260D, 452x1280)
++// 真机日志已坐实屏型号(2026-07-27)，故切到 6.2 寸；原默认是 10.1 寸 JD9366。
++#define LCD_PANEL_ACTIVE   lcd_panel_axs15260_6_2in
++// #define LCD_PANEL_ACTIVE   lcd_panel_jd9366_10_1in
+ // #define LCD_PANEL_ACTIVE   lcd_panel_jd9365_10_1in
+ // #define LCD_PANEL_ACTIVE   lcd_panel_fl7703_4in
+ // #define LCD_PANEL_ACTIVE   lcd_panel_gx610_12in
+ // #define LCD_PANEL_ACTIVE   lcd_panel_st7701_2_1in
+ // #define LCD_PANEL_ACTIVE   lcd_panel_st7701_2_76in
+-// #define LCD_PANEL_ACTIVE   lcd_panel_axs15260_6_2in
+ // #define LCD_PANEL_ACTIVE   lcd_panel_st7703_4in
+diff --git a/main/lvgl_demo.c b/main/lvgl_demo.c
+index 19af89f..16bbe69 100644
+--- a/main/lvgl_demo.c
++++ b/main/lvgl_demo.c
+@@ -10,6 +10,8 @@
+ #include "lvgl.h"
+ #include "demos/lv_demos.h"
+ 
++#include "ai_panel.h"
++
+ static const char *TAG = "lvgl";
+ 
+ esp_err_t lvgl_start(const lcd_panel_desc_t *pd,
+@@ -94,13 +96,17 @@ esp_err_t lvgl_start(const lcd_panel_desc_t *pd,
+ 
+     // 加载 demo（LVGL API 调用需加锁）
+     if (lvgl_port_lock(0)) {
+-#if LVGL_DEMO_BENCHMARK
++#if LVGL_DEMO_AI_PANEL
++        ai_panel_create();
++#elif LVGL_DEMO_BENCHMARK
+         lv_demo_benchmark();
+ #else
+         lv_demo_widgets();
+ #endif
+         lvgl_port_unlock();
+-        ESP_LOGI(TAG, "✅ %s 已加载", LVGL_DEMO_BENCHMARK ? "lv_demo_benchmark" : "lv_demo_widgets");
++        ESP_LOGI(TAG, "✅ %s 已加载",
++                 LVGL_DEMO_AI_PANEL ? "ai_panel(自绘验证面板)"
++                                    : (LVGL_DEMO_BENCHMARK ? "lv_demo_benchmark" : "lv_demo_widgets"));
+     } else {
+         ESP_LOGE(TAG, "❌ lvgl_port_lock 失败");
+         return ESP_FAIL;
+diff --git a/main/lvgl_demo.h b/main/lvgl_demo.h
+index 8f7a320..89bce23 100644
+--- a/main/lvgl_demo.h
++++ b/main/lvgl_demo.h
+@@ -24,6 +24,15 @@ extern "C" {
+ #define LVGL_DEMO_BENCHMARK  0
+ #endif
+ 
++// ====== 🔍 自绘验证面板开关（本仓库新增，非上游）======
++// 1 = 跑 ai_panel（自绘：固件编译时间 + 运行秒数 + 触摸坐标 + 跟手圆点 + 四角靶标）
++// 0 = 走上面两个上游 demo
++// 用途：真机验证「显示确实受这份固件控制」「触摸坐标映射对不对」。
++// 优先级高于 LVGL_DEMO_BENCHMARK。
++#ifndef LVGL_DEMO_AI_PANEL
++#define LVGL_DEMO_AI_PANEL   1
++#endif
++
+ // 用面板描述 + 已建好的面板句柄启动 LVGL（含触摸，触摸失败不影响显示），
+ // 并加载 lv_demo_widgets。LVGL 刷新由 esp_lvgl_port 后台任务负责。
+ esp_err_t lvgl_start(const lcd_panel_desc_t *panel_desc,
+diff --git a/main/main.c b/main/main.c
+index e8ded6b..ae637f5 100644
+--- a/main/main.c
++++ b/main/main.c
+@@ -6,12 +6,22 @@
+ #include "esp_lcd_types.h"
+ #include "esp_log.h"
+ 
++#include "freertos/FreeRTOS.h"
++#include "freertos/task.h"
++
+ #include "lcd_panel.h"
+ #include "lcd_panel_select.h"
+ #include "lvgl_demo.h"
+ 
+ static const char *TAG = "p4_lcd";
+ 
++// 背光归属验证已挪进 ai_panel.c（那里能让屏上提示与 GPIO 动作同步，人眼才判得出；
++// 放在这里闪 0.5s×3 实测"看不清、也不知道测试有没在跑"）。此处保留开关但默认关，
++// 避免两处同时操作同一个 GPIO 打架。
++#ifndef BL_BLINK_TEST
++#define BL_BLINK_TEST  0
++#endif
++
+ // ============================================================
+ // 🔌 屏幕 + 触摸全部 6 个 IO 统一在这里配置（依据 AIbox 新原理图）
+ //    各屏共用同一组引脚。
+@@ -59,6 +69,20 @@ void app_main(void)
+         return;
+     }
+ 
+-    ESP_LOGI(TAG, "✅ %s + LVGL widgets demo 已启动（%lux%lu）",
++    ESP_LOGI(TAG, "✅ %s + LVGL 界面已启动（%lux%lu）",
+              pd->name, (unsigned long)pd->h_res, (unsigned long)pd->v_res);
++
++#if BL_BLINK_TEST
++    // 等界面画出来再闪，否则黑屏闪看不出所以然
++    vTaskDelay(pdMS_TO_TICKS(2500));
++    for (int i = 1; i <= 3; i++) {
++        gpio_set_level(PIN_LCD_BL, 0);
++        ESP_LOGI(TAG, "🔅 背光 OFF #%d (GPIO%d=0) —— 屏若变黑则 IO30 真管背光", i, PIN_LCD_BL);
++        vTaskDelay(pdMS_TO_TICKS(500));
++        gpio_set_level(PIN_LCD_BL, 1);
++        ESP_LOGI(TAG, "🔆 背光 ON  #%d (GPIO%d=1)", i, PIN_LCD_BL);
++        vTaskDelay(pdMS_TO_TICKS(900));
++    }
++    ESP_LOGI(TAG, "🔎 背光通断测试结束：屏幕全程未变暗 => 背光与 IO30 无关（硬件常亮）");
++#endif
+ }
