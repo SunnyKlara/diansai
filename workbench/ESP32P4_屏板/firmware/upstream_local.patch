@@ -1,14 +1,18 @@
 diff --git a/main/CMakeLists.txt b/main/CMakeLists.txt
-index 276b313..c7716d2 100644
+index 276b313..fad40b8 100644
 --- a/main/CMakeLists.txt
 +++ b/main/CMakeLists.txt
-@@ -1,5 +1,5 @@
+@@ -1,7 +1,9 @@
  idf_component_register(
 -    SRCS "fl7703_4in_lcd.c" "jd9366_10_1in_lcd.c" "jd9365_10_1in_lcd.c" "gx610_12in_lcd.c" "st7703_4in_lcd.c" "axs15260_6_2in_lcd.c" "st7701_2_76in_lcd.c" "st7701_2_1in_lcd.c" "lvgl_demo.c" "main.c"
-+    SRCS "fl7703_4in_lcd.c" "jd9366_10_1in_lcd.c" "jd9365_10_1in_lcd.c" "gx610_12in_lcd.c" "st7703_4in_lcd.c" "axs15260_6_2in_lcd.c" "st7701_2_76in_lcd.c" "st7701_2_1in_lcd.c" "lvgl_demo.c" "ai_panel.c" "main.c"
++    SRCS "fl7703_4in_lcd.c" "jd9366_10_1in_lcd.c" "jd9365_10_1in_lcd.c" "gx610_12in_lcd.c" "st7703_4in_lcd.c" "axs15260_6_2in_lcd.c" "st7701_2_76in_lcd.c" "st7701_2_1in_lcd.c" "lvgl_demo.c" "ai_panel.c" "imu_qmi8658.c" "sdcard.c" "main.c"
      INCLUDE_DIRS "."
      PRIV_REQUIRES esp_lcd esp_lcd_st7703 esp_lcd_axs15260 esp_lcd_st7701 esp_lcd_gx610 esp_lcd_jd9366 esp_lcd_jd9365 esp_lcd_fl7703 esp_hw_support esp_psram esp_driver_gpio
                    lvgl esp_lvgl_port esp_lcd_touch esp_lcd_touch_gt911 esp_lcd_touch_cst826
+                   esp_lcd_touch_jd9366 esp_lcd_touch_ft6336u esp_driver_i2c
++                  # 板载外设自检：QMI8658A 六轴(I2C0) + microSD(SDMMC slot0 4-line + FATFS)
++                  esp_driver_sdmmc sdmmc fatfs vfs esp_timer
+ )
 diff --git a/main/lcd_panel_select.h b/main/lcd_panel_select.h
 index 5c4b550..7f5a9aa 100644
 --- a/main/lcd_panel_select.h
@@ -30,10 +34,10 @@ index 5c4b550..7f5a9aa 100644
 -// #define LCD_PANEL_ACTIVE   lcd_panel_axs15260_6_2in
  // #define LCD_PANEL_ACTIVE   lcd_panel_st7703_4in
 diff --git a/main/lvgl_demo.c b/main/lvgl_demo.c
-index 19af89f..16bbe69 100644
+index 19af89f..7bce46f 100644
 --- a/main/lvgl_demo.c
 +++ b/main/lvgl_demo.c
-@@ -10,6 +10,8 @@
+@@ -10,8 +10,33 @@
  #include "lvgl.h"
  #include "demos/lv_demos.h"
  
@@ -41,8 +45,47 @@ index 19af89f..16bbe69 100644
 +
  static const char *TAG = "lvgl";
  
++// ====== 帧率探针（本仓库新增）======
++// LVGL 的 PERF_MONITOR 只把 FPS 画在屏幕角上，串口拿不到 —— AI 看不见屏，
++// 跑分就无法定量对账。这里数 display 的刷新完成事件，自己往串口打 FPS。
++// 与 demo 类型无关（widgets / benchmark / ai_panel 都适用）。
++static uint32_t s_refr_count;
++
++static void refr_ready_cb(lv_event_t *e)
++{
++    LV_UNUSED(e);
++    s_refr_count++;
++}
++
++static void fps_report_cb(lv_timer_t *t)
++{
++    LV_UNUSED(t);
++    static uint32_t sec;
++    sec += 2;
++    const uint32_t n = s_refr_count;
++    s_refr_count = 0;
++    ESP_LOGI(TAG, "FPS %.1f  (refreshes=%lu in 2s, t=%lus)",
++             (float)n / 2.0f, (unsigned long)n, (unsigned long)sec);
++}
++
  esp_err_t lvgl_start(const lcd_panel_desc_t *pd,
-@@ -94,13 +96,17 @@ esp_err_t lvgl_start(const lcd_panel_desc_t *pd,
+                      esp_lcd_panel_handle_t panel,
+                      esp_lcd_panel_handle_t control_panel,
+@@ -78,6 +103,13 @@ esp_err_t lvgl_start(const lcd_panel_desc_t *pd,
+         pd->touch_attach(disp, tp_pins, pd->h_res, pd->v_res);
+     }
+ 
++    // 帧率探针：刷新完成计数 + 每 2s 往串口报一次
++    if (lvgl_port_lock(0)) {
++        lv_display_add_event_cb(disp, refr_ready_cb, LV_EVENT_REFR_READY, NULL);
++        lv_timer_create(fps_report_cb, 2000, NULL);
++        lvgl_port_unlock();
++    }
++
+     // 打印本次跑分对应的缓冲配置：跑分数据必须能对应到具体配置才有意义
+     ESP_LOGI(TAG,
+              "📊 基准配置 | 缓冲 %lu px ×%d | %s | dma=%d spiram=%d | direct=%d 避撕裂=%d | 旋转 %d° sw_rotate=%d PPA=%s",
+@@ -94,13 +126,17 @@ esp_err_t lvgl_start(const lcd_panel_desc_t *pd,
  
      // 加载 demo（LVGL API 调用需加锁）
      if (lvgl_port_lock(0)) {
@@ -63,10 +106,10 @@ index 19af89f..16bbe69 100644
          ESP_LOGE(TAG, "❌ lvgl_port_lock 失败");
          return ESP_FAIL;
 diff --git a/main/lvgl_demo.h b/main/lvgl_demo.h
-index 8f7a320..89bce23 100644
+index 8f7a320..6540ac5 100644
 --- a/main/lvgl_demo.h
 +++ b/main/lvgl_demo.h
-@@ -24,6 +24,15 @@ extern "C" {
+@@ -24,6 +24,20 @@ extern "C" {
  #define LVGL_DEMO_BENCHMARK  0
  #endif
  
@@ -75,6 +118,11 @@ index 8f7a320..89bce23 100644
 +// 0 = 走上面两个上游 demo
 +// 用途：真机验证「显示确实受这份固件控制」「触摸坐标映射对不对」。
 +// 优先级高于 LVGL_DEMO_BENCHMARK。
++// 跑分实测(2026-07-27, 1280x452 RGB888 + PPA 硬件旋转 + PSRAM 双局部缓冲)：
++//   简单场景 57~63.5 FPS(受 LV_DEF_REFR_PERIOD=15ms≈66Hz 上限约束)，
++//   重场景(大面积渐变/图像/阴影) 11.5~17 FPS，全程无 panic/WDT。
++//   复现方法：把本开关设 1、AI_PANEL 设 0，重新编译烧录，看串口 "lvgl: FPS x.x"
++//   （帧率探针在 lvgl_demo.c，PERF_MONITOR 只画在屏上、串口拿不到）。
 +#ifndef LVGL_DEMO_AI_PANEL
 +#define LVGL_DEMO_AI_PANEL   1
 +#endif
@@ -83,19 +131,21 @@ index 8f7a320..89bce23 100644
  // 并加载 lv_demo_widgets。LVGL 刷新由 esp_lvgl_port 后台任务负责。
  esp_err_t lvgl_start(const lcd_panel_desc_t *panel_desc,
 diff --git a/main/main.c b/main/main.c
-index e8ded6b..ae637f5 100644
+index e8ded6b..917d06e 100644
 --- a/main/main.c
 +++ b/main/main.c
-@@ -6,12 +6,22 @@
+@@ -6,12 +6,24 @@
  #include "esp_lcd_types.h"
  #include "esp_log.h"
  
 +#include "freertos/FreeRTOS.h"
 +#include "freertos/task.h"
 +
++#include "imu_qmi8658.h"
  #include "lcd_panel.h"
  #include "lcd_panel_select.h"
  #include "lvgl_demo.h"
++#include "sdcard.h"
  
  static const char *TAG = "p4_lcd";
  
@@ -109,13 +159,55 @@ index e8ded6b..ae637f5 100644
  // ============================================================
  // 🔌 屏幕 + 触摸全部 6 个 IO 统一在这里配置（依据 AIbox 新原理图）
  //    各屏共用同一组引脚。
-@@ -59,6 +69,20 @@ void app_main(void)
+@@ -23,6 +35,13 @@ static const char *TAG = "p4_lcd";
+ #define PIN_TP_INT    GPIO_NUM_27   // 触摸中断
+ #define PIN_TP_RST    PIN_LCD_RST   // 触摸复位与 LCD 共用 GPIO26
+ 
++// 板载 QMI8658A 六轴 IMU 挂在 I2C0（与 ES8389 音频 codec 共用这条总线，地址不冲突）
++#define PIN_IMU_SDA   7
++#define PIN_IMU_SCL   8
++
++// microSD 顺序读写测速的数据量（KB）。太小则被缓存/首次寻道淹没，2MB 够看出量级
++#define SD_BENCH_KB   2048
++
+ void app_main(void)
+ {
+     const lcd_panel_desc_t *pd = &LCD_PANEL_ACTIVE;
+@@ -53,12 +72,47 @@ void app_main(void)
+         }
+     }
+ 
+-    // 3. 启动 LVGL，并把已创建的触摸设备挂到输入设备
++    // 3. 板载外设自检（在 LVGL 之前，好让面板创建时就能显示状态）
++    //    两者都是"失败不影响显示"，故只记日志、不 return
++    if (imu_qmi8658_init(PIN_IMU_SDA, PIN_IMU_SCL) != ESP_OK) {
++        ESP_LOGW(TAG, "⚠️ QMI8658A 初始化失败，其余功能继续");
++    }
++    if (sdcard_mount() != ESP_OK) {
++        ESP_LOGW(TAG, "⚠️ microSD 未挂载（最常见=没插卡），其余功能继续");
++    }
++
++    // 4. 启动 LVGL，并把已创建的触摸设备挂到输入设备
+     if (lvgl_start(pd, panel, control_panel, io, &tp_pins) != ESP_OK) {
+         ESP_LOGE(TAG, "❌ LVGL 启动失败");
          return;
      }
  
 -    ESP_LOGI(TAG, "✅ %s + LVGL widgets demo 已启动（%lux%lu）",
 +    ESP_LOGI(TAG, "✅ %s + LVGL 界面已启动（%lux%lu）",
               pd->name, (unsigned long)pd->h_res, (unsigned long)pd->v_res);
++
++    // 5. ⚠️ 这里**故意不读 IMU**。
++    //    第一版在此处做了一次"自检读取"，而 ai_panel 的 LVGL 定时器同时也在周期读，
++    //    两个任务并发操作同一个 i2c_master 设备句柄 => I2C 状态机被打乱，实测串口
++    //    被 "i2c.master: clear bus failed / reset hardware failed" 刷屏、之后再也读不出数。
++    //    改为**单一调用点**：只有 LVGL 任务读 I2C，定量判据也由 ai_panel 定期打印到串口。
++
++    // 6. microSD 顺序读写测速（挂载成功才跑；会在卡上建 _bench.bin 并删除）
++    if (sdcard_info()->mounted) {
++        sdcard_bench_t b;
++        sdcard_benchmark(SD_BENCH_KB, &b);
++    }
 +
 +#if BL_BLINK_TEST
 +    // 等界面画出来再闪，否则黑屏闪看不出所以然
@@ -131,3 +223,59 @@ index e8ded6b..ae637f5 100644
 +    ESP_LOGI(TAG, "🔎 背光通断测试结束：屏幕全程未变暗 => 背光与 IO30 无关（硬件常亮）");
 +#endif
  }
+diff --git a/partitions.csv b/partitions.csv
+index 40bacee..411b951 100644
+--- a/partitions.csv
++++ b/partitions.csv
+@@ -1,5 +1,9 @@
+-# P4 屏幕(LVGL)固件分区表。LVGL+demo 固件 >1MB，factory 放大到 3M。
++# P4 屏幕(LVGL)固件分区表。
++# 本板 flash 实测 16MB(Boya 0x68/0x4018) —— 原表按 4MB 布局、factory 仅 3M。
++# 现按 16MB 重排：factory 放大到 8M，尾部留 storage(FAT) 供文件系统读写测试
++# （microSD 用真卡测；storage 是"没插卡也能验 FAT 栈"的对照，且日后放字库/图片用得上）。
+ # Name,   Type, SubType, Offset,  Size
+ nvs,      data, nvs,     ,        0x6000,
+ phy_init, data, phy,     ,        0x1000,
+-factory,  app,  factory, ,        3M,
++factory,  app,  factory, ,        8M,
++storage,  data, fat,     ,        6M,
+diff --git a/sdkconfig b/sdkconfig
+index 75eb59c..6be5c33 100644
+--- a/sdkconfig
++++ b/sdkconfig
+@@ -736,13 +736,13 @@ CONFIG_ESPTOOLPY_FLASHFREQ_VAL=80
+ CONFIG_ESPTOOLPY_FLASHFREQ="80m"
+ # CONFIG_ESPTOOLPY_FLASHSIZE_1MB is not set
+ # CONFIG_ESPTOOLPY_FLASHSIZE_2MB is not set
+-CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
++# CONFIG_ESPTOOLPY_FLASHSIZE_4MB is not set
+ # CONFIG_ESPTOOLPY_FLASHSIZE_8MB is not set
+-# CONFIG_ESPTOOLPY_FLASHSIZE_16MB is not set
++CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+ # CONFIG_ESPTOOLPY_FLASHSIZE_32MB is not set
+ # CONFIG_ESPTOOLPY_FLASHSIZE_64MB is not set
+ # CONFIG_ESPTOOLPY_FLASHSIZE_128MB is not set
+-CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
++CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+ # CONFIG_ESPTOOLPY_HEADER_FLASHSIZE_UPDATE is not set
+ CONFIG_ESPTOOLPY_BEFORE_RESET=y
+ # CONFIG_ESPTOOLPY_BEFORE_NORESET is not set
+diff --git a/sdkconfig.defaults b/sdkconfig.defaults
+index b3313d7..ba4e753 100644
+--- a/sdkconfig.defaults
++++ b/sdkconfig.defaults
+@@ -9,9 +9,11 @@ CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+ CONFIG_ESP32P4_REV_MIN_100=y
+ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+ 
+-# Flash 与分区：LVGL+demo 固件 >1MB，factory 放大到 3M（partitions.csv）
+-CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+-CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
++# Flash 与分区：本板实测 flash 为 16MB（Boya 0x68/0x4018），原配置只声明 4MB、
++# 白扔 12MB（旧固件启动会警告 "Detected size(16384k) larger than ... (4096k)"）。
++# factory 同步放大到 8M（partitions.csv）。
++CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
++CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+ CONFIG_PARTITION_TABLE_CUSTOM=y
+ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+ 

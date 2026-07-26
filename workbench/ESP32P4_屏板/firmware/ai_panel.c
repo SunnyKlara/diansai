@@ -14,6 +14,9 @@
 #include "esp_log.h"
 #include "lvgl.h"
 
+#include "imu_qmi8658.h"
+#include "sdcard.h"
+
 static const char *TAG = "ai_panel";
 
 // ============================================================
@@ -54,6 +57,8 @@ static lv_obj_t *s_lbl_uptime;
 static lv_obj_t *s_lbl_touch;
 static lv_obj_t *s_bar_beat;
 static lv_obj_t *s_dot;
+static lv_obj_t *s_lbl_imu;
+static lv_obj_t *s_lbl_sd;
 #if AI_PANEL_BL_TEST
 static lv_obj_t *s_lbl_bl;
 
@@ -147,6 +152,56 @@ static void tick_cb(lv_timer_t *t)
     // 0..100 来回扫，纯视觉心跳
     uint32_t phase = ticks % 200;
     lv_bar_set_value(s_bar_beat, (int32_t)(phase <= 100 ? phase : 200 - phase), LV_ANIM_OFF);
+
+    // IMU 每 200ms 读一次（13 字节 I2C，很轻；别每帧读，没必要还占总线）
+    // ⚠️ 这是**全工程唯一**读 I2C 的地方：i2c_master 句柄不能被多任务并发使用，
+    //    否则总线状态机崩掉（实测 "clear bus failed" 刷屏，见 main.c 第 5 步注释）。
+    if (ticks % 2 == 0) {
+        if (imu_qmi8658_ok()) {
+            imu_reading_t r;
+            if (imu_qmi8658_read(&r) == ESP_OK) {
+                // 每 5s 往串口打一次定量判据：|a| 静止应 ≈1000mg(定标正确)、陀螺应 ≈0
+                if (ticks % 50 == 0) {
+                    ESP_LOGI(TAG, "IMU addr=0x%02X whoami=0x%02X | a=(%.0f,%.0f,%.0f)mg "
+                                  "|a|=%.0fmg | g=(%.2f,%.2f,%.2f)dps | %.1fC  "
+                                  "[静止判据: |a|≈1000±50, |w|<2]",
+                             imu_qmi8658_addr(), imu_qmi8658_whoami(),
+                             r.ax_mg, r.ay_mg, r.az_mg, r.a_norm_mg,
+                             r.gx_dps, r.gy_dps, r.gz_dps, r.temp_c);
+                }
+                lv_label_set_text_fmt(s_lbl_imu,
+                                      "IMU  0x%02X ok  a=(%4d,%4d,%4d)mg  |a|=%4dmg  "
+                                      "g=(%3d,%3d,%3d)dps  %2d C",
+                                      imu_qmi8658_addr(),
+                                      (int)r.ax_mg, (int)r.ay_mg, (int)r.az_mg, (int)r.a_norm_mg,
+                                      (int)r.gx_dps, (int)r.gy_dps, (int)r.gz_dps, (int)r.temp_c);
+            } else {
+                lv_label_set_text(s_lbl_imu, "IMU  read FAILED");
+            }
+        } else {
+            lv_label_set_text(s_lbl_imu, "IMU  NOT FOUND on I2C0 (SDA=7 SCL=8)");
+        }
+    }
+
+    // SD 每 1s 刷一次（等 app_main 那边测速跑完）
+    if (ticks % 10 == 0) {
+        const sdcard_info_t *si = sdcard_info();
+        const sdcard_bench_t *sb = sdcard_bench_result();
+        if (!si->mounted) {
+            lv_label_set_text(s_lbl_sd, "SD   not mounted - no card inserted?");
+        } else if (sb->done) {
+            lv_label_set_text_fmt(s_lbl_sd,
+                                  "SD   %s  %llu MB  %d kHz  %d-line   |   "
+                                  "write %.0f KB/s  read %.0f KB/s",
+                                  si->name, (unsigned long long)si->size_mb,
+                                  si->speed_khz, si->bus_width,
+                                  sb->write_kbps, sb->read_kbps);
+        } else {
+            lv_label_set_text_fmt(s_lbl_sd, "SD   %s  %llu MB  %d kHz  %d-line   |   benchmarking...",
+                                  si->name, (unsigned long long)si->size_mb,
+                                  si->speed_khz, si->bus_width);
+        }
+    }
 }
 
 static void update_touch_label(void)
@@ -254,13 +309,18 @@ void ai_panel_create(void)
     lv_obj_align(s_lbl_touch, LV_ALIGN_TOP_LEFT, 26, 214);
     update_touch_label();
 
-    lv_obj_t *hint = lv_label_create(scr);
-    lv_label_set_text(hint,
-                      "Drag a finger: the dot must sit exactly under it.\n"
-                      "Offset / mirrored axes here mean swap_xy or mirror_x/y is wrong.");
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(hint, lv_color_hex(0x8899aa), 0);
-    lv_obj_align(hint, LV_ALIGN_TOP_LEFT, 26, 252);
+    // ---- 板载外设自检读数：QMI8658A 六轴 + microSD ----
+    s_lbl_imu = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_lbl_imu, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(s_lbl_imu, lv_color_hex(0xb794f6), 0);
+    lv_obj_align(s_lbl_imu, LV_ALIGN_TOP_LEFT, 26, 250);
+    lv_label_set_text(s_lbl_imu, "IMU     init...");
+
+    s_lbl_sd = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_lbl_sd, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(s_lbl_sd, lv_color_hex(0x7cd0ff), 0);
+    lv_obj_align(s_lbl_sd, LV_ALIGN_TOP_LEFT, 26, 306);
+    lv_label_set_text(s_lbl_sd, "SD      init...");
 
     // ---- 四角靶标：确认整块可视区都被画到（边缘被裁会立刻看出来）----
     const lv_color_t corner = lv_color_hex(0xff5c7a);

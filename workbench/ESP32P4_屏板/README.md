@@ -56,11 +56,19 @@
 
 **已布线的外设（按原理图核过）**：MIPI-DSI 屏 30P · MIPI-CSI 摄像头 24P（OV2710 1080P，板载 24MHz 晶振供 XCLK，I2C 经 BSS138PS 做 1.8V↔3.3V 电平转换）· ES8389 音频 codec + 2×NS4150B 功放 + 2 喇叭座 + 板载双硅麦 · **QMI8658A 六轴 IMU（I2C0，IO7/IO8）** · microSD 4-line SDMMC · ESP32-C5-MINI-1-N4（SDIO slave + UART IO37/38 + 顶部 6P `BOOT` 排针给 C5 刷固件）· AXP2101 PMIC（**I2C 0x34，与触摸同一条总线**）+ 电池座 + PWRON 长按 · USB OTG-HS · 扩展排针 IO1–IO5。
 
-| 优先级 | 测试项 | 前置 |
+| 优先级 | 测试项 | 状态 |
 |---|---|---|
-| P0 | 触摸映射、显示质量、FPS 读数、挂机稳定性 —— **当前卡在这里，见第三节** | 只需人眼 |
-| ✅ 已做 | 背光 IO30 通断（已执行，等判读）· 触摸坐标打印 · LVGL 自绘 UI | IDF 已装好 |
-| P1 | **QMI8658A 六轴读数**（对电赛最有用，姿态算法可复用天猛星 `attitude.c`）· microSD 挂载+读写 · `lv_demo_benchmark` 跑分（PPA 硬旋转 vs 软旋转）· flash 4MB→16MB + 分区放大 | 无（IDF 已就绪） |
+| ✅ | 背光归属 / 触摸映射 / 显示受控 / 自绘 UI | 已定论，见第三节 |
+| ✅ | **flash 4MB→16MB + 分区放大** | `SPI Flash Size : 16MB`，factory 8M + storage 6M(FAT)；旧固件那条 `Detected size larger than image header` 警告消失 |
+| ✅ | **QMI8658A 六轴** | 地址探测 **0x6A**（0x6B 无应答）· `WHO_AM_I=0x05` · 静止 **\|a\|=984~991mg**(目标 1000±50) · 静止陀螺 ≈0 · 31℃ · 平放时 **Z 轴朝上** |
+| ✅ | **LVGL 跑分**（1280×452 RGB888 + PPA 硬旋转 + PSRAM 双局部缓冲） | ai_panel 稳定 **60.5~63 FPS**；benchmark 轻场景 57~63.5（撞 `LV_DEF_REFR_PERIOD=15ms≈66Hz` 上限）、重场景(大面积渐变/图像/阴影) **11.5~17**；全程零 panic/WDT |
+| ⏳ | **microSD** | 驱动+测速代码已写、编译通过、真机跑到挂载即返回 `ESP_ERR_TIMEOUT`(`send_op_cond` 超时 = 卡无响应，判为**未插卡**)。**挂载成功路径与测速代码 `待插卡验证`** |
+| P2 | 摄像头（需 CSI 模组 + 24P 排线）· 放音（需 MX1.25-2P 喇叭；录音现在就能测）· 电池电量/充电（需锂电）· USB OTG host（U 盘/UVC） | 额外硬件 |
+| P3 | ESP32-C5 WiFi6(2.4G/5G)+BLE via ESP-Hosted（需给 C5 单独刷 slave 固件，走 6P BOOT 排针）· P4 的 H264/JPEG 硬编解码 | 复杂 |
+
+**踩过的两个软件坑（都记进坑库了）**：
+1. **I2C 控制器抢占**：原理图标 `I2C_SDA0/SCL0`，照抄成 `I2C_NUM_0` → 与触摸驱动（`TP_I2C_PORT=I2C_NUM_0`，引脚 IO28/29）撞车，IMU 抢到控制器后触摸 `i2c_new_master_bus` 失败、每帧轮询报错刷屏 88 条 `clear bus failed`。**原理图的总线编号 ≠ ESP-IDF 的 `I2C_NUM_x` 控制器编号**，IMU 改用 `I2C_NUM_1` 后两者共存。
+2. **`i2c_master` 句柄不能多任务并发**：`app_main` 与 LVGL 定时器各读一次 IMU 就把总线状态机搞崩。现在**全工程只有 `ai_panel` 的定时器读 I2C**，串口判据也从那里打。
 | P2 | 摄像头（需 CSI 模组 + 24P 排线）· 放音（需 MX1.25-2P 喇叭；录音现在就能测）· 电池电量/充电（需锂电）· USB OTG host（U 盘/UVC） | 额外硬件 |
 | P3 | ESP32-C5 WiFi6(2.4G/5G)+BLE via ESP-Hosted（需给 C5 单独刷 slave 固件，走 6P BOOT 排针）· P4 的 H264/JPEG 硬编解码 | 复杂 |
 
@@ -112,8 +120,12 @@ python tools\parse_flash_dump.py
 
 | 文件 | 说明 |
 |---|---|
-| `firmware/ai_panel.c` · `ai_panel.h` | **我们原创**的自绘验证面板（含背光判决实验，`AI_PANEL_BL_TEST` 默认 0）。完整源码，直接入库 |
-| `firmware/upstream_local.patch` | 对上游 5 个文件的全部改动（`CMakeLists.txt` / `lcd_panel_select.h` / `lvgl_demo.c` / `lvgl_demo.h` / `main.c`，共 47 insertions） |
+| `firmware/ai_panel.c` · `ai_panel.h` | **原创**：自绘验证面板（触摸跟手圆点 / IMU 实时读数 / SD 状态 / 背光判决实验，`AI_PANEL_BL_TEST` 默认 0） |
+| `firmware/imu_qmi8658.c` · `.h` | **原创**：QMI8658A 六轴驱动（I2C 地址自动探测 + 定标换算 + 静止判据） |
+| `firmware/sdcard.c` · `.h` | **原创**：microSD（SDMMC slot0 4-line）挂载 + 顺序读写测速 |
+| `firmware/upstream_local.patch` | 对上游 8 个文件的全部改动（`main/CMakeLists.txt` / `lcd_panel_select.h` / `lvgl_demo.c` / `lvgl_demo.h` / `main.c` / `partitions.csv` / `sdkconfig` / `sdkconfig.defaults`，共 129 insertions） |
+
+> 拷源码时别漏文件：`Copy-Item ..\..\ESP32P4_屏板\firmware\*.c,..\..\ESP32P4_屏板\firmware\*.h main\`
 
 **换机重建步骤**：
 
@@ -122,9 +134,9 @@ python tools\parse_flash_dump.py
 git clone -b mipi_lcd https://gitee.com/Ergou-/esp32-p4-c5-aibox.git d:\diansai\workbench\esp32p4\p4_lcd
 cd d:\diansai\workbench\esp32p4\p4_lcd
 
-# 2. 打回本地改动 + 放回原创源码
+# 2. 打回本地改动 + 放回原创源码（ai_panel / imu_qmi8658 / sdcard 共 6 个文件）
 git apply "..\..\ESP32P4_屏板\firmware\upstream_local.patch"
-Copy-Item "..\..\ESP32P4_屏板\firmware\ai_panel.*" main\
+Copy-Item "..\..\ESP32P4_屏板\firmware\*.c","..\..\ESP32P4_屏板\firmware\*.h" main\
 
 # 3. 装 IDF（若机器上没有）→ 编译烧录
 #    见第五节：fetch_idf_tools_via_curl.ps1 → install_idf554.ps1 → build_p4.ps1
