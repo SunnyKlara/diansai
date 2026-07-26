@@ -1,8 +1,8 @@
 /*
  * attitude.c - 六轴姿态解算实现 (纯算法层, 不依赖 HAL)
- *   PC 验证: 见同目录 test_attitude.c ——
- *     gcc -O2 -Wall -o t attitude.c test_attitude.c -lm && ./t
- *   (本文件已用 PC 单测验证核心数学; 上板闭环转角仍 // 待真机验证)
+ *   PC 验证: pc_test/test_attitude.c ——
+ *     cd pc_test && gcc -O2 -Wall -I.. -o test_attitude test_attitude.c ../attitude.c -lm && ./test_attitude
+ *   (核心数学 + 轴向置换/符号/死区等效性已 PC 单测 PASS; 上板闭环转角仍 // 待真机验证)
  */
 #include "attitude.h"
 #include <math.h>
@@ -87,4 +87,17 @@ float attitude_wrap180(float deg)
     while (deg >= 180.0f) deg -= 360.0f;
     while (deg < -180.0f) deg += 360.0f;
     return deg;
+}
+
+void attitude_axis_map(int yaw_axis, const float in[3], float out[3])
+{
+    /* 先整体取值再写回 => 支持 out==in 的原地置换(否则 out[0]=in[2] 会先毁掉 in[0]) */
+    float x = in[0], y = in[1], z = in[2];
+    if (yaw_axis == 0) {          /* X 竖直: slot2 <- x */
+        out[0] = y; out[1] = z; out[2] = x;
+    } else if (yaw_axis == 1) {   /* Y 竖直: slot2 <- y */
+        out[0] = z; out[1] = x; out[2] = y;
+    } else {                      /* Z 竖直(默认/恒等) */
+        out[0] = x; out[1] = y; out[2] = z;
+    }
 }

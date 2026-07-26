@@ -10,10 +10,13 @@
  *
  * 与 HAL 无关: 只做浮点运算, 可在 PC 用 gcc 编译跑 test_attitude.c 验证(见同目录)。
  *
- * ★ 轴向/符号约定 // 待真机验证:
- *   假定 IMU 平贴车底, Z 轴朝上 => gyro[2](gz)=偏航角速度。car_drive 左转为 + 时,
- *   期望 gz 也为 + (逆时针)。实际正负取决于 ICM 芯片贴装朝向, 到货后转一下看符号,
- *   不对就在读数处对 gz 取反(或在此不改, 在 car.c 调用侧统一处理)。
+ * ★ 轴向/符号约定(本模块的硬约定, 调用侧负责满足):
+ *   本模块**固定约定 slot2(下标2) = 竖直轴 = 偏航轴**, slot0/slot1 = 车体水平两轴。
+ *   真机上 IMU 的贴装朝向不一定让 Z 朝上(天猛星 2026-07-27 实测重力主要落在 +Y),
+ *   所以**调用侧必须先用 attitude_axis_map() 把真实竖直轴置换到 slot2 再喂进来**,
+ *   并按需对 slot2 的角速度取反(左转为正)。这两个平台相关的值在 config.h:
+ *   CFG_YAW_AXIS / CFG_YAW_SIGN(天猛星运行时还可用命令 a/s 改, 定轴不必重烧)。
+ *   => 本模块因此与贴装朝向解耦, 可 PC 单测(pc_test/test_attitude.c 覆盖置换与符号)。
  */
 #ifndef ATTITUDE_H
 #define ATTITUDE_H
@@ -52,5 +55,13 @@ void  attitude_update(attitude_t *a, const float gyro_dps[3], const float accel_
 
 /* 角度归一化到 [-180, 180)。 */
 float attitude_wrap180(float deg);
+
+/* 轴向置换: 把 yaw_axis 指定的物理竖直轴(0=X 1=Y 2=Z)循环置换到 slot2, 使上面
+ * "slot2=偏航轴" 的约定成立。in/out 均为 [x,y,z] 顺序, 陀螺与加速度都要过同一次置换。
+ *   yaw_axis=0: (x,y,z)->(y,z,x)   yaw_axis=1: (x,y,z)->(z,x,y)   其它: 恒等
+ * 用**循环**置换而非"直接把 gy 当 yaw"的原因: 循环置换的行列式=+1(是一个真旋转),
+ * 右手系与 pitch/roll 的手性都不被破坏; 若只交换两轴(det=-1)会把姿态变成镜像。
+ * 允许 out==in(内部先取值再写回, 无别名问题)。 */
+void  attitude_axis_map(int yaw_axis, const float in[3], float out[3]);
 
 #endif /* ATTITUDE_H */
