@@ -3,8 +3,10 @@
 #   Does NOT flash here (so over-tapping can't corrupt a write) — flash separately after SUCCESS.
 #   ASCII-only (Win PowerShell 5.1 mangles UTF-8).
 param([int]$Tries = 20)
-$oo  = "C:\ti\xpack-openocd-0.12.0-7\bin\openocd.exe"
-$scr = "C:/ti/xpack-openocd-0.12.0-7/openocd/scripts"
+. (Join-Path $PSScriptRoot '_tools.ps1')   # path resolution lives in ONE place - see _tools.ps1 header
+$ocd = Find-Openocd
+$oo  = $ocd.Exe
+$scr = $ocd.Scripts
 Write-Output "=== KEEP TAPPING the board RST button fast + continuously until you see UNLOCK SUCCESS ==="
 for ($i = 1; $i -le $Tries; $i++) {
     Write-Output "--- factory_reset attempt $i/$Tries ---"

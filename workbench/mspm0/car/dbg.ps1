@@ -38,9 +38,11 @@ param(
 $ErrorActionPreference = 'Continue'
 Set-Location $PSScriptRoot
 
-$oocd    = 'C:\ti\xpack-openocd-0.12.0-7\bin\openocd.exe'
-$scripts = 'C:/ti/xpack-openocd-0.12.0-7/openocd/scripts'
-$gdb     = 'C:\Program Files (x86)\Arm GNU Toolchain arm-none-eabi\12.2 mpacbti-rel1\bin\arm-none-eabi-gdb.exe'
+. (Join-Path $PSScriptRoot '_tools.ps1')   # path resolution lives in ONE place - see _tools.ps1 header
+$ocd     = Find-Openocd
+$oocd    = $ocd.Exe
+$scripts = $ocd.Scripts
+$gdb     = Find-ArmTool 'arm-none-eabi-gdb'
 $helper  = Join-Path (Resolve-Path "$PSScriptRoot\..\..\..") '.kiro\skills\mspm0-ccs\scripts\openocd_debug.py'
 $program = Join-Path $PSScriptRoot 'gcc\car.out'
 

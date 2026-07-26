@@ -9,9 +9,11 @@
 #   2) When you HEAR THE BEEP / see the yellow "STOP TAPPING" banner -> STOP tapping immediately.
 #   3) Let it finish: watch for  "wrote ... bytes" + "Verified OK" + "Resetting Target".
 #   4) Then press RST once for a clean cold boot. Done -> tell the assistant.
+. (Join-Path $PSScriptRoot '_tools.ps1')   # path resolution lives in ONE place - see _tools.ps1 header
 Set-Location (Join-Path $PSScriptRoot 'gcc')
-$oo  = "C:\ti\xpack-openocd-0.12.0-7\bin\openocd.exe"
-$scr = "C:/ti/xpack-openocd-0.12.0-7/openocd/scripts"
+$ocd = Find-Openocd
+$oo  = $ocd.Exe
+$scr = $ocd.Scripts
 Write-Host "=== PRESS ENTER, then TAP RST continuously. STOP the instant you HEAR THE BEEP. ===" -ForegroundColor Yellow
 & $oo -s $scr -f interface/cmsis-dap.cfg -c "adapter speed 500" -f target/ti_mspm0.cfg `
       -c "init" -c "mspm0_factory_reset" `

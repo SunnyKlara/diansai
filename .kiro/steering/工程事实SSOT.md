@@ -62,17 +62,24 @@
 
 ## D. 环境 / 命令事实
 
+> ⚠️ **本节的"工具装在哪"是机器相关的，不是全仓唯一值。** 备赛已实证 **≥2 台机器/clone 并行**（本地 clone 的 `git log` 里没有归档记的 `c1b44ca..d404822`，SSOT 里也引用了本地不存在的 `a808122`）。所以：**唯一可靠入口 = `car/一键编译烧录.bat`**（自动探测五样工具）；文档里的绝对路径只能当"某台机器当时的快照"读，别照抄去跑命令。
+
 | 事实 | 值 | 校验于 |
 |---|---|---|
 | 工程路径 | `workbench/mspm0/car/`（**必须全 ASCII**——GCC 不认中文路径） | 2026-07-26 |
-| 编译 | 在 `car/gcc/` 下 `mingw32-make`（或 VS Code `Ctrl+Shift+B`） | 2026-07-26 |
-| 工具链 PATH | `ARM GNU Toolchain arm-none-eabi\12.2 mpacbti-rel1\bin` + WinLibs `mingw64\bin`（见 `car/.vscode/tasks.json`） | 2026-07-26 |
+| 编译（**推荐·唯一入口**） | 跑 `car/一键编译烧录.bat` —— 自动探测 SDK / ARM gcc / make / SysConfig / openocd 五样，并在 **make 命令行**覆盖（makefile 用 `?=`，命令行胜出），**换机零改动**；缺哪样会逐项报 MISSING | 2026-07-27 **编译已验** |
+| **本机工具链实际位置（全在 D 盘）** | `D:\toolchains\` 下：`arm-gnu-12.2`(ARM GNU **12.2.MPACBTI-Rel1**) · `mspm0-sdk`(SDK **2.09.00.00**, GitHub tag `mspm0_sdk_2_09_00_01`) · `sysconfig-1.23.1`(**1.23.1.4034**) · `xpack-openocd-0.12.0-7` · `build-tools\bin\make.exe`(GNU make **4.4.1**)。**装 D 盘因为 C 盘只剩 23GB**。安装包留在 `D:\toolchains\_dl\`（赛场断网可离线重装，勿删） | 2026-07-27 **编译已验** |
+| 为什么 `build-tools` 里只留 `make.exe` | 同目录的 `sh.exe`/busybox 已**故意删掉**：一旦 PATH 上有 `sh.exe`，make 会把 `SHELL` 切成它 → SDK `imports.mak` 走 Linux 分支（`rm -f`）且 SysConfig 那个 `.bat` 调用会出问题。没有 sh.exe ⇒ `SHELL=cmd.exe` ⇒ 与历史可用环境一致 | 2026-07-27 |
+| SDK 的 `imports.mak` 从哪来 | GitHub 版 SDK 只带 `imports.mak.windows`（含 `##GCC_ARM_VER##` 占位符）。bat 会自动 `copy` 成 `imports.mak`；占位符无害，因为三个工具路径都被 make 命令行覆盖 | 2026-07-27 **编译已验** |
+| ⬜ **待验：跨机器产物一致性** | 本机 SDK 2.09.00.00 + SysConfig 1.23.1.4034；另一台是 SDK main 快照 + SysConfig 1.28.0 → **同一份 `car.syscfg` 在两台机生成的 `ti_msp_dl_config.c` 是否逐字节一致，未验证**（`gcc/` 是构建产物、被 gitignore，不随 clone 回来，无法直接比对）。两台机产物有差异时优先信"真机跑过"的那一版 | — |
+| 另一台机器的 C 盘布局（**仅供对照·本机没有**） | `C:\Program Files (x86)\Arm GNU Toolchain...` + WinLibs `mingw64\bin` + `C:\ti\mspm0-sdk` + `C:\ti\sysconfig_1.28.0` + `C:\ti\ccs2100`。本机重装后这些**全部不存在** | 2026-07-27 |
 | 烧录（推荐） | `car/flash.ps1`（**2026-07-27 改两段式**：① `program car.out exit` 只写不校验；② 另起只读会话 `init/halt/verify_image` 做字节比对）。openocd `xpack-openocd-0.12.0-7` + `interface/cmsis-dap.cfg` + `target/ti_mspm0.cfg`，**adapter speed 500**。**成功判据 = `** Programming Finished **` + `verified NNNNN bytes`**；看到裸 `Verify Failed` 先证伪、**别重烧**（见坑库同名条） | 2026-07-27 |
 | 无头 SWD 调试 | `car/dbg.ps1 probe|registers|run-to-symbol`（包装 `.kiro/skills/mspm0-ccs/scripts/openocd_debug.py`）— **halt 会让 PWM 冻在当前占空，先发 `z` 停机** | 2026-07-27 `待真机` |
 | 救砖 | `car/unbrick_flash.ps1`（**解锁+烧录必须同一 openocd 会话**，响铃时停点 RST） | 2026-07-26 |
-| **改完 `.syscfg` 先自检** | `car/syscfg_check.ps1`（静态体检 + 临时目录试生成；**钉死 SDK `imports.mak` 的 `SYSCONFIG_TOOL`，本机有两个 1.28.0，用错版本等于白验**）— 实测 `status=ok`、无 warning | 2026-07-27 **PC 已验** |
+| **⭐ 脚本里的工具路径只在一处解析** | `car/_tools.ps1`（dot-source，导出 `Find-Openocd` / `Find-ArmTool`）。`flash.ps1`/`unbrick.ps1`/`unbrick_flash.ps1`/`dbg.ps1` 已全部改为调它、**不再各写死一份 `C:\ti\...`**。**换机/换盘只改 `_tools.ps1` 的 `$ToolRoots`**。找不到就 `throw`（宁可响亮失败，也不悄悄用 PATH 上的别的 openocd）。教训：这四个脚本原先各写死 `C:\ti\xpack-openocd-0.12.0-7`，在本机（装 D 盘）**一跑即失败**——而暴露时机正是芯片 lockup、`unbrick_flash.ps1` 是唯一救命脚本的时候 | 2026-07-27 **PC 已验**（解析出 D 盘 openocd/gdb，5 脚本语法检查通过） |
+| **改完 `.syscfg` 先自检** | `car/syscfg_check.ps1`（静态体检 + 临时目录试生成；**钉死 SDK `imports.mak` 的 `SYSCONFIG_TOOL`，用错版本等于白验**）— 实测 `status=ok`、无 warning。⚠️ 脚本里"本机有两个 1.28.0"是**另一台机**的情况；**本机只有 1.23.1.4034**（`D:\toolchains\sysconfig-1.23.1`），在本机跑前先确认它探到的是这个 | 2026-07-27 **PC 已验（另一台机）** |
 | **查官方例程怎么配外设** | `car/sdk_find.ps1 <MODULE> [-Grep kw] [-AllBoards]`（索引本机 SDK 1765 个 `.syscfg` + `.meta/*.syscfg.js` 字段真源）—— 加外设前先查，别凭记忆猜 | 2026-07-27 **PC 已验** |
-| ADC 同步定相采样参考例程（电流环前置） | `C:\ti\mspm0-sdk\examples\nortos\LP_MSPM0G3507\driverlib\adc12_triggered_by_timer_event`（多路同步 = `adc12_simultaneous_trigger_event`；整套 = `motor_control_pmsm_sensorless_foc\*`） | 2026-07-27 |
+| ADC 同步定相采样参考例程（电流环前置） | **SDK 根**下 `examples\nortos\LP_MSPM0G3507\driverlib\adc12_triggered_by_timer_event`（多路同步 = `adc12_simultaneous_trigger_event`；整套 = `motor_control_pmsm_sensorless_foc\*`）。SDK 根在本机 = `D:\toolchains\mspm0-sdk`（**别写死盘符，见本节顶部警示**） | 2026-07-27 |
 | 调试串口 | **COM30** @115200（DAP 的 VCOM；号会随拔插变，先扫端口） | 2026-07-26 |
 | 串口发命令 | `car/uart_send.ps1`（**逐字符 + 25ms 间隔**——一次突发写会撑爆 MCU RX FIFO 丢字节） | 2026-07-26 |
 | 固件命令集 | `m0..m7` 模式(m6 开环差速/m7 闭环差速) / `t<v>` 目标 / `p,i,d<×1000>` 增益 / `w,e` 位置精定位 / `f<ms>` 遥测周期 / `x,y` DUAL 直驱 / `v,r` 车级线速度·角速度 / **IMU: `g` 验活+定轴提示、`k` 零偏标定(静止2s)、`o` yaw 归零、`a<0|1|2>` 定竖直轴、`s<1|-1>` 定 yaw 符号** / `z` 停 / `?` 状态 | 2026-07-27 |

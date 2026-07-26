@@ -4,8 +4,10 @@
 #     (openocd soft-reset can't launch the app on MSPM0 - only a real POR does).
 #   * Run this in YOUR terminal so an agent timeout never interrupts the flash write.
 Set-Location $PSScriptRoot
-$oo  = "C:\ti\xpack-openocd-0.12.0-7\bin\openocd.exe"
-$scr = "C:/ti/xpack-openocd-0.12.0-7/openocd/scripts"
+. (Join-Path $PSScriptRoot '_tools.ps1')   # path resolution lives in ONE place - see _tools.ps1 header
+$ocd = Find-Openocd
+$oo  = $ocd.Exe
+$scr = $ocd.Scripts
 if (-not (Test-Path "gcc\car.out")) { Write-Host "gcc/car.out not found - build first (mingw32-make in gcc/)" -ForegroundColor Red; exit 1 }
 # TWO SESSIONS ON PURPOSE (2026-07-27):
 #   1) write only  - "program ... exit", NO verify. The in-session verify uses a CRC helper that
