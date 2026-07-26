@@ -65,7 +65,7 @@
 | 工程路径 | `workbench/mspm0/car/`（**必须全 ASCII**——GCC 不认中文路径） | 2026-07-26 |
 | 编译 | 在 `car/gcc/` 下 `mingw32-make`（或 VS Code `Ctrl+Shift+B`） | 2026-07-26 |
 | 工具链 PATH | `ARM GNU Toolchain arm-none-eabi\12.2 mpacbti-rel1\bin` + WinLibs `mingw64\bin`（见 `car/.vscode/tasks.json`） | 2026-07-26 |
-| 烧录（推荐） | `car/flash.ps1`；openocd `xpack-openocd-0.12.0-7` + `interface/cmsis-dap.cfg` + `target/ti_mspm0.cfg`，**adapter speed 500 + `program car.out reset exit`（不带 verify）** | 2026-07-26 |
+| 烧录（推荐） | `car/flash.ps1`（**2026-07-27 改两段式**：① `program car.out exit` 只写不校验；② 另起只读会话 `init/halt/verify_image` 做字节比对）。openocd `xpack-openocd-0.12.0-7` + `interface/cmsis-dap.cfg` + `target/ti_mspm0.cfg`，**adapter speed 500**。**成功判据 = `** Programming Finished **` + `verified NNNNN bytes`**；看到裸 `Verify Failed` 先证伪、**别重烧**（见坑库同名条） | 2026-07-27 |
 | 无头 SWD 调试 | `car/dbg.ps1 probe|registers|run-to-symbol`（包装 `.kiro/skills/mspm0-ccs/scripts/openocd_debug.py`）— **halt 会让 PWM 冻在当前占空，先发 `z` 停机** | 2026-07-27 `待真机` |
 | 救砖 | `car/unbrick_flash.ps1`（**解锁+烧录必须同一 openocd 会话**，响铃时停点 RST） | 2026-07-26 |
 | **改完 `.syscfg` 先自检** | `car/syscfg_check.ps1`（静态体检 + 临时目录试生成；**钉死 SDK `imports.mak` 的 `SYSCONFIG_TOOL`，本机有两个 1.28.0，用错版本等于白验**）— 实测 `status=ok`、无 warning | 2026-07-27 **PC 已验** |
