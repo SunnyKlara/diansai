@@ -31,7 +31,7 @@
 | 编码器 enc1(M1) A/B | `PA7` / `PB19` | 2026-07-26 |
 | 编码器 enc2(M2) A/B | `PB20` / `PB21` | 2026-07-26 |
 | LCD GC9A01（SPI1） | SCK`PB9` MOSI`PB8` RES`PB10` DC`PB11` CS`PB14` BLK`PB26` | 2026-07-26 |
-| IMU ICM42688（共享 SPI1） | +MISO`PB7`、软片选 CS`PB6`、INT`PA29`(未接) | 2026-07-26 `待真机` |
+| IMU ICM42688（共享 SPI1） | +MISO`PB7`、软片选 CS`PB6`、INT`PA29`(未接)。**真机验活 ✅**：`g` → `WHOAMI=71 OK(0x47)`、静止陀螺 ≤0.25dps、**加速度模长 0.995g**(定标正确)、温度 29.5℃。⚠️ **yaw 轴向未定**（实测重力主要在 +Y，非 Z；`attitude.h` 的"Z 朝上"假设待证，定轴法见 guide §四） | 2026-07-27 |
 | 调试串口 UART0 | TX`PA10` / RX`PA11` @115200（**交叉接 DAP 的 RX/TX + 共地**） | 2026-07-26 |
 | SWD | SWCLK`PA20` / SWDIO`PA19`（外置 CMSIS-DAP，只接 DIO/CLK/GND） | 2026-07-26 |
 | 板载用户 LED | `PB22` | 2026-07-26 |
