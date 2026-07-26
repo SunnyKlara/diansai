@@ -22,6 +22,8 @@
 #include "encoder.h"
 #include "imu.h"        /* ICM42688 六轴驱动 (真机验活通过 a808122: WHOAMI=0x47/|a|=0.995g) */
 #include "attitude.h"   /* 六轴姿态解算 (纯算法层, 已 PC 单测验证) */
+#include "cmd_gate.h"   /* 串口命令格式门 (纯逻辑, 挡 ESP boot 日志误触发命令; 已 PC 单测) */
+#include <math.h>       /* 水平仪页用 sqrtf/fabsf/atan2f (软浮点, 仅 IDLE 下的显示页调用) */
 
 /* ★所有可调参数(时基/周期/PWM上限/ENC_CPR/PID增益/死区/容差/调试开关)已集中到 config.h。
  * 本文件只写逻辑, 不再散落 #define —— 赛场调参只翻 config.h(工作台规范 §2 铁律)。
@@ -56,6 +58,21 @@ static float g_wz_dps   = 0.0f;          /* 去零偏(+死区)后的偏航角速
  * "连续快烧"这个已把芯片怼进 lockup 的禁忌(SSOT §D2)。默认值来自 config.h, 定完回填锁死。 */
 static int   g_yaw_axis = CFG_YAW_AXIS;
 static int   g_yaw_sign = CFG_YAW_SIGN;
+/* ★ 偏航主路径 = "把角速度投影到测得的天顶方向"(见 attitude.h attitude_yaw_rate 的理由)。
+ * g_up   : 静止标定(命令 k)时由加速度均值归一化得到的**天顶单位向量**(传感器系)
+ * g_gb_raw: 同次标定得到的**原始系**陀螺零偏(投影前扣除)
+ * g_up_valid=0 时自动回落到"挑最近轴 + 循环置换"的老路径(CFG_YAW_AXIS)。 */
+static float g_up[3]     = { 0.0f, 0.0f, 1.0f };
+static float g_gb_raw[3] = { 0.0f, 0.0f, 0.0f };
+static int   g_up_valid  = 0;
+static float g_cal_a[3]  = { 0.0f, 0.0f, 0.0f };   /* 标定累加器: 加速度(原始系) */
+static float g_cal_g[3]  = { 0.0f, 0.0f, 0.0f };   /* 标定累加器: 陀螺(原始系) */
+/* ==== LCD 页面状态(水平仪页详见后文 "水平仪页" 段) ==== */
+static int   g_disp = CFG_DISP_BOOT_PAGE;  /* 0=编码器计数页 1=水平仪页; 命令 u<0|1>, 默认见 config.h */
+static int   g_disp_dirty = 0;           /* 切页后需要重画计数页静态层 */
+static int   g_lv_static = 0;            /* 水平仪页静态层(标题+容差环)是否已画 */
+static int16_t g_lv_px = -999, g_lv_py = -999;   /* 小球上次屏坐标(相对圆心) */
+static char  g_lv_txt[2][20] = { { 0 }, { 0 } }; /* 两行文字上次内容 -> 仅变化才重绘 */
 /* ==== 运动安全: 超时自停(两个闸门, 语义与取舍见 config.h §7) ====
  * g_cmd_at  : 最近一次收到命令的时刻 -> 静默超时(没人说话 N 秒就停)
  * g_mode_at : 进入当前模式的时刻     -> 硬上限(任何命令都不能续命)
@@ -121,8 +138,16 @@ static int loop_index(void)   /* 当前模式对应的增益索引; 无环返回
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
 /* ==== 串口命令 ==== */
+/* 命令行缓冲: **每个来源一个**。有线口与无线口会同时来字节, 共用一个缓冲会把两边的
+ * 半截命令拼成一条乱命令(比丢命令更坏 —— 它会"成功执行"一个谁都没发过的指令)。 */
 static char cbuf[16];
 static int  clen = 0;
+#if CFG_ESP_UART_EN
+static char ebuf[16];
+static int  elen = 0;
+static uint32_t g_cmd_rej = 0;     /* 被格式门拒掉的行数(遥测里 rej= 字段) */
+static volatile uint32_t g_bridge_end = 0;   /* AT 桥接到期时刻(SysTick 拍); 0=不在桥接。见 bridge_pump() */
+#endif
 
 static int parse_int(const char *s, int n)
 {
@@ -141,7 +166,15 @@ static void print_status(void)
         uart_dbg_puts(" Ki*1e3="); uart_dbg_put_int((int)(gki[li] * 1000));
         uart_dbg_puts(" Kd*1e3="); uart_dbg_put_int((int)(gkd[li] * 1000));
     }
-    uart_dbg_puts(" (PWM_CAP="); uart_dbg_put_int(PWM_CAP); uart_dbg_puts("%)\n");
+    uart_dbg_puts(" (PWM_CAP="); uart_dbg_put_int(PWM_CAP); uart_dbg_puts("%)");
+#if CFG_ESP_UART_EN
+    /* sinks=当前输出去向(1有线/2无线/3双发, `l<mask>` 改) | rej=被格式门拒掉的行数。
+     * rej 是"门在干活"的唯一可观测证据: 接了 ESP 后每次 ESP 上电它应该跳 ~20(boot 日志行数)。
+     * rej 一直是 0 且 ESP 刚上过电 => 要怀疑 RX 根本没接上(PB3), 而不是"没有垃圾进来"。 */
+    uart_dbg_puts(" sinks="); uart_dbg_put_int((int)uart_dbg_get_sinks());
+    uart_dbg_puts(" rej=");   uart_dbg_put_int((int)g_cmd_rej);
+#endif
+    uart_dbg_puts("\n");
 }
 /* IMU 验活读数(命令 'g'): 任何时候 5 秒问清"IMU 到底通不通"的常备命令。
  * 打印 WHO_AM_I(应=71=0x47) + 陀螺(0.01°/s) + 加速度(mg) + 温度(0.1℃) + |a| 与定轴提示。
@@ -187,6 +220,8 @@ static void imu_dump(void)
 static void yaw_frame_changed(const char *what)
 {
     g_cal_left = 0;
+    g_up_valid = 0;                       /* 天顶向量也是在旧坐标/旧姿态下测的 -> 一并作废 */
+    g_gb_raw[0] = g_gb_raw[1] = g_gb_raw[2] = 0.0f;
     g_att.gbias[0] = g_att.gbias[1] = g_att.gbias[2] = 0.0f;
     attitude_reset_yaw(&g_att, 0.0f);
     uart_dbg_puts("[imu] "); uart_dbg_puts(what);
@@ -235,6 +270,32 @@ static void run_cmd(const char *s, int n)
          * 测出来的 => 一改这两个值旧零偏就失效, 必须清掉并提示重标, 否则会拿错轴的零偏去积分。 */
         case 'a': if (v >= 0 && v <= 2) { g_yaw_axis = v; yaw_frame_changed("axis"); } break;
         case 's': g_yaw_sign = (v >= 0) ? 1 : -1; yaw_frame_changed("sign"); break;
+        /* u0 = 编码器计数页(默认) / u1 = 水平仪页(定轴时边挪车边看)。切页时重画静态层。 */
+        case 'u': if (v >= 0 && v <= 1) { g_disp = v; g_lv_static = 0; g_disp_dirty = 1;
+                      uart_dbg_puts(v ? "[lcd] page=LEVEL (u0 回计数页; 挪车让小球进绿环)\n"
+                                      : "[lcd] page=COUNT\n"); }
+                  break;
+#if CFG_ESP_UART_EN
+        /* b<秒>: 进 AT 桥接(本口 <-> 车载 ESP 原样对接), 到期自动退出。范围 5~300s, 缺省 30。
+         * 用途: 车载 ESP 只连 MCU、PC 碰不到它 ⇒ 靠这条给它发 AT 配置。详见 bridge_pump() 注释。 */
+        case 'b': {
+            int bs = (v >= 5 && v <= 300) ? v : 30;
+            stop_all();                     /* 桥接期间不解析命令 => 先停干净, 别留着能动的机器 */
+            uart_dbg_puts("[uart] bridge ON ");
+            uart_dbg_put_int(bs);
+            uart_dbg_puts("s : this port <-> ESP(UART3) RAW; telemetry muted; no cmd parsing; auto-exit\n");
+            g_bridge_end = g_st + (uint32_t)bs * 1000u * ST_PER_MS;
+            if (g_bridge_end == 0) g_bridge_end = 1;   /* 防 wrap 到 0 被当成"未桥接" */
+            return;                         /* 不打 print_status: 那会污染 AT 通道 */
+        }
+        /* l<mask>: 遥测往哪些口打印。1=有线(DAP VCOM) / 2=无线(ESP) / 3=双发(默认, 见 config.h §9)。
+         * 什么时候要改: 整定用 f20(50Hz) 时双发会吃掉主循环一半时间(每字节发两遍) -> 只留一个口。
+         * mask=0 被忽略(不允许把所有输出关掉 = 把自己变瞎)。 */
+        case 'l': if (v > 0) { uart_dbg_set_sinks((uint32_t)v);
+                      uart_dbg_puts("[uart] sinks="); uart_dbg_put_int((int)uart_dbg_get_sinks());
+                      uart_dbg_puts(" (1=wired DAP, 2=wireless ESP, 3=both)\n"); }
+                  break;
+#endif
         case 'g': imu_dump(); return;   /* IMU 验活读数(陀螺到货后 bring-up 用) */
         case '?': break;
         default:  break;
@@ -242,13 +303,204 @@ static void run_cmd(const char *s, int n)
     if (g_mode != mode_before) g_mode_at = g_st;   /* 换了模式 -> 硬上限重新起算 */
     print_status();
 }
+/* ==== 命令格式门(只在编了无线口时才需要) ====
+ * 只接受 `<字母>[-][数字...]` 这一种形状, 可选 `#` 前缀。多一个空格、多一个字母 => 拒。
+ *
+ * 为什么必须有(不是防御性编程, 是修一个已坐实的 bug):
+ *   ESP-01S 每次上电都从 TXD 吐一段 boot 日志, 里面 `tail 0` / `tail 4` 三行的**首字符是 `t`**
+ *   = 命令"设定目标值" => 每次 ESP 上电必静默改目标 + 清 PID 积分; 日志里还有纯乱码行,
+ *   撞上 `x`/`y` 就是直接驱动电机。而查电机/编码器/PID 永远查不到凶手在 ESP 的启动日志里。
+ *   证据: esp_boot_risk.ps1 拿 650 字节真实 boot 流在 PC 上回放, 22 行会被当命令、其中 3 行触发 `t`。
+ * 兼容性: 现有全部脚本发的是 m3/t900/p150/z/? 这种形状 => 100% 过门(PC 侧已用模拟器实测 8/8 ACCEPT)。 */
+#if CFG_ESP_UART_EN
+/* 门本体在 cmd_gate.h (static inline, 不依赖 HAL) —— 与 pc_test/test_cmd_gate.c 共用同一份代码,
+ * 免得像 esp_fake_mcu.ps1 那样出现"自称 faithful copy 而原件不存在"的两份实现。 */
+
+/* 一个来源的字节流 -> 行 -> 命令。buf/len 由调用方按来源分开持有(见 cbuf/ebuf 注释)。
+ * gate=1 时过格式门(无线口必须过; 有线口也过, 反正现有脚本 100% 兼容)。 */
+static void feed_cmd_stream(uint8_t ch, char *buf, int *len, int gate)
+{
+    if (ch == '\r' || ch == '\n') {
+        int n = *len;
+        *len = 0;
+        if (n <= 0) return;
+        /* 上电静默窗: 字节照读走(不读走的话解禁后照样会被解析), 但不解析成命令 */
+        if (g_st < (uint32_t)CMD_MUTE_MS * ST_PER_MS) { g_cmd_rej++; return; }
+        if (gate && !cmd_format_ok(buf, n))            { g_cmd_rej++; return; }
+        run_cmd(buf, n);
+    } else if (*len < 15) {
+        buf[(*len)++] = (char)ch;
+    }
+}
+#endif
+
 static void poll_uart(void)
 {
     uint8_t ch;
+#if CFG_ESP_UART_EN
+    while (DL_UART_receiveDataCheck(DBG_UART_INST, &ch)) feed_cmd_stream(ch, cbuf, &clen, 1);
+    while (DL_UART_receiveDataCheck(ESP_UART_INST, &ch)) feed_cmd_stream(ch, ebuf, &elen, 1);
+#else
     while (DL_UART_receiveDataCheck(DBG_UART_INST, &ch)) {
         if (ch == '\r' || ch == '\n') { if (clen > 0) { run_cmd(cbuf, clen); clen = 0; } }
         else if (clen < 15) cbuf[clen++] = (char)ch;
     }
+#endif
+}
+
+#if CFG_ESP_UART_EN
+/* ==== AT 桥接模式(命令 `b<秒>`) ====
+ * 把有线调试口(UART0/DAP VCOM) 与 车载 ESP(UART3) **原样字节对接**, 让 PC 能直接跟车上那块
+ * ESP 对话(发 AT、读回复), 中间不解析、不过格式门、不打遥测。
+ *
+ * 为什么必须有它: 车载 ESP 的串口只连到 MCU 的 PB2/PB3, 板上没有第二个串口座 ⇒
+ *   一旦它装上车, PC 就再也碰不到它, 而"没配过的模块永远不会转发数据"(见 cmd_gate.h 同族问题)。
+ *   没有桥接就只能拆板子; 有了它, 换模块/改 SSID/改信道(赛场 2.4G 拥挤时要换 ch1/ch6)全都不用拆车。
+ *
+ * 退出方式 = **超时自动退出**, 不用逃逸序列。理由: 桥接期间每个字节都要原样转发, 任何"魔法序列"
+ *   都会和 ESP 自己的 `+++` 抢语义; 而超时零歧义、脚本也好写(发 `b120` 然后 120s 内随便聊)。
+ * 安全: 进入前先 stop_all()(桥接期间不解析命令 ⇒ 没法急停, 所以先把机器停干净)。
+ */
+static void bridge_pump(void)
+{
+    uint8_t ch;
+    /* 直接用 DL 调用, 绕开 uart_dbg 的 sink 分发 —— 桥接要的是"一对一原样搬", 不是广播 */
+    while (DL_UART_receiveDataCheck(DBG_UART_INST, &ch))
+        DL_UART_transmitDataBlocking(ESP_UART_INST, ch);
+    while (DL_UART_receiveDataCheck(ESP_UART_INST, &ch))
+        DL_UART_transmitDataBlocking(DBG_UART_INST, ch);
+}
+#endif
+
+static void i32_to_field(char *b, int32_t v, int w);   /* 前置声明: 定义在本文件后半 */
+
+/* ==== 水平仪页(LCD 定轴助手) ====
+ * 圆屏上画一个"重锤/滚珠"式水平仪: 同心容差环 + 一个小球。**小球滚向下沉的那一侧**
+ * (即车哪边低, 球往哪边跑) => 操作直觉 = "把球所在那一侧抬起来"。
+ *
+ * 为什么需要它: 定轴(L1)要求车放平, 但人挪车时没有任何反馈, 只能反复跑脚本猜。
+ * 阈值与"为什么越平越好"的量化理由全在 config.h §6.5。
+ *
+ * 成本控制(这块屏 2 字节/像素、阻塞式 SPI, 见 gc9a01.c DrawChar 注释):
+ *   静态部分(标题/三个容差环)只画一次; 每帧只 ① 擦掉小球旧位置 ② 画新位置 ③ 补画被擦到的环点;
+ *   文字仅在内容变化时重绘(固定宽度、不透明底 => 覆盖式, 不清屏不闪)。
+ *   本页只在 IDLE 用(进任何运动模式会自动切回计数页), 所以它的开销不会影响控制环。
+ */
+#define LV_CX   120
+#define LV_CY   120
+#define LV_BR   7                        /* 小球半径 */
+#define LV_R_OK   ((int16_t)(CFG_LEVEL_OK_DEG   * CFG_LEVEL_PX_PER_DEG))
+#define LV_R_GOOD ((int16_t)(CFG_LEVEL_GOOD_DEG * CFG_LEVEL_PX_PER_DEG))
+#define LV_R_PASS ((int16_t)(CFG_LEVEL_PASS_DEG * CFG_LEVEL_PX_PER_DEG))
+
+static void lv_draw_rings(void)
+{
+    GC9A01_DrawCircle(LV_CX, LV_CY, LV_R_PASS, LCD_ORANGE, 3);   /* 14° 底线 */
+    GC9A01_DrawCircle(LV_CX, LV_CY, LV_R_GOOD, LCD_YELLOW, 2);   /* 5°  良 */
+    GC9A01_DrawCircle(LV_CX, LV_CY, LV_R_OK,   LCD_GREEN,  1);   /* 2°  优(实线) */
+    GC9A01_DrawPixel(LV_CX, LV_CY, LCD_WHITE);                   /* 圆心 */
+}
+
+static void lv_line(int idx, int16_t y, const char *s, uint16_t fg, uint8_t scale)
+{
+    if (idx >= 0 && idx < 2) {
+        int same = 1;
+        for (int i = 0; i < 19; i++) { if (g_lv_txt[idx][i] != s[i]) { same = 0; break; } if (!s[i]) break; }
+        if (same) return;                                        /* 内容没变 -> 不重绘(省 SPI, 不闪) */
+        for (int i = 0; i < 19; i++) { g_lv_txt[idx][i] = s[i]; if (!s[i]) break; }
+        g_lv_txt[idx][19] = 0;
+    }
+    GC9A01_DrawStringCentered(y, s, fg, LCD_BLACK, scale);
+}
+
+/* 定宽写入: 把 v 以 "整数.小数1位" 写进 b(共 w 字符, 右对齐), 供覆盖式刷新 */
+static void fix1(char *b, float v, int w)
+{
+    int t = (int)(v * 10.0f + (v >= 0 ? 0.5f : -0.5f));
+    int neg = t < 0; if (neg) t = -t;
+    char tmp[12]; int n = 0;
+    tmp[n++] = (char)('0' + (t % 10)); tmp[n++] = '.'; t /= 10;
+    if (t == 0) tmp[n++] = '0';
+    while (t) { tmp[n++] = (char)('0' + (t % 10)); t /= 10; }
+    if (neg) tmp[n++] = '-';
+    int i = 0; for (int pad = w - n; pad > 0; pad--) b[i++] = ' ';
+    while (n > 0) b[i++] = tmp[--n];
+    b[i] = 0;
+}
+
+/* accel_g[3] = 原始传感器系加速度(g)。整页刷新一次。 */
+static void disp_level(const float a[3])
+{
+    if (!g_lv_static) {
+        GC9A01_FillScreen(LCD_BLACK);
+        GC9A01_DrawStringCentered(20, "LEVEL", LCD_GRAY, LCD_BLACK, 1);
+        lv_draw_rings();
+        g_lv_static = 1;
+        g_lv_px = g_lv_py = -999;
+        g_lv_txt[0][0] = g_lv_txt[1][0] = 1;   /* 置成不可能值 -> 强制首帧写字 */
+    }
+
+    /* 1) 模长 + 竖直轴(取 |a| 最大的那一轴) */
+    float mag = sqrtf(a[0]*a[0] + a[1]*a[1] + a[2]*a[2]);
+    int mg = (int)(mag * 1000.0f + 0.5f);
+    int d = 0;
+    for (int i = 1; i < 3; i++) if (fabsf(a[i]) > fabsf(a[d])) d = i;
+
+    /* 2) 用 attitude_axis_map(已 PC 单测)把竖直轴搬到 slot2 => slot0/1 天然就是两个水平分量。
+     *    复用它而不是另写一套 if-else: 同一套置换, 与航向层的轴向约定不会漂。 */
+    float m[3];
+    attitude_axis_map(d, a, m);
+    float h = sqrtf(m[0]*m[0] + m[1]*m[1]);              /* 水平分量模长 */
+    float tilt = atan2f(h, fabsf(m[2])) * 57.295779513f; /* 与竖直方向的夹角(度) */
+
+    /* 3) 小球位置: 方向来自水平分量, 半径来自倾角(线性 px/度)。LCD y 向下 =>
+     *    车哪边低, 重力在那边分量为正, 球就往那边跑(重锤直觉)。 */
+    int16_t px = 0, py = 0;
+    if (h > 1e-4f) {
+        float k = tilt * (float)CFG_LEVEL_PX_PER_DEG / h;
+        px = (int16_t)(m[0] * k);
+        py = (int16_t)(m[1] * k);
+    }
+    const int16_t lim = 100;                              /* 别画出圆屏 */
+    if (px >  lim) px =  lim;
+    if (px < -lim) px = -lim;
+    if (py >  lim) py =  lim;
+    if (py < -lim) py = -lim;
+
+    /* 4) 判定 */
+    uint16_t col; const char *verd;
+    int a_bad = (mg < CFG_LEVEL_A_MIN_MG || mg > CFG_LEVEL_A_MAX_MG);
+    if      (a_bad)                        { col = LCD_MAGENTA; verd = "HOLD STILL"; }
+    else if (tilt <= CFG_LEVEL_OK_DEG)     { col = LCD_GREEN;   verd = "OK  BEST  "; }
+    else if (tilt <= CFG_LEVEL_GOOD_DEG)   { col = LCD_YELLOW;  verd = "OK  GOOD  "; }
+    else if (tilt <= CFG_LEVEL_PASS_DEG)   { col = LCD_ORANGE;  verd = "PASS(min) "; }
+    else                                   { col = LCD_RED;     verd = "TILT      "; }
+
+    /* 5) 只重画小球: 擦旧 -> 补被擦掉的环点 -> 画新 */
+    if (px != g_lv_px || py != g_lv_py) {
+        if (g_lv_px != -999) {
+            GC9A01_FillCircle(LV_CX + g_lv_px, LV_CY + g_lv_py, LV_BR, LCD_BLACK);
+            lv_draw_rings();                              /* 环可能被擦到, 补一次(虚线环很便宜) */
+        }
+        GC9A01_FillCircle(LV_CX + px, LV_CY + py, LV_BR, col);
+        g_lv_px = px; g_lv_py = py;
+    }
+
+    /* 6) 两行文字(仅变化才重绘) */
+    char l0[20], l1[20], nb[8];
+    /* 上行: 竖直轴是谁 + 模长, 例 "V=Z+ |a|= 999mg" */
+    l0[0]='V'; l0[1]='='; l0[2]=(char)('X'+d); l0[3]=(a[d]>=0?'+':'-');
+    l0[4]=' '; l0[5]='|'; l0[6]='a'; l0[7]='|'; l0[8]='=';
+    i32_to_field(nb, mg, 4);
+    l0[9]=nb[0]; l0[10]=nb[1]; l0[11]=nb[2]; l0[12]=nb[3];
+    l0[13]='m'; l0[14]='g'; l0[15]=0;
+    lv_line(0, 36, l0, a_bad ? LCD_MAGENTA : LCD_GRAY, 1);
+    /* 下行: 判定 + 倾角, 例 "OK  BEST   1.2d" */
+    { int i = 0; while (verd[i] && i < 10) { l1[i] = verd[i]; i++; }
+      fix1(nb, tilt, 5);
+      l1[i++]=nb[0]; l1[i++]=nb[1]; l1[i++]=nb[2]; l1[i++]=nb[3]; l1[i++]=nb[4];
+      l1[i++]='d'; l1[i]=0; }
+    lv_line(1, 186, l1, col, 2);
 }
 
 /* int32 -> 右对齐固定宽度字符串(左补空格), 供 LCD 覆盖式刷新:
@@ -492,9 +744,19 @@ int main(void)
     uart_dbg_puts("[ctl]              m6 DRV(open, v/r in PWM%) / m7 DRVC(closed, v/r in RPM via speed loops)\n");
     uart_dbg_puts("[ctl] cmds: t<v> tgt | v<lin> r<ang> drive | p/i/d<x1000> gains | w<%>dz e<cnt>tol(pos精定位) | f<ms> | z stop | ?\n");
     uart_dbg_puts("[ctl] IMU: g dump | k bias-cal(静止2s) | o yaw=0 | a<0|1|2>定轴 s<1|-1>定符号 ; telemetry Y=yaw(0.1deg) W=wz(0.01dps)\n");
+    uart_dbg_puts("[ctl] LCD: u0 计数页 / u1 水平仪页(定轴放平用: 挪车让小球进绿环=<=2deg, 黄=<=5, 橙=<=14底线)\n");
     uart_dbg_puts("[ctl] SAFETY: 运动超时自停 = 静默(按模式, h<ms>可临时改) + 硬上限 ");
     uart_dbg_put_int(CFG_RUN_MS_HARDCAP);
     uart_dbg_puts("ms(不可绕过); 触发会打 'RUN TIMEOUT'\n");
+#if CFG_ESP_UART_EN
+    /* 这一行是"板上跑的这版到底有没有无线口"的开机指纹 —— 旧固件不会打它。
+     * 无线那头收到这一行本身就等于端到端通了(MCU->UART3->ESP-A->WiFi->ESP-B->PC 的 COM 口)。 */
+    uart_dbg_puts("[uart] wireless: UART3 TX=PB2 RX=PB3 @115200 -> ESP-01S | sinks=");
+    uart_dbg_put_int((int)uart_dbg_get_sinks());
+    uart_dbg_puts(" (l1 wired / l2 wireless / l3 both) | cmd gate ON, mute ");
+    uart_dbg_put_int(CMD_MUTE_MS);
+    uart_dbg_puts("ms (ESP boot 日志会被拒, 看遥测 rej= 计数)\n");
+#endif
     uart_dbg_puts("[ctl] enc=4x quad ENC_CPR=800(cal) | build "); uart_dbg_puts(__DATE__); uart_dbg_puts(" "); uart_dbg_puts(__TIME__); uart_dbg_puts("\n");
     uart_dbg_puts("[imu] init WHOAMI="); uart_dbg_put_int(imu_id);
     uart_dbg_puts(imu_id == ICM42688_WHOAMI_VAL ? " OK(ICM42688)\n" : " 未就绪(接线/供电/片选异常, 用 g 命令复测)\n");
@@ -514,6 +776,19 @@ int main(void)
     uint32_t last_imu = 0;
 
     while (1) {
+#if CFG_ESP_UART_EN
+        /* 桥接优先: 在桥接期内只搬字节, 跳过命令解析/控制/遥测/LCD(否则遥测会灌进 AT 通道)。
+         * 已在进入时 stop_all() + g_mode=IDLE, 且控制环本就在 SysTick 里 ⇒ 这里 continue 是安全的。 */
+        if (g_bridge_end) {
+            if ((int32_t)(g_st - g_bridge_end) >= 0) {
+                g_bridge_end = 0;
+                uart_dbg_puts("\n[uart] bridge END -> normal (telemetry back)\n");
+            } else {
+                bridge_pump();
+                continue;
+            }
+        }
+#endif
         poll_uart();
         uint32_t now = g_st;   /* 真实时基快照(SysTick 5kHz); 编码器采样在同一 ISR */
 
@@ -568,23 +843,54 @@ int main(void)
             attitude_axis_map(g_yaw_axis, gd, gm);   /* 把竖直轴搬到 slot2(循环置换, det=+1) */
             attitude_axis_map(g_yaw_axis, ag, am);
             gm[2] *= (float)g_yaw_sign;              /* 只翻偏航那一路; pitch/roll 用 slot0/1, 不受影响 */
-            if (g_cal_left > 0) {                 /* 零偏标定中: 只采样, 不积分(车必须静止) */
-                attitude_bias_sample(&g_att, gm);
+            if (g_cal_left > 0) {                 /* 标定中: 只采样, 不积分(车必须静止且处于真实行驶姿态) */
+                attitude_bias_sample(&g_att, gm);                 /* 映射系: 供 pitch/roll 用 */
+                for (int i = 0; i < 3; i++) { g_cal_g[i] += gd[i]; g_cal_a[i] += ag[i]; }  /* 原始系 */
                 if (--g_cal_left == 0) {
                     attitude_bias_apply(&g_att);
                     attitude_reset_yaw(&g_att, 0.0f);
-                    uart_dbg_puts("[imu] bias done 0.01dps: ");
-                    uart_dbg_put_int((int)(g_att.gbias[0]*100)); uart_dbg_putc(',');
-                    uart_dbg_put_int((int)(g_att.gbias[1]*100)); uart_dbg_putc(',');
-                    uart_dbg_put_int((int)(g_att.gbias[2]*100));
-                    uart_dbg_puts("  yaw reset to 0\n");
+                    /* ★ 同一次静止标定顺便定出"天顶方向": 加速度均值归一化。
+                     * 这一步取代了原来的"挑最近轴"——板子装歪也不影响(见 attitude.h)。 */
+                    float inv = 1.0f / (float)CFG_IMU_CAL_N;
+                    for (int i = 0; i < 3; i++) { g_cal_g[i] *= inv; g_cal_a[i] *= inv; }
+                    float am = sqrtf(g_cal_a[0]*g_cal_a[0] + g_cal_a[1]*g_cal_a[1] + g_cal_a[2]*g_cal_a[2]);
+                    int amg = (int)(am * 1000.0f + 0.5f);
+                    for (int i = 0; i < 3; i++) g_gb_raw[i] = g_cal_g[i];
+                    if (amg >= CFG_LEVEL_A_MIN_MG && amg <= CFG_LEVEL_A_MAX_MG) {
+                        for (int i = 0; i < 3; i++) g_up[i] = g_cal_a[i] / am;
+                        g_up_valid = 1;
+                    } else {
+                        g_up_valid = 0;   /* |a| 不合理(在动/振动) -> 不敢用, 回落挑轴法 */
+                    }
+                    for (int i = 0; i < 3; i++) { g_cal_g[i] = 0.0f; g_cal_a[i] = 0.0f; }
+                    uart_dbg_puts("[imu] cal done | bias0.01dps(raw): ");
+                    uart_dbg_put_int((int)(g_gb_raw[0]*100)); uart_dbg_putc(',');
+                    uart_dbg_put_int((int)(g_gb_raw[1]*100)); uart_dbg_putc(',');
+                    uart_dbg_put_int((int)(g_gb_raw[2]*100));
+                    uart_dbg_puts(" | up0.001: ");
+                    uart_dbg_put_int((int)(g_up[0]*1000)); uart_dbg_putc(',');
+                    uart_dbg_put_int((int)(g_up[1]*1000)); uart_dbg_putc(',');
+                    uart_dbg_put_int((int)(g_up[2]*1000));
+                    uart_dbg_puts(" |a|mg="); uart_dbg_put_int(amg);
+                    uart_dbg_puts(g_up_valid ? " -> YAW=PROJ(投影, 与装歪无关)\n"
+                                             : " -> |a|异常, YAW=AXIS(回落挑轴法), 静止后重发 k\n");
                 }
             } else {
                 /* 死区作用在"去零偏后"的角速度上。attitude_update 内部会再减一次 gbias,
                  * 所以这里把死区结果加回 gbias 传进去 —— 等效于"先去偏->死区->再积分",
                  * 且 attitude.c(PC 单测过的算法)一行不用改。 */
-                float wz = gm[2] - g_att.gbias[2];
+                /* ★ 偏航角速度: 优先用"原始角速度去零偏后投影到天顶方向"(与 IMU 装歪无关);
+                 * 未标定过(g_up_valid=0)才回落到"挑轴+置换"的老路径。 */
+                float wz;
+                if (g_up_valid) {
+                    float gc[3] = { gd[0]-g_gb_raw[0], gd[1]-g_gb_raw[1], gd[2]-g_gb_raw[2] };
+                    wz = attitude_yaw_rate(gc, g_up) * (float)g_yaw_sign;
+                } else {
+                    wz = gm[2] - g_att.gbias[2];   /* gm[2] 已乘过 g_yaw_sign */
+                }
                 if (wz < CFG_GYRO_DEADBAND_DPS && wz > -CFG_GYRO_DEADBAND_DPS) wz = 0.0f;
+                /* 借道: attitude_update 内部还会减一次 gbias[2], 故这里加回去 => 它拿到的正是 wz。
+                 * 好处是 attitude.c(PC 单测过)一行不动, 且 pitch/roll 仍走原来的映射系。 */
                 gm[2] = g_att.gbias[2] + wz;
                 g_wz_dps = wz;
                 g_att.dt = dt_s;                  /* 每拍写真实 dt: yaw 积分对 dt 是 1:1 敏感 */
@@ -689,6 +995,31 @@ int main(void)
          * 固定宽度右对齐 + 不透明黑底 => 覆盖式绘制, 免 FillRect 清屏、无残影、位置不漂。 */
         if ((uint32_t)(now - last_dsp) >= DISP_MS * ST_PER_MS) {
             last_dsp = now;
+            /* 水平仪页只在 IDLE 允许(它比计数页重得多) —— 一进运动模式自动切回,
+             * 免得"为了看屏"把控制环的时基又拖歪(本工程为此吃过 RPM 虚高 5x 的亏)。 */
+            if (g_disp == 1 && g_mode != MODE_IDLE) {
+                g_disp = 0; g_disp_dirty = 1;
+                uart_dbg_puts("[lcd] 进运动模式 -> 自动切回计数页(水平仪页仅 IDLE 可用)\n");
+            }
+            if (g_disp == 1) {
+                if (g_imu_ok) {
+                    imu_raw_t lr; float lg[3], la[3];
+                    imu_read_raw(&lr); imu_convert(&lr, lg, la);
+                    disp_level(la);
+                } else if (!g_lv_static) {
+                    GC9A01_FillScreen(LCD_BLACK);
+                    GC9A01_DrawStringCentered(110, "NO IMU", LCD_RED, LCD_BLACK, 2);
+                    g_lv_static = 1;
+                }
+                goto disp_done;
+            }
+            if (g_disp_dirty) {        /* 从水平仪页切回来: 重画计数页静态层并强制刷数值 */
+                g_disp_dirty = 0;
+                GC9A01_FillScreen(LCD_BLACK);
+                GC9A01_DrawStringCentered(24, "MOTOR CTL", LCD_GREEN, LCD_BLACK, 2);
+                GC9A01_DrawStringCentered(60, "ENCODER CNT", LCD_GRAY, LCD_BLACK, 2);
+                last_disp[0] = last_disp[1] = (int32_t)0x80000000;
+            }
             char db[16];
             if (c0 != last_disp[0]) {
                 db[0] = 'C'; db[1] = '1'; db[2] = '='; i32_to_field(db + 3, c0, 6);
@@ -700,6 +1031,7 @@ int main(void)
                 GC9A01_DrawString(12, 150, db, LCD_CYAN, LCD_BLACK, 3);
                 last_disp[1] = c1;
             }
+disp_done: ;
         }
 
         delay_ms(1);   /* 轻延时防空转; 控制/遥测/LCD 均按 g_st 真实时间调度, 不依赖此延时的精度 */

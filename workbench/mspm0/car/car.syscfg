@@ -29,6 +29,7 @@ const PWM    = scripting.addModule("/ti/driverlib/PWM", {}, false);
 const PWM1   = PWM.addInstance();
 const UART   = scripting.addModule("/ti/driverlib/UART", {}, false);
 const UART1  = UART.addInstance();
+const UART2  = UART.addInstance();
 const ADC12  = scripting.addModule("/ti/driverlib/ADC12", {}, false);
 const ADC121 = ADC12.addInstance();
 const SYSCTL = scripting.addModule("/ti/driverlib/SYSCTL");
@@ -132,6 +133,21 @@ UART1.targetBaudRate           = 115200;
 UART1.peripheral.$assign       = "UART0";
 UART1.peripheral.rxPin.$assign = "PA11";
 UART1.peripheral.txPin.$assign = "PA10";
+
+/* ---- 无线遥测串口 UART3: TX=PB2 RX=PB3, 115200-8N1 (接车载 ESP-01S, 交叉) ----
+ * 引脚真值源 = 天猛星主板平台/00_载板接线设计_天猛星平台.md §10.1 定版主表
+ *   B2(PB2) = UART3_TX -> ESP.RXD   |   B3(PB3) = UART3_RX <- ESP.TXD
+ * 复用号已按手册 ZHCSSC4A p12/p13 核对: PB2=UART3_TX[2] / PB3=UART3_RX[2]。
+ * ⚠️ 为什么不复用调试口 PA10/PA11: 那会与板载 DAP 的 VCOM TX 抢 PA11(两个输出打架),
+ *    而载板本来就给 ESP 留了独立 UART -> 调试口保持空闲, 有线 COM 与无线桥可同时在线。
+ * ⚠️ ESP 若还插着 USB-TTL, 必须拔掉 USB-TTL 的 TX 线 —— 否则 ESP.RXD 被两个输出驱动。
+ * 波特率必须与 ESP 出厂 AT 固件一致(115200-8N1), 见 无线遥测_ESP01S链路.md §2。 */
+UART2.$name                    = "ESP_UART";
+UART2.enableFIFO               = true;
+UART2.targetBaudRate           = 115200;
+UART2.peripheral.$assign       = "UART3";
+UART2.peripheral.rxPin.$assign = "PB3";
+UART2.peripheral.txPin.$assign = "PB2";
 
 /* ---- 电流采样 ADC0: 序列采 2 路 DRV8231 IPROPI(H2.ADC 脚) ---- */
 /*   MEM0=CHAN_0=PA27(M1电流)  MEM1=CHAN_1=PA26(M2电流), 参考=VDDA 3.3V */

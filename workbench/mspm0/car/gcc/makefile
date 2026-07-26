@@ -102,7 +102,10 @@ endef
 
 $(foreach c_file,$(SYSCFG_C_FILES),$(eval $(call C_RULE,$(c_file))))
 
-car.obj: ../car.c ../gc9a01.h ../motor.h ../uart_dbg.h ../control.h ../encoder.h ../imu.h ../attitude.h $(SYSCFG_H_FILES)
+# ../config.h 必须在依赖里! (2026-07-27 实测漏了这一条: 改完 config.h 跑 mingw32-make 直接
+# "Nothing to be done", 二进制里还是旧参数 —— 而本工程铁律恰恰是"达标即回填 config.h 再烧",
+#  漏依赖会让这条铁律静默失效: 文档/源码显示新值, 芯片跑的是旧值, 且没有任何报错提示。)
+car.obj: ../car.c ../config.h ../gc9a01.h ../motor.h ../uart_dbg.h ../control.h ../encoder.h ../imu.h ../attitude.h ../cmd_gate.h $(SYSCFG_H_FILES)
 	@ echo Building $@
 	$(V) $(CC) $(CFLAGS) $< -c -o $@
 
@@ -122,7 +125,7 @@ gc9a01.obj: ../gc9a01.c ../gc9a01.h $(SYSCFG_H_FILES)
 	@ echo Building $@
 	$(V) $(CC) $(CFLAGS) $< -c -o $@
 
-uart_dbg.obj: ../uart_dbg.c ../uart_dbg.h $(SYSCFG_H_FILES)
+uart_dbg.obj: ../uart_dbg.c ../uart_dbg.h ../config.h $(SYSCFG_H_FILES)
 	@ echo Building $@
 	$(V) $(CC) $(CFLAGS) $< -c -o $@
 
