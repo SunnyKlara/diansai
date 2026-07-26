@@ -137,6 +137,10 @@ workbench/_参考工程/9-4 串口收发文本数据包/
 # 兼容历史误放在 workbench 根目录的同名参考工程
 workbench/15.VL53L0X激光测距实验/
 workbench/9-4 串口收发文本数据包/
+# ESP32-P4 + 6.2寸 MIPI 屏参考工程（Gitee clone: Ergou-/esp32-p4-c5-aibox 分支 mipi_lcd）
+# 自带 .git + 第三方 components + ESP-IDF 编译产物，不入库；出处与用法见 workbench/ESP32P4_屏板/README.md
+# 注: 路径必须全 ASCII —— ESP-IDF/CMake 不支持非 ASCII 项目路径（同 MSPM0 那条 GCC 坑）
+workbench/esp32p4/
 
 # 工程整包备份（勿入库，体积大）
 *.zip
