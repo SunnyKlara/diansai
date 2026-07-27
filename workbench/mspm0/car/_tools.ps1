@@ -142,7 +142,18 @@ function _tools_Roots {
     $r = @()
     if ($env:DIANSAI_TOOL_ROOTS) { $r += ($env:DIANSAI_TOOL_ROOTS -split ';') }
     $r += $script:ToolRoots
-    return ($r | Where-Object { $_ })
+    # Drop roots whose DRIVE does not exist on this machine.
+    # WHY (2026-07-27, cost real debugging time): $ToolRoots lists both machines' layouts, so on the
+    # C:-only machine every `Join-Path 'D:\toolchains' ...` below raises a non-terminating
+    # DriveNotFoundException. Resolution still succeeded, but the error spam FLOODED the output of
+    # callers - `sdk_find.ps1 PWM` became unreadable and looked like a hard failure. Worse, real
+    # errors would hide in that noise. Filtering here (not at each call site) fixes it for every
+    # resolver at once. Note we only require the DRIVE to exist, not the folder: the globs below
+    # legitimately probe folders that may be absent.
+    return ($r | Where-Object { $_ } | Where-Object {
+        $q = Split-Path -Qualifier $_ -ErrorAction SilentlyContinue
+        (-not $q) -or (Test-Path -LiteralPath ($q + '\'))
+    })
 }
 
 function Find-OpenocdScripts {

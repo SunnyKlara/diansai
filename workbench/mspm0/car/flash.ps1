@@ -25,7 +25,9 @@
 #       Error: error executing cortex_m crc algorithm
 #       Error: checksum mismatch - attempting binary compare
 #     Those three lines are EXPECTED and harmless - what matters is what the binary compare says.
-#     ⇒ The real pass/fail signal is: any "diff <n> address 0x..." line = CONTENT MISMATCH = FAIL.
+#     => CORRECTED 2026-07-27: a "diff <n> address 0x..." line is NOT proof of a bad write.
+#        The byte-compare fallback has been caught reading stale pre-erase data 5 times.
+#        Confirm read-only with verify_addr.ps1 before ever re-flashing. Details at the diff check.
 #
 # SUCCESS = "wrote N bytes" AND "verified N bytes", where N matches text+data from
 #   arm-none-eabi-size (do NOT memorise N - it changes every time the code changes).
@@ -40,7 +42,7 @@
 #   We use `reset halt` (not plain `halt`): a plain halt of a running app produced
 #   "target was in unknown state when halt was requested" and that run came out with a 16-byte
 #   flash mismatch. `reset halt` puts the core in a known state first (SRST then halt).
-#   ⚠ Halting freezes the PWM outputs at whatever duty they had. Send `z` (full stop) BEFORE
+#   !! Halting freezes the PWM outputs at whatever duty they had. Send `z` (full stop) BEFORE
 #   flashing if the motors could be driving - otherwise a wheel keeps spinning while halted.
 
 Set-Location $PSScriptRoot
@@ -76,7 +78,7 @@ Write-Host "writing + verifying (one session, SRST push-pull, ~75s - DO NOT INTE
 #   With srst_only active, `reset halt` times out ("TARGET: Not halted") and nothing gets written.
 #   That is also exactly why the official mspm0_board_reset proc SAVES and RESTORES reset_config
 #   around its own temporary srst_only.
-#   ⇒ Correct split:  halt/erase/write/verify with the target default (sysresetreq),
+#   => Correct split:  halt/erase/write/verify with the target default (sysresetreq),
 #                     then switch to SRST push-pull only for the final `reset run` (true POR).
 $log = & $oo -s $scr -f interface/cmsis-dap.cfg `
     -c "adapter speed 500" `
@@ -113,12 +115,30 @@ if (-not $mW.Success) {
 # so verify falls back to a byte compare which prints "diff <n> address 0x...". The first version
 # of this script only looked for "verified N bytes", so it classified a real 16-byte mismatch as
 # INCONCLUSIVE *and advised not to re-flash* - exactly backwards. Check diffs BEFORE anything else.
+#
+# 2026-07-27 CORRECTION (5th recurrence): the wording below used to be
+#   "This is NOT the known false 'Verify Failed'; a byte compare found real diffs."
+# That was wrong and would send you off to re-flash for nothing. There are TWO false
+# failures on this board, not one:
+#   (a) the CRC helper times out              -> handled further down ("No more differences")
+#   (b) the byte-compare FALLBACK reads STALE (pre-erase) data -> prints real-looking
+#       "diff N address 0x..." lines while the flash content is perfectly correct.
+# Every observed instance of (b) has the same shape: a handful of bytes in 1-2 aligned
+# clusters, and the "Was" values are recognisably from the PREVIOUS image (reset vector /
+# Reset_Handler Thumb prologue '15 48 16 4b'). Confirmed 5x by independent read-only mdw.
+# => Do NOT re-flash on a diff report. Run  verify_addr.ps1 -Addresses <the addrs>  first
+#    (read-only, ~10s) and then check a functional fingerprint over serial.
 $mD = [regex]::Matches($txt, 'diff \d+ address 0x[0-9a-fA-F]+')
 if ($mD.Count -gt 0) {
-    Write-Host ("RESULT: FAIL - flash content does NOT match the binary (" + $mD.Count + " differing byte(s)).") -ForegroundColor Red
-    Write-Host "  The chip is running a partially wrong image - it may work, may crash. Re-flash." -ForegroundColor Yellow
-    Write-Host "  This is NOT the known false 'Verify Failed'; a byte compare found real diffs." -ForegroundColor Yellow
-    exit 1
+    $addrs = @($mD | ForEach-Object { ($_.Value -split 'address ')[1] } | Select-Object -Unique)
+    Write-Host ("RESULT: INCONCLUSIVE - verify reported " + $mD.Count + " differing byte(s).") -ForegroundColor Yellow
+    Write-Host "  This is USUALLY the stale-read false failure (seen 5x), NOT a bad write." -ForegroundColor Yellow
+    Write-Host "  DO NOT re-flash yet - that costs ~115s and adds a brick opportunity." -ForegroundColor Yellow
+    Write-Host "  Confirm read-only first:" -ForegroundColor Cyan
+    Write-Host ("    powershell -File verify_addr.ps1 -Addresses " + ($addrs -join ',')) -ForegroundColor Cyan
+    Write-Host "  Then a functional fingerprint on the serial port (a print only the new build emits)." -ForegroundColor Cyan
+    Write-Host "  Only if verify_addr.ps1 says FAIL is the image genuinely wrong." -ForegroundColor Yellow
+    exit 2
 }
 if (-not $mV.Success) {
     if ($txt -match "No more differences found") {

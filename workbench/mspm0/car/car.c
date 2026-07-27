@@ -27,6 +27,7 @@
 #include "uart_frame.h" /* 视觉坐标帧解析 ($V,id,cx,cy,area*HH) —— 纯算法层, 已 PC 单测 */
 #include "vservo.h"     /* 反应式视觉伺服控制律 (static inline 纯逻辑, 已 PC 单测) */
 #include "cmd_gate.h"   /* 串口命令格式门 (纯逻辑, 挡 ESP boot 日志误触发命令; 已 PC 单测) */
+#include "servo.h"      /* 转向舵机(TIMG12_C1=PA31, 50Hz) —— 阿克曼前轮转向 // 待真机验证 */
 #include <math.h>       /* 水平仪页用 sqrtf/fabsf/atan2f (软浮点, 仅 IDLE 下的显示页调用) */
 
 /* ★所有可调参数(时基/周期/PWM上限/ENC_CPR/PID增益/死区/容差/调试开关)已集中到 config.h。
@@ -204,6 +205,7 @@ static int parse_int(const char *s, int n)
     for (; i < n; i++) { if (s[i] < '0' || s[i] > '9') break; v = v * 10 + (s[i] - '0'); }
     return sg * v;
 }
+static void print_servo(void);   /* 定义在下面(挨着 print_magnet); `?` 要把转向状态一并回读 */
 static void print_status(void)
 {
     int li = loop_index();
@@ -238,6 +240,7 @@ static void print_status(void)
         uart_dbg_puts(" tol_deg*10=");       uart_dbg_put_int((int)(g_nav.turn_tol_deg * 10));
         uart_dbg_puts("\n");
     }
+    print_servo();   /* 转向是阿克曼底盘的第二个执行器, `?` 不该只报驱动不报转向 */
 }
 
 /* 里程/转角标定值的回读（命令 c / q 都会调它）。
@@ -290,6 +293,25 @@ static void print_vision(void)
     uart_dbg_puts(" area=");      uart_dbg_put_int((int)g_uf.last.area);
     uart_dbg_puts(" age_ms=");    uart_dbg_put_int((int)(g_uf.have_frame ? (ms - g_uf.last.stamp_ms) : 0));
     uart_dbg_puts("\n[vs] 自测(不用相机): 往本口发一行 $V,1,200,240,900*<异或校验> 然后 m10\n");
+}
+
+/* 舵机状态（命令 S / U / C 之后自动打）。
+ * cal=NO 时打出来的 deg **不可信**（中位与每度微秒数都还是估计值），所以把 cal 标记
+ * 和数值放在同一行 —— 防止有人截个图就拿这个角度去分析转向误差。 */
+static void print_servo(void)
+{
+    const servo_cal_t *c = servo_cal();
+    int us = servo_us();
+    uart_dbg_puts("[srv] us=");      uart_dbg_put_int(us);
+    if (us == 0) uart_dbg_puts("(limp,无脉冲)");
+    uart_dbg_puts(" deg*10=");       uart_dbg_put_int((int)(servo_deg() * 10));
+    uart_dbg_puts(" | center=");     uart_dbg_put_int(c->center_us);
+    uart_dbg_puts(" range=");        uart_dbg_put_int(c->min_us);
+    uart_dbg_puts("..");             uart_dbg_put_int(c->max_us);
+    uart_dbg_puts(" max_deg=");      uart_dbg_put_int((int)c->max_deg);
+    uart_dbg_puts(" sign=");         uart_dbg_put_int(c->sign);
+    uart_dbg_puts(" ccinv=");        uart_dbg_put_int(servo_cc_invert());
+    uart_dbg_puts(CFG_SERVO_CALIBRATED ? " cal=YES\n" : " cal=NO(deg 不可信, 见 config.h §7.9)\n");
 }
 
 /* 导航任务结束时的"成绩单" —— 一行讲完这趟到底干成什么样。
@@ -417,6 +439,23 @@ static void run_cmd(const char *s, int n)
                   else if (v == 1) magnet_on();
                   else             magnet_set(v);
                   print_magnet();
+                  return;
+        /* ---- 转向舵机(阿克曼前轮转向) ----
+         * U<us> = 原始脉宽 us, U0 = 停脉冲(limp)。**标定专用**, 会被 config.h 的硬限幅夹。
+         * S<deg> = 按转向角(正=左 或按 CFG_SERVO_SIGN)。S0 = 回正。两级限幅见 servo.h。
+         * C<us>  = 在线设中位; **C0 = 把当前脉宽认作中位**(用 U 扫到前轮正对前方后一键锁定)。
+         * ⚠ 三个都是大写: 小写 u(LCD 切页)/s(yaw 符号)/c(counts_per_mm) 全被占了。
+         * ⚠ 中位在线定完必须回填 config.h §7.9 —— 只活在 RAM, 断电即失(同 `a`/`s` 的理由)。
+         * ⚠ 真机第一次用请按 servo.h 文件末的 bring-up 顺序: **先摘掉转向拉杆**再发 U1500,
+         *   那一步在两种 CC 极性假设下都不会撞机械限位。 */
+        /* Y<0|1> = CC 极性(0=CC即高电平ticks / 1=反相)。2026-07-27 示波器发现 PA31 恒高 ⇒ 极性存疑,
+         * 做成运行时可切以便一次烧录试完两种(重烧 115s + "连续快烧"禁忌)。定下来回填 config.h。 */
+        case 'Y': servo_set_cc_invert(v); print_servo(); return;
+        case 'U': servo_write_us(v); print_servo(); return;
+        case 'S': servo_set_deg((float)v); print_servo(); return;
+        case 'C': if (!servo_set_center_us(v))
+                      uart_dbg_puts("[srv] 设中位被拒: C0 需要当前有脉宽(先用 U 扫), 或该值超出硬限幅\n");
+                  print_servo();
                   return;
         /* V = 视觉链健康度(帧计数 + 最近一帧 + 新鲜度)。排障先看它再怀疑控制。 */
         case 'V': print_vision(); return;
@@ -939,6 +978,7 @@ int main(void)
     GC9A01_Init();
     motor_init();
     magnet_init();                       /* 电磁铁: 占空先归 0 再启动定时器(上电绝不许默认吸合) */
+    servo_init();                        /* 转向舵机: 同理先写 0(不出脉冲=limp), 中位未标定前不许输出 */
     encoder_init();
     SysTick_Config(CPUCLK_HZ / ST_HZ);   /* 控制主时基中断(频率见 config.h ST_HZ; 见 SysTick_Handler) */
     int imu_id = imu_init();   /* ICM42688 初始化(2026-07-27 真机验活: WHOAMI=0x47/|a|=0.995g)。读不到则不阻塞主程序 */

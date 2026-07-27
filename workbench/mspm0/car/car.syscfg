@@ -28,6 +28,7 @@ const SPI1   = SPI.addInstance();
 const PWM    = scripting.addModule("/ti/driverlib/PWM", {}, false);
 const PWM1   = PWM.addInstance();
 const PWM2   = PWM.addInstance();   /* 电磁铁(第三颗 DRV8231), 见文末 PWM_MAG */
+const PWM3   = PWM.addInstance();   /* 转向舵机 50Hz, 见文末 PWM_SERVO */
 const UART   = scripting.addModule("/ti/driverlib/UART", {}, false);
 const UART1  = UART.addInstance();
 const UART2  = UART.addInstance();
@@ -143,6 +144,43 @@ PWM2.peripheral.$assign         = "TIMA1";
 PWM2.peripheral.ccp0Pin.$assign = "PB0";     /* 电磁铁 IN1 = TIMA1_C0 */
 PWM2.PWM_CHANNEL_0.$name        = "PWM_MAG_IN1";
 PWM2.PWM_CHANNEL_0.dutyCycle    = 0;         /* 上电必须是 0: 电磁铁通电即发热, 不许默认吸合 */
+
+/* ---- 转向舵机 PWM: TIMG12_C1 = PA31, 50Hz (阿克曼底盘前轮转向) ----
+ * 引脚三重闸(真值源 = 载板 §10.1):
+ *   功能: SDK 例程 timg_32bit_timer_mode_pwm_edge_sleep 自己把 TIMG12.ccp1Pin 分配给 PA31;
+ *   引出: 载板 §10.12 A 组 J2-3L 空闲(原"名义预留第2片IMU");
+ *   空闲: TIMA0=电机 / TIMA1=电磁铁 / TIMG8=编码器QEI 之外, TIMG12 全局未用。
+ * ⚠ 为什么不挂 TIMA1(已有空通道 C1): 同一定时器共用计数器 ⇒ 周期只有一个,
+ *   电磁铁要 20kHz、舵机要 50Hz, 不可兼得。故舵机必须独占一个定时器。
+ * 频率: 32MHz / 1 / 640000 = 50.000Hz(周期 20ms), 1 count = 31.25ns
+ *   ⇒ 舵机脉宽 500~2500us 对应 16000~80000 counts, 分辨率远超舵机自身死区(~5us)。
+ * ⚠ clockPrescale 只能是 1: TIMG12 是 32 位定时器, 无预分频器。
+ *   (SysConfig 原话: "Prescaler is not available for 32-bit Timers. Select a prescale
+ *    value of 1, or a different peripheral" —— 2026-07-27 实测报错, 别再改回去。)
+ *   32 位计数器装得下 640000, 所以不需要预分频; 16 位定时器才需要靠 prescale 凑 20ms。
+ * dutyCycle=0 的用意: 上电不发脉冲 ⇒ 舵机 limp(无保持力矩)。
+ *   中位值尚未真机标定, 若上电就输出"猜的中位"可能把拉杆顶到机械限位并堵转烧机;
+ *   故由固件在标定确认后显式给中位。 */
+PWM3.$name                      = "PWM_SERVO";
+PWM3.clockPrescale              = 1;         /* 32 位定时器不支持预分频, 只能是 1 */
+PWM3.timerCount                 = 640000;    /* 32MHz/1/640000 = 50.000Hz (32bit 计数器装得下) */
+/* ⚠⚠ ccIndex 必须包含 0 —— 2026-07-27 真机(示波器)踩出来的坑, 别改回 [1]:
+ *   只写 ccIndex=[1] 时, SysConfig 会按它自己的注释 "Set Counter control to the smallest
+ *   CC index being used" 把计数器的 zero/advance/load 条件全绑到 CC1:
+ *       setCounterControl(..., CZC_CCCTL1_ZCOND, CAC_CCCTL1_ACOND, CLC_CCCTL1_LCOND)
+ *   而真机验证过的 PWM_MOTOR 用的是 CCCTL0_*。CC1 被挪去当计数器控制条件后, 往 CC1 写占空
+ *   **不再产生 PWM** —— 实测现象 = PA31 恒定高电平(示波器), 舵机纹丝不动, 且写 CC=0 时
+ *   反而更高(占空语义与 motor.c 继承的假设相反)。
+ *   ⇒ 启用 [0,1] 让 CC0 去承担计数控制, CC1 专职输出, 与 MOTOR 同构。
+ *   CC0 只启用、**不分配任何物理引脚**(它的候选脚 PB13 已被电机 M2 占用, 也不需要引出)。 */
+PWM3.ccIndex                    = [0, 1];
+PWM3.peripheral.$assign         = "TIMG12";
+PWM3.peripheral.ccp1Pin.$assign = "PA31";    /* 舵机信号线 = TIMG12_C1 */
+/* CC0 = 仅用于承担计数器控制条件, 不引出引脚、不接任何东西(见上面 ccIndex 的说明) */
+PWM3.PWM_CHANNEL_0.$name        = "PWM_SERVO_UNUSED";
+PWM3.PWM_CHANNEL_0.dutyCycle    = 0;
+PWM3.PWM_CHANNEL_1.$name        = "PWM_SERVO_SIG";
+PWM3.PWM_CHANNEL_1.dutyCycle    = 0;         /* 上电无脉冲 = 舵机 limp, 见上方说明 */
 
 /* ---- 调试串口 UART0: TX=PA10 RX=PA11, 115200-8N1 (接 DAP VCOM 看 log) ---- */
 UART1.$name                    = "DBG_UART";

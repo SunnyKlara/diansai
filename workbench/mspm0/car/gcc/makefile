@@ -20,7 +20,7 @@ ifeq ($(VERBOSE), 1)
   V :=
 endif
 
-OBJECTS = car.obj motor.obj gc9a01.obj uart_dbg.obj control.obj encoder.obj imu.obj attitude.obj nav.obj magnet.obj uart_frame.obj line.obj $(patsubst %.c,%.obj,$(notdir $(SYSCFG_C_FILES)))
+OBJECTS = car.obj motor.obj gc9a01.obj uart_dbg.obj control.obj encoder.obj imu.obj attitude.obj nav.obj magnet.obj uart_frame.obj line.obj servo.obj $(patsubst %.c,%.obj,$(notdir $(SYSCFG_C_FILES)))
 
 NAME = car
 
@@ -105,7 +105,7 @@ $(foreach c_file,$(SYSCFG_C_FILES),$(eval $(call C_RULE,$(c_file))))
 # ../config.h 必须在依赖里! (2026-07-27 实测漏了这一条: 改完 config.h 跑 mingw32-make 直接
 # "Nothing to be done", 二进制里还是旧参数 —— 而本工程铁律恰恰是"达标即回填 config.h 再烧",
 #  漏依赖会让这条铁律静默失效: 文档/源码显示新值, 芯片跑的是旧值, 且没有任何报错提示。)
-car.obj: ../car.c ../config.h ../gc9a01.h ../motor.h ../uart_dbg.h ../control.h ../encoder.h ../imu.h ../attitude.h ../nav.h ../magnet.h ../uart_frame.h ../vservo.h ../cmd_gate.h $(SYSCFG_H_FILES)
+car.obj: ../car.c ../config.h ../gc9a01.h ../motor.h ../uart_dbg.h ../control.h ../encoder.h ../imu.h ../attitude.h ../nav.h ../magnet.h ../uart_frame.h ../vservo.h ../cmd_gate.h ../servo.h $(SYSCFG_H_FILES)
 	@ echo Building $@
 	$(V) $(CC) $(CFLAGS) $< -c -o $@
 
@@ -116,6 +116,12 @@ nav.obj: ../nav.c ../nav.h ../attitude.h ../config.h
 	$(V) $(CC) $(CFLAGS) $< -c -o $@
 
 magnet.obj: ../magnet.c ../magnet.h ../motor.h ../uart_dbg.h ../config.h $(SYSCFG_H_FILES)
+	@ echo Building $@
+	$(V) $(CC) $(CFLAGS) $< -c -o $@
+
+# servo.obj 依赖 config.h: 中位/限幅/每度微秒数全在 §7.9, 漏了这条依赖就会出现
+# "改完中位却没编进去、芯片还在用旧中位"的静默失效 —— 与 car.obj 那条同一个理由。
+servo.obj: ../servo.c ../servo.h ../config.h $(SYSCFG_H_FILES)
 	@ echo Building $@
 	$(V) $(CC) $(CFLAGS) $< -c -o $@
 
