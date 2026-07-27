@@ -155,7 +155,10 @@ Copy-Item "..\..\ESP32P4_屏板\firmware\*.c","..\..\ESP32P4_屏板\firmware\*.h
 | ⬜ 待做 | `sdkconfig` + `sdkconfig.defaults`：flash `4MB → 16MB`，`partitions.csv` 的 factory 从 3M 放大（板子有 16MB，现在只用 4MB）。⚠️ 改 defaults 不影响已存在的 `sdkconfig`，两处都要改并回读确认 |
 | 🚫 别动 | `IDF_EXPERIMENTAL_FEATURES=y`（花屏根因）、`ESP_TASK_WDT_EN=n`、PSRAM HEX/200M/XIP、`FREERTOS_HZ=1000`、LVGL 任务栈 ≥16KB —— 上游作者标注"缺一不显示" |
 
-## 八、无线图传方案评估（2026-07-27 · 资料核实，**未动代码、未上板**）
+## 八、无线图传方案评估（2026-07-27 · **本节只是资料核实**，真机结果在 §九）
+
+> 本节的数字（带宽、能力对照）全部来自官方文档，**本节自身未上板**。
+> 其中"C5 WiFi 能不能用"这一条**已被 §九 真机验证**（扫 51 个 AP + ping 5/5）；读本节时以 §九 为准。
 
 > 起因：问"这块 P4 板能不能和 K230 一起做无线图传"。下面的能力数字全部来自官方文档（已内联出处），**不是本板实测**；本板真机验过的东西在第一、二节。
 
@@ -196,9 +199,9 @@ Copy-Item "..\..\ESP32P4_屏板\firmware\*.c","..\..\ESP32P4_屏板\firmware\*.h
 
 ### 8.3 三个真实的坎（动手前必须知道）
 
-1. **C5 的 WiFi 在本板从未验证过** —— 要给 C5 单独刷 ESP-Hosted slave 固件，走顶部 6P `BOOT` 排针（`C5_TXD0/RXD0/EN/BOOT`）。这是 B/D 的共同前置，从零开始的一整块工作。
-2. **C5 的 SDIO 会和 microSD 抢 SDMMC 控制器** —— 原理图上 C5 SDIO 走 **GPIO14-19**（`C5_D0..D3=IO14..17 / C5_CLK=IO18 / C5_CMD=IO19`，`待生成配置核对`），不是 slot0 的 IOMUX 脚(39-44)，所以它得走 GPIO matrix 用 **slot1**，而 SD 卡占着 **slot0**。官方正好有例程 **`mcu_hosted_sdio_sdmmc_combined`**（同一 SDMMC 控制器、两 slot 分别跑 ESP-Hosted 与 SD 卡），照它做。
-3. **console 占着 GPIO37/38，而那正是 P4↔C5 的 UART** —— 启动日志明写 `GPIO 38 and 37 are used as console UART I/O pins`。用 C5 前要先把 UART console 关掉、只留 USB-JTAG。
+1. ~~**C5 的 WiFi 在本板从未验证过**~~ → ✅ **2026-07-27 真机通过，本条作废**（扫 51 个 AP + ping 5/5）。**而且不需要 USB-TTL——C5 出厂自带 ESP-Hosted 协处理器固件。** 数据与剩余待办见 **§九**，别照本条的旧结论排工作量。
+2. **C5 的 SDIO 会和 microSD 抢 SDMMC 控制器** —— C5 SDIO 走 P4 的 **GPIO14-19**（`C5_D0..D3=IO14..17 / C5_CLK=IO18 / C5_CMD=IO19`，**2026-07-27 已与 esp_hosted 内置板级预设逐脚核对一致，见 §9.4**），不是 slot0 的 IOMUX 脚(39-44)，所以它得走 GPIO matrix 用 **slot1**，而 SD 卡占着 **slot0**。⇒ **配置层面已解决**（`CONFIG_ESP_HOSTED_SDIO_SLOT_1=y`，实测生成的 sdkconfig 就是 slot 1）。要同时跑 SD 卡与 hosted，参考官方例程 **`mcu_hosted_sdio_sdmmc_combined`**。
+3. **console 占着 GPIO37/38，而那正是 P4↔C5 的 UART** —— 启动日志明写 `GPIO 38 and 37 are used as console UART I/O pins`。→ **已处理**：两个 host 工程都设了 `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`，日志仍从 COM7 出（COM7 本就是 USB-Serial-JTAG）。
 
 ### 8.4 对电赛的定位（别高估）
 
@@ -211,9 +214,11 @@ Copy-Item "..\..\ESP32P4_屏板\firmware\*.c","..\..\ESP32P4_屏板\firmware\*.h
 
 | # | 阻力 | 性质 | 处理 |
 |---|---|---|---|
-| 1 | **C5 的 WiFi 在本板从未验证** | 最大工作量，**非死路** | ESP-Hosted 官方支持列表含 **ESP32-C5**；需给 C5 刷 slave 固件（走顶部 6P `BOOT` 排针）+ P4 侧配 `esp_hosted`/`esp_wifi_remote` |
-| 2 | **C5 SDIO 与 microSD 争 SDMMC 控制器** | 配置问题 | C5 走 GPIO14-19（非 slot0 IOMUX）⇒ 用 **slot1**，SD 卡留 slot0；官方对症例程 `mcu_hosted_sdio_sdmmc_combined` |
-| 3 | **console 占着 GPIO37/38 = P4↔C5 的 UART** | 一行配置 | 关掉 UART console、只留 USB-JTAG |
+| 1 | ~~**C5 的 WiFi 在本板从未验证**~~ | ✅ **已排除（2026-07-27 真机）** | 扫到 51 个 AP + ping 网关 5/5 0% 丢包 RTT 2~11ms，**证据见 §9.7**。两个原以为的坎也不成立：**C5 出厂自带 hosted 固件 ⇒ 不需要 USB-TTL**、`reset=36` 猜对了。剩一条**新的**：出厂 CP 是 2.12.9、与主机 3.0.5 major 不匹配 ⇒ 退 streaming 无 SW_AGGR，要经 SDIO 给 C5 做 OTA 才能吃到吞吐（§9.8 待办 1） |
+| 1b | **本板是 v1.3 早期 P4 样片** | 本轮新发现，**新工程一律撞** | 新建工程默认 `REV_MIN_301`，烧录直接被拒；必须 `SELECTS_REV_LESS_V3` + `REV_MIN_100` 两行（少一行静默无效）。见 §9.6 |
+| 2 | **C5 SDIO 与 microSD 争 SDMMC 控制器** | 配置问题 | ✅ **配置已解决**：`CONFIG_ESP_HOSTED_SDIO_SLOT_1=y`（C5 走 GPIO14-19，非 slot0 IOMUX），SD 卡留 slot0；两者同时用可参考 `mcu_hosted_sdio_sdmmc_combined` |
+| 3 | **console 占着 GPIO37/38 = P4↔C5 的 UART** | 一行配置 | ✅ **已改**：`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`（日志仍走 COM7） |
+| 3b | **ESP-IDF v5.5.4 的 SDIO 4092 字节发送上限** | 本轮新发现，**编译期硬失败** | ✅ **已打官方一行补丁**（`eh.py patch-idf`，改动已在 IDF master 上游）；细节与撤销命令见 §9.3 |
 | 4 | **编码格式只能 MJPEG，不能 H.264** | 硬件限制，**必须遵守** | P4 只有硬件 H.264 **编码器**，解码是软件 tinyH264 ⇒ 收流显示走 **JPEG 硬解**；K230 侧输出 MJPEG |
 | 5 | 带宽 | **不是阻力**（已算） | 可用 TCP≈44Mbps；1280×452 MJPEG@30fps 约 21Mbps（YUV420 868KB/帧、10:1 压缩估）、640×480@30fps 约 4Mbps ⇒ 余量充足 |
 | 6 | P4 侧要写：socket 收流 + JPEG 硬解 + 送 LVGL | 常规开发 | IDF 有 `jpeg_decode` 例程 + `esp_lv_decoder`；LVGL 侧用 canvas/image |
@@ -221,3 +226,329 @@ Copy-Item "..\..\ESP32P4_屏板\firmware\*.c","..\..\ESP32P4_屏板\firmware\*.h
 | 8 | 屏比例 **1280×452** 极端长条 | 体验问题 | 摄像头 4:3/16:9 画面贴上去会大量留白或裁切 |
 
 **⚠️ 先想清值不值**：若目标只是"人能看到画面"，方案 A（K230 直推手机/PC 浏览器）几分钟就能出效果，且不受这块长条屏比例限制。**D 的真正价值是打通"C5 无线链路 + P4 硬件解码显示"这套技能栈**，不是画面本身。要练这套栈就做 D，要看画面就做 A。
+
+---
+
+## 九、方案 D 第一步：C5 WiFi（ESP-Hosted）—— ✅ **真机通过（2026-07-27）**
+
+> 目标（验收判据）：**C5 能扫到 AP + P4 侧能 ping 通**。这是方案 B/D 的共同前置，也是整条链路里唯一有未知风险的一环。
+> **两条都已达成，真机实测数据见 §9.7**：扫到 **51 个 AP**（含 5G）· ping 网关 **5/5、0% 丢包、RTT 2~11ms**。
+> **两个原以为的拦路虎都不成立**：① **C5 出厂就带 ESP-Hosted 协处理器固件（2.12.9）** ⇒ **USB-TTL 根本不需要**；② `reset=36` 这个猜测值实测能正常复位 C5。
+> **新暴露的真问题一个**：主机 3.0.5 与协处理器 2.12.9 **major 版本不匹配** ⇒ 退化到 streaming 模式（无 SW_AGGR）、且 **AP 不给 DHCP 时链路要靠静态 IP**（详见 §9.7 与 §9.8）。
+
+### 9.1 三个工程（都在 `workbench/esp32p4/`，按 gitignore 不入库）
+
+| 工程 | target | 角色 | 产物 | 需要凭据 |
+|---|---|---|---|---|
+| `c5_cp` | esp32c5 | 协处理器（射频侧）固件 = ESP-Hosted "cp" | `eh_cp_wifi_sta.bin` **1116 KB**（app 分区 1.75MB，余 38%） | 否 |
+| `p4_scan_host` | esp32p4 | 主机 App：扫 AP | `scan.bin` **572 KB** | **否**（第一步就用它） |
+| `p4_sta_host` | esp32p4 | 主机 App：连 AP + DHCP（为 ping） | `wifi_sta_mcu_host.bin` | **要 SSID/密码**（现仍是 `myssid`/`mypassword` 占位） |
+
+一键重建：
+```powershell
+# 建工程（例程名见 9.2）
+powershell -File tools\create_hosted_projects.ps1 -Feature "wifi/scan"
+powershell -File tools\create_hosted_projects.ps1 -Feature "wifi/sta"
+# set-target + 编译（三个工程都能单独指定）
+powershell -File tools\build_hosted.ps1 -Project c5_cp
+powershell -File tools\build_hosted.ps1 -Project p4_scan_host
+# 上板 + 判读（板子插上后一条命令出 PASS/FAIL/INCONCLUSIVE）
+powershell -File tools\hosted_bringup.ps1 -Project p4_scan_host
+```
+
+> ⚠️ 这三个工程**可以**跑 `idf.py set-target`（新建工程、没有需要保护的 sdkconfig）。
+> §五 那条"永远不要 set-target"的禁忌**只针对 `p4_lcd`**（它的 sdkconfig 带防花屏关键项），别混。
+
+### 9.2 例程名：`slave` 已经不存在了（踩过一次）
+
+`esp_hosted` **2.x** 只有一个叫 `slave` 的例程；**3.0.0 起整树重构**成成对的 `<feature>/mcu_host` + `<feature>/cp`，`slave` 被删。所以：
+
+```
+idf.py create-project-from-example 'espressif/esp_hosted:slave'
+  -> ERROR: Cannot find example "slave" for "espressif/esp_hosted" version "*"
+```
+
+**例程名/版本/target 的真值源 = 组件仓 API**，别靠记忆：
+```powershell
+curl https://components.espressif.com/api/components/espressif/esp_hosted
+# .versions[] 里看 .version / .targets / .examples[].name
+```
+核到的事实：**3.0.5（2026-07-23 发布）要求 IDF ≥ 5.5、`.targets` 含 `esp32c5`；2.x 的 `.targets` 里没有 c5** ⇒ 这块板必须用 3.x。已在三个工程的 `main/idf_component.yml` 里把版本**钉死 `3.0.5`**（原本是 `'*'`，会随下次发版漂）。
+
+**一个省一半工作量的发现**：`wifi/scan/cp` 与 `wifi/sta/cp` 逐文件比对，**只差一行注释和 project 名** ⇒ **C5 端固件只需编一份**（本仓库只保留 `c5_cp`，`wifi/scan/cp` 那份已删）。CP 端的功能全在组件里，例程的 `main.c` 只做 NVS + event loop。
+
+### 9.3 必须打的 ESP-IDF 补丁（一行，官方脚本，已应用）
+
+SDIO 协处理器默认走 **SW 聚合**（吞吐量卖点），而 IDF v5.5.4 的 `sdio_slave.c` 还有 4092 字节单笔发送上限 ⇒ **编译期直接 FATAL_ERROR**，不是警告：
+
+```
+This ESP-IDF still has the 4092-byte SDIO send cap
+CMake Error ... SDIO SW_AGGR: this ESP-IDF lacks the send-cap fix
+```
+
+组件自带修法（改动已在 IDF master 上游）：
+```powershell
+D:\esp32\Espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe `
+  d:\diansai\workbench\esp32p4\c5_cp\managed_components\espressif__esp_hosted\tools\eh.py `
+  patch-idf --idf-path D:\esp32\Espressif\frameworks\esp-idf-v5.5.4
+```
+**改动就一行**（`components/esp_driver_sdio/src/sdio_slave.c`）：
+```c
+- SDIO_SLAVE_CHECK(len > 0 && len <= 4092, "length out of range: (0, 4092]", ESP_ERR_INVALID_ARG);
++ SDIO_SLAVE_CHECK(len > 0, "len <= 0", ESP_ERR_INVALID_ARG);
+```
+**已于 2026-07-27 应用到本机 IDF v5.5.4**（`patch successful`，`git diff` 可见）。影响面：只碰 SDIO **slave** 驱动；`p4_lcd` 用的是 SDMMC **host**（SD 卡），不受影响。
+撤销：
+```powershell
+& "D:\esp32\Espressif\tools\idf-git\2.43.0\cmd\git.exe" -C D:\esp32\Espressif\frameworks\esp-idf-v5.5.4 `
+  checkout -- components/esp_driver_sdio/src/sdio_slave.c
+```
+> 也可以改用 `CONFIG_EH_TRANSPORT_CP_SDIO_MODE_PACKET=y` 绕开补丁（不改 IDF、吞吐低些）。**没这么做**：bring-up 阶段要尽量待在官方默认上，出问题才好判"是板子还是我们改的配置"。
+
+### 9.4 引脚与配置（三方交叉核对，比原理图文本提取可靠）
+
+**C5 侧（协处理器）：SDIO slave 引脚是硬件固定的，不用配也不能改**
+
+| 信号 | C5 GPIO | 三处独立来源 |
+|---|---|---|
+| CLK | **9** | IDF `soc/esp32c5/include/soc/sdio_slave_pins.h` · esp_hosted `Kconfig.cp.sdio` 的 `default ... if IDF_TARGET_ESP32C5` · 官方 `docs/getting-started-mcu.md` 协处理器连接表 |
+| CMD | **10** | 同上 |
+| D0 / D1 / D2 / D3 | **8 / 7 / 14 / 13** | 同上 |
+| Reset In | C5 的 `RST`/`EN`（本板引到 6P 排针 `C5_EN`） | 官方表 |
+
+**P4 侧（主机）：本板与官方 P4-Function-EV-Board 的"P4+C6"映射一致**
+
+| 信号 | 本板 P4 GPIO | 说明 |
+|---|---|---|
+| CLK / CMD | **18 / 19** | 与 esp_hosted 内置 `P4X_C5_DEV_BOARD_FUNC_BOARD` 预设逐脚相同 |
+| D0..D3 | **14 / 15 / 16 / 17** | 同上 |
+| slot | **1**（可路由脚） | slot0 是 IOMUX 死脚 CLK43/CMD44/D0-3=39-42，**留给 microSD** ⇒ 两者可共存 |
+| 总线宽度 / 时钟 | 4-bit / 40 MHz | 本板是 PCB 走线 + 51kΩ 上拉（原理图上 R3/R5/R6/R7/R13/R14），满足 4-bit 的硬性要求 |
+| Slave Reset | **36**（`待确认`） | 见下 |
+
+**四条必改的 sdkconfig（已写进两个 host 工程的 `sdkconfig.defaults`，带注释）**
+
+1. `CONFIG_SLAVE_IDF_TARGET_ESP32C5=y` —— **最容易漏的一条**：`esp_wifi_remote` 在 P4 上把协处理器**默认成 C6**，实测生成的 sdkconfig 里就是 `CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y`。改这一行会连带把 `ESP_HOSTED_CP_TARGET_ESP32C5` 翻过来。
+2. `CONFIG_ESP_HOSTED_HOST_SDIO_PIN_*` 六条显式写死 18/19/14/15/16/17。（board 选 `NONE` 时这六个默认值**恰好**就是这些，但显式写死才能挡住上游改默认、也顺便把本板接线记在配置里。）
+3. `CONFIG_ESP_HOSTED_HOST_RESET_GPIO=36` + `ACTIVE_LOW=y` —— **`-1` 不是选项**：`eh_host_bus_sdio.c:1922` 有 `assert(reset_pin.pin != -1)`。36 是**尚未证实的最佳猜测**（原理图文本里 `C5_EN` 紧邻 P4 `IO36`，且 IO36 在本板没有别的功能），选它的安全性论证是：**猜错也无害**——IO36 不是背光(30)/触摸(27,28,29)/SDIO(14-19)/console(37,38)/LCD_RST(26)/SD(39-44) 里的任何一个；而 C5 的 EN 板上有上拉，主机不驱动它 C5 也在跑。
+4. `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` —— 默认 UART0 console 就压在 GPIO37/38（= P4↔C5 的 UART）。改成 USB-Serial-JTAG 后日志仍从 COM7 出来（COM7 本来就是 `VID_303A&PID_1001` = USB-Serial-JTAG），同时把 37/38 彻底让开。§8.3 第 3 条至此**已处理**。
+
+> 原理图 PDF 的文本提取（markitdown / pdfminer）在这种图纸上**不可靠**：文字块被旋转/镜像，`IO36` 之类的 token 只是"画在附近"，不代表连线。本节的引脚全部是**用三处独立来源交叉核对**得到的，而不是读一次 PDF 就写下来。可信度对照：LCD_BL=30、触摸 28/29/27 这两组已被真机实验证实，与同一列提取结果吻合 ⇒ 那一列（含 `IO32=C5_BOOT`）可信度较高；`C5_EN=IO36` 不在那一列，仍是猜测。
+
+### 9.5 上板怎么做（**已按本节执行完，结果见 §9.7**）
+
+> 结果速览：第一发就 PASS，`slave chip id` 直接出来 ⇒ **C5 出厂自带 hosted 固件，下面"判 FAIL 才需要 USB-TTL"那一段没走到**。本节保留作流程与备选留档。
+
+**第一发先不碰 C5**（零成本、信息量最大）：直接给 P4 刷 `p4_scan_host`，看 C5 是不是**出厂就带**某版 ESP-Hosted 协处理器固件（这块板卖点就是 P4+C5 的 WiFi6，有可能自带）。
+```powershell
+powershell -File tools\hosted_bringup.ps1 -Project p4_scan_host
+```
+脚本会 flash → RTS 复位抓 25 秒日志 → 按下面的判据出结论：
+
+| 日志标记 | 含义 | 判决 |
+|---|---|---|
+| `Total APs scanned = N`（N>0） | 链路通 + 协处理器真的扫到了 AP | **PASS**（验收判据的前半条达成） |
+| `slave chip id: 0x..` / `capabilities: 0x..` | SDIO 通 + init-event 握手完成 | PARTIAL（还没扫到 AP） |
+| 只有 `transport[host]: SDIO 4-bit 40000 kHz` | 主机自己起来了，**协处理器一声没出** | **FAIL** ⇒ 是接线/传输配置问题，**不要去调 WiFi**（官方 debugging order 第 3 步） |
+| 连 `transport[host]` 都没有 | 刷的可能不是 host app | INCONCLUSIVE |
+
+> ⚠️ 这一步会**覆盖 P4 上的 `p4_lcd` LVGL 面板固件**。恢复一条命令：`powershell -File tools\build_p4.ps1 -Flash`（出厂固件另有 2MB 备份）。
+
+**若判 FAIL（= C5 没有 hosted 固件），才需要给 C5 刷 `c5_cp`：**
+- 官方只给"CP 有自己的串口"这一条路 ⇒ 本板 C5 的 UART0 引到顶部 6P 排针 `PZ127-1-06-Z`（`3V3 / GND / C5_TXD0 / C5_RXD0 / C5_EN / C5_BOOT`）⇒ **需要一个 USB-TTL（3.3V）**：TTL 的 TXD→C5_RXD0、RXD→C5_TXD0、GND 共地；进下载模式 = C5_BOOT 拉低时给 C5_EN 一个低脉冲。
+- 官方还提醒：**若因主机占着总线导致刷不进，先把 P4 弄进 bootloader**：
+  `esptool.py -p COM7 --before default_reset --after no_reset run`
+- ⬜ **没有 USB-TTL 时的备选（未做、评估级）**：用 `espressif/esp-serial-flasher` 让 P4 当烧写器（P4 UART1 走 GPIO37/38 → C5 UART0，再由 P4 控制 C5_EN/C5_BOOT）。原理成立，但要先确认 `C5_EN`/`C5_BOOT` 到底挂在 P4 哪两个脚（`C5_BOOT≈IO32` 可信度较高、`C5_EN≈IO36` 是猜测），属"几小时级"的活，不是一行配置。
+
+### 9.6 上板前撞的一堵墙：**本板是 v1.3 早期片，新工程默认编不出能烧的固件**
+
+第一次烧录直接被 esptool 拒了（**不是接线、不是端口**）：
+
+```
+Chip is ESP32-P4 (revision v1.3)
+A fatal error occurred: bootloader/bootloader.bin requires chip revision in
+range [v3.1 - v3.99] (this chip is revision v1.3). Use --force to flash anyway.
+```
+
+IDF v5.5.4 新建工程默认 `CONFIG_ESP32P4_REV_MIN_301`（v3.1+），本板是**早期 v1.3 样片**。
+
+**⚠️ 别用 `--force`**：min-rev 是烧进镜像头的，而 IDF 自己的 Kconfig 写着"**Support of ESP32-P4 rev. <3.0 and >=3.0 is mutually exclusive**"——v1.x 与 v3.x 硬件差异大，不是"改个头"的事。
+
+**正解两行，且顺序有讲究**（第一次我只加了后一行，白编一轮）：
+
+```
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y   # 总闸门：不开它，REV_MIN_0/1/100 这几个选项根本不出现
+CONFIG_ESP32P4_REV_MIN_100=y           # 实测：单独写它 -> sdkconfig 仍是 REV_MIN_FULL=301，静默无效
+```
+
+改完**必须重新编译**（不是重新烧）。改对后 sdkconfig 与真机 boot log 都能对上：
+
+```
+CONFIG_ESP32P4_REV_MIN_FULL=100 / MAX=199 / CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=360
+boot: chip revision: v1.3   |   efuse_init: Min chip rev: v1.0  Max chip rev: v1.99
+```
+
+> `SELECTS_REV_LESS_V3` 不只管版本门限，它还切换这一代硅片的一串默认值（**默认 CPU 频率 360MHz**、PSRAM、PM 选项）——这也解释了为什么 `p4_lcd` 一直跑在 360MHz。
+> **⇒ 这块板上任何新建的 P4 工程，第一件事就是补这两行。** `p4_lcd` 里本来就有（它是从厂家工程改的），所以之前没暴露。
+
+### 9.7 真机实测（2026-07-27，两发全过）
+
+**第一发 `p4_scan_host`（刻意先不碰 C5）—— PASS：**
+
+```
+I (133) eh_sdio: transport[host]: SDIO 4-bit 40000 kHz CLK=18 CMD=19 D0=14 D1=15 D2=16 D3=17 RESET=36
+W (135) eh_sdio: Reset co-processor using GPIO[36]
+I (1791) eh_sdio: Card init success, TRANSPORT_RX_ACTIVE
+I (1836) eh_sdio: SDIO Host operating in STREAMING MODE
+I (1868) eh_init_evt: slave chip id: 0x17 (esp32c5)
+I (1868) eh_init_evt: capabilities: 0x0d   ->  * WLAN over SDIO / HCI over SDIO / BLE only
+I (1869) eh_init_evt: esp-hosted fw versions: host=3.0.5 coprocessor=2.12.9
+E (1869) eh_init_evt: major version mismatch ??? OTA coprocessor from host
+I (1869) eh_init_evt: CP without SDIO SW_AGGR; compatible streaming mode enabled
+I (12813) scan: Total APs scanned = 51
+```
+
+**第二发 `p4_sta_host`（连 AP + ICMP）—— PASS：**
+
+```
+I (2158) wifi station: STA_CONNECTED (associated, waiting for DHCP)
+I (14115) wifi station: sta mac d0:cf:13:e8:57:0c (esp_wifi_get_mac=ESP_OK)
+I (14115) wifi station: netif mac d0:cf:13:e8:57:0c (esp_netif_get_mac=ESP_OK)
+W (14116) wifi station: no DHCP lease after 12000 ms -> falling back to static 192.168.4.3
+I (14129) wifi station: PING reply seq=1 from 192.168.4.1 bytes=64 ttl=128 time=11 ms
+I (15120..18120)      : seq=2..5  time = 3 / 3 / 5 / 2 ms
+I (19117) wifi station: PING SUMMARY tx=5 rx=5 loss=0% duration=24 ms -> PING_OK
+```
+
+| 事实 | 实测值 | 意义 |
+|---|---|---|
+| SDIO 链路 | 4-bit @40MHz，`Card init success`，1.79s 起来 | §9.4 那套引脚**全部正确** |
+| 协处理器身份 | `chip id 0x17 (esp32c5)` | 板上真是 C5，且**出厂自带 hosted 固件** |
+| **出厂 CP 固件版本** | **esp_hosted 2.12.9**（主机 3.0.5） | major 不匹配 ⇒ 退 streaming、无 SW_AGGR（见 §9.8） |
+| `reset=36` | 日志 `Reset co-processor using GPIO[36]`，1.73s 后收到 slave init event | **IO36 就是 C5 的复位线**（时序吻合；未做"关掉 reset"的对照实验，故仍留一分保留） |
+| 扫 AP | **51 个**，2.4G(ch1/5/9/11) + **5G(ch149)** 都有 | C5 双频射频正常工作 |
+| 关联 | `set_config` 后约 100ms 进 STA_CONNECTED | 关联无问题 |
+| **DHCP** | **12s 拿不到租约**（改静态 IP 后一切正常） | **是 AP 那头的事，不是 C5/SDIO**（见 §9.8） |
+| **ICMP** | **5/5、0% 丢包、RTT 2/3/3/5/11 ms** | **验收判据"ping 通"达成**；也给了图传链路的首个延迟基线 |
+| MAC | `d0:cf:13:e8:57:0c`，两个 API 都 `ESP_OK` | **推翻了我自己的假设**（见 §9.8） |
+
+真机日志原件已入库留证：[`firmware/esp_hosted_c5/boot_log_scan_PASS_2026-07-27.txt`](firmware/esp_hosted_c5/boot_log_scan_PASS_2026-07-27.txt) · [`boot_log_sta_ping_PASS_2026-07-27.txt`](firmware/esp_hosted_c5/boot_log_sta_ping_PASS_2026-07-27.txt)。
+
+### 9.8 剩下的问题 + 诚实边界
+
+**⬜ 待办 1（唯一有技术含量的一条）：把 C5 升到 esp_hosted 3.0.5。** 现在 host 3.0.5 / CP 2.12.9 major 不匹配，代价有两条：① 退到 **streaming 模式、拿不到 SW_AGGR 的吞吐**（正是 §9.3 打补丁想要的那个特性——**现在那个补丁只对我们自己编的 `c5_cp` 有意义**）；② 组件自己在日志里建议 `OTA coprocessor from host`。**⇒ 走 `ota/coprocessor_ota` 例程从 P4 侧经 SDIO 给 C5 做 OTA，仍然不需要 USB-TTL**；我们已经编好的 `c5_cp`（1116KB）就是要刷的镜像。**风险**：得先确认出厂 C5 的分区表有没有第二个 OTA 槽；ESP-IDF OTA 是"写非活动槽、成功才切换"，没槽会报错而不是变砖——但仍属"动别人出厂固件"，做之前值得先把出厂 C5 固件读出来备份（要读就得有 USB-TTL 了）。
+
+**⬜ 待办 2：DHCP 为什么不给租约。** 已知不是 C5/SDIO 的射频问题（静态 IP 下 ICMP 5/5 通）。
+**🔄 2026-07-27 更正（原判断已被推翻）**：本条原写"最可能是车端 ESP-01S 的 SoftAP 没给 DHCP"。**错了** —— §10.4 的对照实验里 **K230 连同一只 ESP-01S，2 秒关联 + DHCP 正常拿到 `192.168.4.3`** ⇒ **ESP-01S 的 DHCP 服务器是好的，锅在 P4/esp_hosted 这侧**（很可能同属 host 3.0.5 / CP 2.12.9 的 RPC 缺口，见 §10.5）。⇒ **正确判法：等 C5 OTA 到 3.0.5 之后重测**，别再去查 AP。
+
+**🔄 一次自我推翻（留档）**：看到扫描那轮日志里 `esp_wifi_get_mac failed with -1` + 两个 RPC 5s 超时，我推断"版本不匹配把 MAC 读挂 ⇒ netif 没有 MAC ⇒ DHCP 必然失败"。**为验证专门加了打印，实测 `esp_wifi_get_mac=ESP_OK`、MAC 正常 ⇒ 假设错了。** 教训：把假设做成一行打印比继续推理便宜得多（本仓库"AI 必须能自我推翻"那条的又一次实例）。
+
+**其它诚实边界**：
+- ✅ 真机已验：SDIO 链路 / C5 身份 / 扫 AP / 关联 / ICMP / reset 脚 / rev-min 两行的必要性 —— 都有日志。
+- ⬜ **未验**：`c5_cp` 那 1116KB 固件**从未烧进 C5**（现在跑的是出厂 2.12.9）· 吞吐/带宽**一个数都没实测**（§八的 44Mbps 仍是官方数字，且当前 streaming 模式还够不上）· MJPEG 收流显示、K230 侧推流 **全部没开工**。
+- ⚠️ **§9.3 的 IDF 补丁是"本机状态"、不随 git 走**（IDF 在仓库外）。换机/重装 IDF 后编 `c5_cp` 会重现那个编译期 FATAL，照 §9.3 再打一次即可——不是配置退化。
+- ✅ 工具脚本现在**三个都端到端跑过**了（`hosted_bringup.ps1` 的 flash/抓日志/判读三段这轮首次真跑，并在两个工程上各出了一次正确判决）。
+
+---
+
+## 十、方案 D 第二步：K230 → P4 数据链路（2026-07-27 · 硬事实一大把，**链路未通**）
+
+> 目标：让 K230 把 MJPEG 帧推到 P4。本节把这一步的**真机事实**和**结论性判断**都记下来；
+> **当前状态：AP 关联通了、TCP 连不上，判定为"不该在版本不匹配的栈上继续调"，已备好 C5 OTA 工程等放行。**
+
+### 10.1 K230 侧的硬事实（都是真机 REPL 读出来的，不是资料推断）
+
+板子 = **庐山派 CanMV-K230**（`os.uname()`: `machine='k230_canmv_lckfb'`, `sysname='rt-smart'`, 固件 `v1.8-13-gbbc87b8` 编译于 2026-07-24），MicroPython **1.21.0**，串口 **COM3**（`VID_1209&PID_ABD1`）是 MicroPython REPL。
+
+**`/dev` 一次列清所有能力**（比翻资料快得多，推荐上手新板子第一件事就干这个）：
+
+| 设备节点 | 意味着 |
+|---|---|
+| `sta` `ap` `w0` `w1` `netmgmt` | **WiFi 硬件在，且 station / AP 两个角色都有**（K230 芯片本身无 WiFi，是板上模块） |
+| **`sensor_gc2093_csi2`** | **摄像头在**：GC2093 挂 CSI2 |
+| `venc_device` `vdec_device` | 硬件视频编 / 解码器都在 |
+| `vo_device` `connector` `vg_lite` | 显示输出（板子自己那块屏） |
+
+**JPEG 编码怎么拿**（方案 D 的关键，因为 P4 只能硬解 JPEG）：
+- `image.Image` **没有任何 compress/jpeg 方法**（实测 `[m for m in dir(image.Image) if 'com' in m ...]` → `[]`）⇒ **不能靠 `img.compress()`**。
+- **`media.vencoder.Encoder` 有 `PAYLOAD_TYPE_JPEG`** ⇒ 走硬件 VENC。取字节流的写法（抄 `02-Media/video_encoder.py`）：
+  ```python
+  encoder.GetStream(streamData)
+  for i in range(streamData.pack_cnt):
+      b = uctypes.bytearray_at(streamData.data[i], streamData.data_size[i])
+  encoder.ReleaseStream(streamData)
+  ```
+  ⚠️ **SD 卡上 30 个例程目录里没有一个用过 `PAYLOAD_TYPE_JPEG`**（grep 过），所以 `ChnAttrStr(...)` 给 JPEG 时的 profile 参数**只能真机试**，别当已知。
+
+**⭐ SD 卡上有完整 CanMV 例程树，是 API 的最佳真值源**（`/sdcard/examples/`，30 个目录）。本轮直接照抄了 `14-Socket/network_wlan_sta.py`（WLAN STA）、`14-Socket/tcp_client.py`（socket 正确写法）、`02-Media/video_encoder.py`（VENC）。**上手这块板先 `os.listdir('/sdcard/examples')`，别凭记忆写 API。**
+
+### 10.2 P4 侧：SoftAP + MJPEG sink（已上板运行）
+
+新工程 `p4_softap_host`（源码备份见 `firmware/esp_hosted_c5/p4_softap_host.*`）：
+
+- **P4 当 AP**（不是 STA）：理由是 esp_hosted 的 SoftAP 自带 DHCP 服务器，而 K230 侧只需要走它最常见的 STA 连接路径。
+- **AP 地址刻意改成 `192.168.7.1`**：车上那只 ESP-01S 的 SoftAP 也发 `192.168.4.0/24` + 网关 `192.168.4.1` ⇒ 两个 AP 同网段时，客户端的 IP 完全无法证明它连的是谁（本轮被这一点坑过，详见 10.3）。换网段后 **客户端 IP 本身就是证据**。
+- **MJPEG sink**：tcp/5000，帧格式 `'J' 'F' | uint32 LE 长度 | JPEG`，每秒打一行 `SINK ... fps | Mbps | frame min..max`，并检查 `FFD8..FFD9` 标记。目的是**在这块板上实测吞吐**（README §八那个 44Mbps 是官方数字，本板从未测过）。
+- 真机启动日志：`AP addr 192.168.7.1` + `SINK listening on tcp/5000` ✅
+
+### 10.3 一路撞过来的六个坑（每个都花了真金白银）
+
+1. **⭐ ESP SoftAP 默认要求 PMF，第三方 station 关联不上** —— 上游 softap 例程写死 `.pmf_cfg.required = true`。改成 `required=false` **还不够**，IDF 的 `.capable` 默认仍是 `true`；**两个都关掉**之后 K230 才关联上（现象：AP 在 K230 的扫描里 **-18dBm、security 正是 `SECURITY_WPA2_AES_PSK`**，却一直 association timeout）。
+2. **K230 的 MicroPython REPL 反复 paste 会耗尽堆** —— 表现是 `socket.connect()` 报 `OSError(12)`，误导成 socket 问题；**判据是连 `open(小文件).read()` 都报同一个 12(ENOMEM)**。修法：`gc.collect()` + 工具加软复位（`k230_repl.ps1 -SoftReset`，实测复位后 `mem_free≈4.1MB`）。
+3. **CanMV 的 socket 要用官方写法** —— `socket.socket(AF_INET, SOCK_STREAM, 0)`（proto 显式给 0）+ **`getaddrinfo()` 取地址**；直接 `connect(("ip", port))` 会失败。
+4. **`machine.reset()` 会让 USB CDC 重新枚举** ⇒ 已打开的串口句柄失效，之后发的东西**静默丢失**（第一次因此整轮跑空）。工具已改成"发复位 → 关口 → 等端口消失再出现 → 重开"（`-HardReset`）。
+5. **两个 AP 同网段 ⇒ "连的是谁"不可判**（见 10.2）。另外 **RT-Smart 的网络栈在 MicroPython 软复位后不重置**（`Network (rt-smart) is always active and cannot be disabled`）⇒ 旧关联/旧租约/旧 ARP 会跨实验存活。
+6. **Windows GBK 控制台 + 工具链打 emoji ⇒ 伪装成编译错误** —— 编 OTA 工程时崩在 `UnicodeEncodeError: 'gbk' codec can't encode character '\U0001f50d'` + `RuntimeError: Event loop is closed`。修法已收进 `tools/idf_shell.ps1`：`PYTHONIOENCODING=utf-8` + `PYTHONUTF8=1`。
+
+### 10.4 关键对照实验：问题不在 K230，也不在 ESP-01S 的 DHCP
+
+K230 连**已知能用的** `DIANSAI_CAR`（车上 ESP-01S）：**2 秒关联成功 + DHCP 拿到 `192.168.4.3`**（证据 `firmware/esp_hosted_c5/k230_control_assoc_to_esp01s_PASS.txt`）。
+
+⇒ 两个结论：
+- **K230 的 STA 完全正常**，问题特定于"K230 ↔ C5 SoftAP"这一对；
+- **🔄 自我推翻上一轮的判断**：§9.8 待办 2 曾写"P4 当 STA 拿不到租约 = ESP-01S 那头没 DHCP"。**错了** —— ESP-01S 的 DHCP 服务器好得很，是 P4/esp_hosted 这侧的问题。§9.8 那条已按此更正。
+
+### 10.5 为什么停手：**不该在已知版本不匹配的栈上调互操作**
+
+K230 关联上 P4_STREAM 之后，`TCP connect → OSError(107) ENOTCONN` 稳定复现（换了官方 socket 写法、换了网段、清了堆都一样）。于是在**我完全控制的 P4 侧装仪表**（而不是继续在 K230 侧试错），拿到两个决定性读数：
+
+| 仪表读数 | 判读 |
+|---|---|
+| `esp_wifi_ap_get_sta_list()` 返回 **10 个全零 MAC** | 这个 API 在当前 CP 上**返回垃圾** ⇒ 仪表本身不可信 |
+| 每次 K230 尝试连接，AP 侧成对出现 `wifi event id=43` | 数 IDF v5.5.4 的 `wifi_event_t` 枚举：**43 = `WIFI_EVENT_HOME_CHANNEL_CHANGE`**（不是 station 事件；`AP_STACONNECTED`=14 / `AP_STADISCONNECTED`=15 从未出现） |
+
+⇒ 加上启动就在报的 `major version mismatch ??? OTA coprocessor from host`（host **3.0.5** vs 出厂 CP **2.12.9**），**判定：先把栈修正，再谈互操作**。继续在这上面调，等于在不可信反馈上调控制器——本仓库最贵的那类错误。
+
+> 附：AP 事件 id 在 esp_hosted 的 RPC 转发后**不能用名字常量匹配**（上游例程的 `event_id == WIFI_EVENT_AP_STACONNECTED` 分支从未命中）。要看事件就**先把 id 全打出来，再去数枚举**。
+
+### 10.6 已备好、**等放行**：给 C5 做 SDIO OTA 到 3.0.5
+
+新工程 `p4_cp_ota`（编译通过：`host_performs_slave_ota.bin` **457KB**；构建期已确认 `Partition OTA: Found slave_fw partition at offset: 0x5F0000`）：
+
+- 走 **`CONFIG_OTA_METHOD_PARTITION`**：把协处理器镜像放进主机 flash 的 `slave_fw` 分区，再经 RPC 推给 C5。**刻意不用 HTTPS 方式** —— WiFi 正是要修的东西，升级通路不能依赖它。
+- 镜像 = 我们已编好的 `c5_cp/build/eh_cp_wifi_sta.bin`（1116KB），已放进 `components/ota_partition/slave_fw_bin/`。
+- 主机分区表用例程自带的 8MB 布局（本板 flash 16MB，够）。
+
+**⛔ 还没烧，因为它一烧就动手**：`app_main` 里没有命令行门控，开机直接 `Starting slave OTA update...` → `eh_host_cp_ota_activate()` → C5 重启。
+
+**风险交代（要你拍板）**：ESP-IDF 的 OTA 写的是**非活动槽、成功才切换**，理论上失败会报错而不是变砖；但**出厂 C5 的分区表我们没读过**（不知道有没有第二个 OTA 槽），而 C5 一旦起不来，救它需要 **USB-TTL 接 6P 排针**——那是我们至今没用上、也不确定你有没有的东西。
+**更稳的顺序**：先用 USB-TTL 把出厂 C5 固件**读出来备份**，再做 OTA。要是你没有 USB-TTL，就是"不备份直接升"，我建议你明确同意再做。
+
+一条命令即可执行（放行后）：
+```powershell
+powershell -File tools\build_hosted.ps1 -Project p4_cp_ota -Flash -Port COM7
+powershell -File tools\p4_boot_read.ps1 -Port COM7 -Seconds 60   # 看 OTA 进度与结果
+```
+
+### 10.7 本节诚实边界
+
+- ✅ 真机已验：K230 身份/外设清单/WiFi 与摄像头存在性 · JPEG 编码器可用性（**API 存在**，未跑通编码）· P4 SoftAP + sink 上板运行 · PMF 是关联失败主因 · K230 STA 对照实验 · 事件 id 解码 · `sta_list` API 返回垃圾。
+- ⬜ **未通**：K230 → P4 的 **TCP 一次都没连上**，所以**吞吐一个数都没有**；摄像头**一帧都没抓过**；MJPEG 编码**没跑过**；P4 侧 JPEG 硬解 + 上屏**没开工**。
+- ⬜ `p4_cp_ota` **只编译过、未烧录**（烧=动手，见 10.6）。
+- ⚠️ **本轮写的代码里有几段"从未被执行过"，下次别当已验证**：
+  - `p4_softap_host` 的 **sink 收帧路径**（`read_exact` / `'JF'` 帧头解析 / `FFD8..FFD9` 校验 / `SINK ... fps | Mbps` 统计）—— **一个字节都没收到过**，只验证了"能起来、能 listen"。
+  - `k230_link_test.py` 的 **发送循环与吞吐计算** —— 卡在 TCP connect 之前，**一次没跑到**。
+  - `sta_watch_task` —— 跑过，但依赖的 `esp_wifi_ap_get_sta_list()` 在当前 CP 上**返回垃圾**，所以它现在是个**已知不可信的仪表**（升级 CP 后再看它是否变可用）。
+  - `k230_repl.ps1 -HardReset` 的"等端口先消失"分支 —— 实测那次打印 `disappeared=False`（复位太快没抓到消失），**该分支未被真正走到**。
+- ⚠️ `k230_link_test.py` 里的 AP 口令是明文占位（归档副本已抹）；真值只在一处，别复制。
+- ⚠️ **"不需要 USB-TTL"这句要限定范围**：§九 的结论（扫 AP + ping）确实不需要它，因为 C5 出厂自带固件。但**给 C5 做 OTA 之前想先备份出厂固件，就必须有 USB-TTL**（读 C5 的 flash 只能走它的 UART）。两处别混着读。

@@ -1,0 +1,29 @@
+﻿=== K230 client ===
+  LINK mem_free=4137024
+  LINK target visible ch=6 rssi=-28 security=4194308
+  LINK connect attempt 1
+  LINK connect attempt 2
+  LINK connect attempt 3
+  LINK RESULT: FAIL (association timeout after 3 attempts, status=False)
+=== P4 AP witness ===
+  I (2128) wifi softAP: wifi event base=WIFI_EVENT id=13
+  I (2144) wifi softAP: AP addr 192.168.7.1 -- point the sender at 192.168.7.1:5000
+  I (2145) wifi softAP: SINK listening on tcp/5000 (expecting 'JF'+u32len+jpeg)
+  I (2165) wifi softAP: STAWATCH 10 station(s) associated
+  I (2165) wifi softAP: STAWATCH   [0] 00:00:00:00:00:00 rssi=0
+  I (2165) wifi softAP: STAWATCH   [1] 00:00:00:00:00:00 rssi=0
+  I (2165) wifi softAP: STAWATCH   [2] 00:00:00:00:00:00 rssi=0
+  I (2165) wifi softAP: STAWATCH   [3] 00:00:00:00:00:00 rssi=0
+  I (2165) wifi softAP: STAWATCH   [4] 00:00:00:00:00:00 rssi=0
+  I (2165) wifi softAP: STAWATCH   [5] 00:00:00:00:00:00 rssi=0
+  I (2165) wifi softAP: STAWATCH   [6] 00:00:00:00:00:00 rssi=0
+  I (2166) wifi softAP: STAWATCH   [7] 00:00:00:00:00:00 rssi=0
+  I (2166) wifi softAP: STAWATCH   [8] 00:00:00:00:00:00 rssi=0
+  I (2166) wifi softAP: STAWATCH   [9] 00:00:00:00:00:00 rssi=0
+  I (2190) wifi softAP: wifi event base=WIFI_EVENT id=12
+  I (31013) wifi softAP: wifi event base=WIFI_EVENT id=43
+  I (31015) wifi softAP: wifi event base=WIFI_EVENT id=43
+  I (46597) wifi softAP: wifi event base=WIFI_EVENT id=43
+  I (46598) wifi softAP: wifi event base=WIFI_EVENT id=43
+  I (62177) wifi softAP: wifi event base=WIFI_EVENT id=43
+  I (62180) wifi softAP: wifi event base=WIFI_EVENT id=43

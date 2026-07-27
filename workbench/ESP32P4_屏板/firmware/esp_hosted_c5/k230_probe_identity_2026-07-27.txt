@@ -1,0 +1,29 @@
+### port=COM3 baud=115200  18:09:24
+### >>> <Ctrl-C>
+
+>>> 
+>>> ### >>> <CR>
+
+>>> ### >>> import sys, os
+import sys, os
+>>> ### >>> print("IMPL", sys.implementation)
+print("IMPL", sys.implementation)
+IMPL (name='micropython', version=(1, 21, 0), _machine='k230_canmv_lckfb with K230', _mpy=262)
+>>> ### >>> print("PLATFORM", sys.platform)
+print("PLATFORM", sys.platform)
+PLATFORM rt-smart
+>>> ### >>> print("UNAME", os.uname())
+print("UNAME", os.uname())
+UNAME (sysname='rt-smart', nodename='rt-smart', release='v1.8-13-gbbc87b8', version='v1.8-13-gbbc87b8 on 2026-07-24', machine='k230_canmv_lckfb')
+>>> ### >>> print("ROOT", os.listdir("/"))
+print("ROOT", os.listdir("/"))
+ROOT ['bin', 'sdcard', 'data', 'udisk', 'dev', 'proc', 'etc', 'tmp']
+>>> ### >>> print("HAS_NETWORK", "network" in str(sys.modules) or True)
+print("HAS_NETWORK", "network" in str(sys.modules) or True)
+HAS_NETWORK True
+>>> ### >>> import network
+import network
+>>> ### >>> print("NET_DIR", [x for x in dir(network) if not x.startswith("_")])
+print("NET_DIR", [x for x in dir(network) if not x.startswith("_")])
+NET_DIR ['AP_IF', 'LAN', 'LAN_ECM', 'LAN_RTL8152', 'STA_IF', 'WLAN', 'country', 'get_default_dev', 'get_dev_list', 'hostname', 'route', 'set_default_dev']
+>>> 

@@ -1,0 +1,108 @@
+I (106) esp_image: segment 5: paddr=000a07b4 vaddr=4ff11200 sizeESP-ROM:esp32p4-eco2-20240710
+Build:Jul 10 2024
+rst:0x17 (CHIP_USB_UART_RESET),boot:0x11c (SPI_FAST_FLASH_BOOT)
+Core0 Saved PC:0x4ff0308c
+Core1 Saved PC:0x4ff0308c
+SPI mode:DIO, clock div:1
+load:0x4ff33ce0,len:0x1660
+load:0x4ff29ed0,len:0xde8
+load:0x4ff2cbd0,len:0x352c
+entry 0x4ff29eda
+I (8) boot: ESP-IDF v5.5.4 2nd stage bootloader
+I (8) boot: compile time Jul 27 2026 17:41:15
+I (9) boot: Multicore bootloader
+I (10) boot: chip revision: v1.3
+I (10) boot: efuse block revision: v0.3
+I (10) boot.esp32p4: SPI Speed      : 80MHz
+I (11) boot.esp32p4: SPI Mode       : DIO
+I (11) boot.esp32p4: SPI Flash Size : 2MB
+I (11) boot: Enabling RNG early entropy source...
+I (12) boot: Partition Table:
+I (12) boot: ## Label            Usage          Type ST Offset   Length
+I (13) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (13) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (14) boot:  2 factory          factory app      00 00 00010000 00100000
+I (15) boot: End of partition table
+I (15) esp_image: segment 0: paddr=00010020 vaddr=40060020 size=2ecd4h (191700) map
+I (43) esp_image: segment 1: paddr=0003ecfc vaddr=30100000 size=00044h (    68) load
+I (45) esp_image: segment 2: paddr=0003ed48 vaddr=4ff00000 size=012d0h (  4816) load
+I (47) esp_image: segment 3: paddr=00040020 vaddr=40000020 size=50888h (329864) map
+I (94) esp_image: segment 4: paddr=000908b0 vaddr=4ff012d0 size=0fefch ( 65276) load
+I (106) esp_image: segment 5: paddr=000a07b4 vaddr=4ff11200 size=027f4h ( 10228) load
+I (109) esp_image: segment 6: paddr=000a2fb0 vaddr=50108080 size=0000ch (    12) load
+I (113) boot: Loaded app from partition at offset 0x10000
+I (114) boot: Disabling RNG early entropy source...
+I (117) cpu_start: Multicore app
+I (126) cpu_start: Pro cpu start user code
+I (126) cpu_start: cpu freq: 360000000 Hz
+I (127) app_init: Application information:
+I (127) app_init: Project name:     wifi_sta_mcu_host
+I (127) app_init: App version:      baseline-car-2loop-v1-36-gaf007
+I (127) app_init: Compile time:     Jul 27 2026 17:40:40
+I (128) app_init: ELF file SHA256:  7005da74e...
+I (128) app_init: ESP-IDF:          v5.5.4
+I (128) efuse_init: Min chip rev:     v1.0
+I (128) efuse_init: Max chip rev:     v1.99 
+I (128) efuse_init: Chip rev:         v1.3
+I (129) heap_init: Initializing. RAM available for dynamic allocation:
+I (129) heap_init: At 4FF16600 len 000249C0 (146 KiB): RETENT_RAM
+I (129) heap_init: At 4FF3AFC0 len 00004BF0 (18 KiB): RAM
+I (129) heap_init: At 4FF40000 len 00060000 (384 KiB): RAM
+I (130) heap_init: At 5010808C len 00007F74 (31 KiB): RTCRAM
+I (130) heap_init: At 30100044 len 00001FBC (7 KiB): TCM
+W (131) spi_flash: Detected boya flash chip but using generic driver. For optimal functionality, enable `SPI_FLASH_SUPPORT_BOYA_CHIP` in menuconfig
+I (132) spi_flash: detected chip: generic
+I (132) spi_flash: flash io: dio
+W (132) spi_flash: Detected size(16384k) larger than the size in the binary image header(2048k). Using the size in the binary image header.
+I (133) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+I (133) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+I (136) eh_mcu_transport: transport_init: probing bus backend
+I (136) eh_sdio: transport[host]: SDIO 4-bit 40000 kHz CLK=18 CMD=19 D0=14 D1=15 D2=16 D3=17 RESET=36
+I (137) eh_sdio: sdio_data_to_rx_buf_task started
+I (138) eh_mcu_transport: transport_init: bus backend up
+I (138) main_task: Started on CPU0
+W (138) eh_sdio: Reset co-processor using GPIO[36]
+I (138) main_task: Calling app_main()
+I (140) wifi station: ESP_WIFI_MODE_STA
+I (1691) eh_host_port_sdio: Function 0 Blocksize: 512
+I (1692) eh_host_port_sdio: Function 1 Blocksize: 512
+I (1792) eh_sdio: Card init success, TRANSPORT_RX_ACTIVE
+I (1837) eh_sdio: SDIO Host operating in STREAMING MODE
+I (1837) eh_sdio: Open data path at slave
+I (1838) eh_sdio: Starting SDIO process rx task
+I (1868) eh_init_evt: slave chip id: 0x17 (esp32c5)
+I (1868) eh_init_evt: capabilities: 0x0d
+I (1868) eh_init_evt: Features supported are:
+I (1868) eh_init_evt: 	 * WLAN over SDIO
+I (1868) eh_init_evt: 	   - HCI over SDIO
+I (1868) eh_init_evt: 	   - BLE only
+I (1868) eh_init_evt: extended capabilities: 0x00000000
+I (1869) eh_raw_tp: raw TP inactive
+I (1869) eh_init_evt: Default RPC to V2
+I (1869) eh_init_evt: esp-hosted fw versions: host=3.0.5 coprocessor=2.12.9
+E (1869) eh_init_evt: major version mismatch ??? OTA coprocessor from host
+I (1869) eh_init_evt: CP without SDIO SW_AGGR; compatible streaming mode enabled
+I (1869) eh_init_evt: SDIO mode: slave=streaming host=streaming
+I (1869) eh_init_evt: chip=0x17 (esp32c5) fw=0x00020c09 caps=0x0d ext=0x00000000
+I (1870) eh_auto_init: auto_init: found 1 descriptor(s)
+I (1870) eh_auto_init: auto_init: initialising 'wifi' (priority 150)
+I (1870) eh_wifi_itwt: wifi iTWT ext init
+I (2053) eh_wifi: set_config iface=STA ssid="DIANSAI_CAR" (11 bytes)
+I (2099) wifi station: wifi_init_sta finished.
+I (2103) eh_wifi: rx RPC WifiEventNoArgs id=2
+I (2157) esp_wifi_remote: esp_wifi_internal_reg_rxcb: sta: 0x4002d5c2
+I (2158) wifi station: STA_CONNECTED (associated, waiting for DHCP)
+I (14115) wifi station: sta mac d0:cf:13:e8:57:0c (esp_wifi_get_mac=ESP_OK)
+I (14115) wifi station: netif mac d0:cf:13:e8:57:0c (esp_netif_get_mac=ESP_OK)
+W (14116) wifi station: no DHCP lease after 12000 ms -> falling back to static 192.168.4.3
+I (14116) esp_netif_handlers: sta ip: 192.168.4.3, mask: 255.255.255.0, gw: 192.168.4.1
+I (14116) wifi station: got ip:192.168.4.3 gw:192.168.4.1 mask:255.255.255.0
+I (14117) wifi station: connected to ap SSID:DIANSAI_CAR
+I (14117) wifi station: PING start -> 192.168.4.1 (5 packets)
+I (14129) wifi station: PING reply seq=1 from 192.168.4.1 bytes=64 ttl=128 time=11 ms
+I (15120) wifi station: PING reply seq=2 from 192.168.4.1 bytes=64 ttl=128 time=3 ms
+I (16120) wifi station: PING reply seq=3 from 192.168.4.1 bytes=64 ttl=128 time=3 ms
+I (17122) wifi station: PING reply seq=4 from 192.168.4.1 bytes=64 ttl=128 time=5 ms
+I (18120) wifi station: PING reply seq=5 from 192.168.4.1 bytes=64 ttl=128 time=2 ms
+I (19117) wifi station: PING SUMMARY tx=5 rx=5 loss=0% duration=24 ms -> PING_OK
+I (19117) main_task: Returned from app_main()

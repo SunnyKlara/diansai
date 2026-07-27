@@ -13,6 +13,15 @@
 #   - SSL_CERT_FILE: bundled idf-python has no CA bundle at all
 #   - PIP_INDEX_URL: aliyun (tsinghua/tencent/ustc all die with TLS "EOF in violation of protocol")
 
+# Windows console here is a GBK codepage, and some IDF/component-manager output
+# contains emoji (the coprocessor-OTA example's cmake prints a magnifier glyph).
+# Without this the build dies with:
+#   UnicodeEncodeError: 'gbk' codec can't encode character '\U0001f50d'
+# followed by "RuntimeError: Event loop is closed" -- which looks like a build
+# error but is purely a console-encoding problem.
+$env:PYTHONIOENCODING  = "utf-8"
+$env:PYTHONUTF8        = "1"
+
 $env:IDF_PATH          = "D:\esp32\Espressif\frameworks\esp-idf-v5.5.4"
 $env:IDF_TOOLS_PATH    = "D:\esp32\Espressif"
 $env:IDF_GITHUB_ASSETS = "dl.espressif.cn/github_assets"

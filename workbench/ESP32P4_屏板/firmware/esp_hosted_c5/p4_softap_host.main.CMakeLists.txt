@@ -1,0 +1,6 @@
+idf_component_register(SRCS "softap_example_main.c"
+                    REQUIRES esp_hosted
+                    # LOCAL: + esp_netif/esp_timer/lwip for the MJPEG TCP sink,
+                    # + esp_event (the example registers a Wi-Fi event handler).
+                    PRIV_REQUIRES esp_wifi nvs_flash esp_event esp_netif esp_timer lwip
+                    INCLUDE_DIRS ".")

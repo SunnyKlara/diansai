@@ -1,0 +1,41 @@
+### port=COM3 baud=115200  18:10:01
+### >>> <Ctrl-C>
+
+>>> 
+>>> ### >>> <CR>
+
+>>> ### >>> import network, os
+import network, os
+>>> ### >>> print("DEVLIST", network.get_dev_list())
+print("DEVLIST", network.get_dev_list())
+DEVLIST ['w0', 'w1']
+>>> ### >>> print("DEV", os.listdir("/dev"))
+print("DEV", os.listdir("/dev"))
+DEV ['w1', 'w0', 'ap', 'sta', 'ttyGS0', 'ai_2d_device', 'gnne_device', 'vg_lite', 'nonai_2d_device', 'pm', 'vivdw200', 'dpu_device', 'vicap_device', 'connector', 'vo_device', 'acodec_device', 'adec_device', 'aenc_device', 'ao_device', 'ai_device', 'vdec_device', 'venc_device', 'gsdma_device', 'vvo_device', 'vvi_device', 'vicap', 'vivisp0', 'sensor_gc2093_csi2', 'sd12', 'sd11', 'sd10', 'sd1', 'vb_device', 'sys', 'mmz_userdev', 'log', 'canmv_misc', 'netmgmt', 'onewire', 'ws2812', 'shm', 'mem', 'random', 'urandom', 'zero', 'null', 'ptmx', 'ota', 'regulator_kpu', 'regulator_cpu', 'watchdog1', 'hwtimer5', 'hwtimer4', 'hwtimer3', 'hwtimer2', 'hwtimer1', 'hwtimer0', 'gpio', 'fft', 'i2c4', 'i2c3', 'i2c2', 'i2c1', 'i2c0', 'adc', 'spi2', 'spi1', 'spi0', 'ts', 'pwm', 'console', 'uart4', 'uart3', 'uart2', 'uart1', 'uart0', 'aes', 'hwrng', 'pufs', 'hash', 'rtc', 'pmu_pwrkey']
+>>> ### >>> try:
+try:
+...     ### >>>     w = network.WLAN(network.STA_IF)
+    w = network.WLAN(network.STA_IF)
+...         ### >>>     print("WLAN_OBJ ok", w)
+    print("WLAN_OBJ ok", w)
+...             ### >>> except Exception as e:
+except Exception as e:
+...                 ### >>>     print("WLAN_OBJ FAIL", repr(e))
+    print("WLAN_OBJ FAIL", repr(e))
+...                     ### >>> try:
+try:
+...                         ### >>>     print("ACTIVE_BEFORE", w.active())
+    print("ACTIVE_BEFORE", w.active())
+...                             ### >>> except Exception as e:
+except Exception as e:
+...                                 ### >>>     print("ACTIVE_BEFORE FAIL", repr(e))
+    print("ACTIVE_BEFORE FAIL", repr(e))
+...                                     ### >>> try:
+try:
+...                                         ### >>>     print("ACTIVE_SET", w.active(True))
+    print("ACTIVE_SET", w.active(True))
+...                                             ### >>> except Exception as e:
+except Exception as e:
+...                                                 ### >>>     print("ACTIVE_SET FAIL", repr(e))
+    print("ACTIVE_SET FAIL", repr(e))
+...                                                     

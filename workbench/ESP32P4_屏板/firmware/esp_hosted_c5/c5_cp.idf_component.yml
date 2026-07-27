@@ -1,0 +1,7 @@
+dependencies:
+  espressif/esp_hosted:
+    # pinned on purpose: 3.0.x is the first line that lists esp32c5 in .targets,
+    # and '*' would silently drift on the next release
+    version: '3.0.5'
+  idf:
+    version: '>=5.5'
