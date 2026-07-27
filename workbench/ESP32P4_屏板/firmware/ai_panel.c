@@ -16,6 +16,8 @@
 
 #include "imu_qmi8658.h"
 #include "sdcard.h"
+#include "jpeg_view.h"
+#include "video_stream.h"
 
 static const char *TAG = "ai_panel";
 
@@ -59,6 +61,8 @@ static lv_obj_t *s_bar_beat;
 static lv_obj_t *s_dot;
 static lv_obj_t *s_lbl_imu;
 static lv_obj_t *s_lbl_sd;
+static lv_obj_t *s_lbl_video;
+static lv_obj_t *s_canvas;
 #if AI_PANEL_BL_TEST
 static lv_obj_t *s_lbl_bl;
 
@@ -183,12 +187,42 @@ static void tick_cb(lv_timer_t *t)
         }
     }
 
+    // 无线图传状态每 300ms 刷一次（fps/码率本身是 1s 窗口算出来的，刷更快没信息量）
+    if (ticks % 3 == 0) {
+        video_stats_t v;
+        video_stream_get_stats(&v);
+        if (v.stream_up) {
+            lv_label_set_text_fmt(s_lbl_video,
+                                  "WIRELESS VIDEO  %s <- %s   %lu.%lu fps  %lu.%02lu Mbps  "
+                                  "jpeg %lu B  hw decode %lu us   frames %lu  bad %lu  dec_fail %lu",
+                                  v.ip, v.gw,
+                                  (unsigned long)(v.fps_x10 / 10), (unsigned long)(v.fps_x10 % 10),
+                                  (unsigned long)(v.mbps_x100 / 100), (unsigned long)(v.mbps_x100 % 100),
+                                  (unsigned long)v.last_len, (unsigned long)v.dec_us,
+                                  (unsigned long)v.frames, (unsigned long)v.bad,
+                                  (unsigned long)v.decode_fail);
+            lv_obj_set_style_text_color(s_lbl_video, lv_color_hex(0x00ffc8), 0);
+        } else {
+            lv_label_set_text_fmt(s_lbl_video,
+                                  "WIRELESS VIDEO  %s   (link %s, frames %lu, redials %lu)",
+                                  v.note, v.link_up ? "UP" : "down",
+                                  (unsigned long)v.frames, (unsigned long)v.reconnects);
+            lv_obj_set_style_text_color(s_lbl_video, lv_color_hex(0xffd166), 0);
+        }
+    }
+
     // SD 每 1s 刷一次（等 app_main 那边测速跑完）
     if (ticks % 10 == 0) {
         const sdcard_info_t *si = sdcard_info();
         const sdcard_bench_t *sb = sdcard_bench_result();
         if (!si->mounted) {
+#if P4_ENABLE_SDCARD
             lv_label_set_text(s_lbl_sd, "SD   not mounted - no card inserted?");
+#else
+            lv_label_set_text(s_lbl_sd,
+                              "SD   OFF in this build - SDMMC slot0(card) vs C5 SDIO slot1(radio) "
+                              "coexistence NOT yet verified; see sdcard.h");
+#endif
         } else if (sb->done) {
             lv_label_set_text_fmt(s_lbl_sd,
                                   "SD   %s  %llu MB  %d kHz  %d-line   |   "
@@ -373,8 +407,43 @@ void ai_panel_create(void)
     lv_obj_align(lbl_bl_fact, LV_ALIGN_TOP_LEFT, 26, 340);
 #endif
 
+    // ---- 方案 D：无线图传实时上屏 ----------------------------------------
+    // 画面区用 lv_canvas 而不是 lv_image：canvas 就是为「这块内存是我的、你照着画」
+    // 设计的，lv_canvas_set_buffer 还会自己把旧 src 的图像缓存 drop 掉，
+    // 省得去猜 LVGL 什么时候会把上一帧喂回来。
+    // 屏是 1280x452、帧是 640x480 => 底部约 28 行被裁（预期行为，不是 bug）；
+    // x=640 正好让画面右对齐、左半屏留给文字。
+    {
+        // 开机先解一次「固件里嵌的那张 K230 真帧」：网络还没连上时屏上就有图，
+        // 而且这一张能单独判定「解码器本身好不好」——把网络这个变量摘出去。
+        const bool jpg_ok = jpeg_view_init();
+        const lv_image_dsc_t *dsc = jpeg_view_dsc();
+
+        s_lbl_video = lv_label_create(scr);
+        lv_obj_set_style_text_font(s_lbl_video, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_color(s_lbl_video, lv_color_hex(0x8899aa), 0);
+        lv_obj_align(s_lbl_video, LV_ALIGN_TOP_LEFT, 26, 396);
+        lv_label_set_text_fmt(s_lbl_video, "WIRELESS VIDEO  starting...   "
+                                           "(embedded-frame decode self-test: %s %s)",
+                              jpg_ok ? "PASS" : "FAIL", jpeg_view_status());
+
+        s_canvas = lv_canvas_create(scr);
+        lv_obj_align(s_canvas, LV_ALIGN_TOP_LEFT, 640, 0);
+        if (dsc) {
+            // 占位画面 = 那张嵌入帧。第一帧无线帧到达后就被换掉。
+            lv_canvas_set_buffer(s_canvas, (void *)dsc->data,
+                                 (int32_t)dsc->header.w, (int32_t)dsc->header.h,
+                                 LV_COLOR_FORMAT_RGB565);
+        }
+    }
+
     lv_timer_create(tick_cb, 100, NULL);
 
     ESP_LOGI(TAG, "AI verification panel created (build %s %s), bl_test=%d",
              __DATE__, __TIME__, AI_PANEL_BL_TEST);
+}
+
+lv_obj_t *ai_panel_video_canvas(void)
+{
+    return s_canvas;
 }

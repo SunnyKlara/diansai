@@ -12,6 +12,17 @@
 
 #include "esp_err.h"
 
+// ⚠️ 合入无线图传（方案 D）后 microSD 默认关闭，改 1 可开回来。
+//
+// 原因：卡走 SDMMC **slot0**，而板载 ESP32-C5 协处理器走同一个 SDMMC 控制器的
+// **slot1**（CLK18/CMD19/D0-D3=14..17）。「两个 slot 能不能同时用」在本板上
+// **未验证** —— 之前 sdkconfig 里那句"把 C5 放 slot1 就能和 SD 卡共存"是我自己
+// 写的推断，不是实测结论。无线图传是主线，不能让一个未验证的共存假设当它的
+// 前置变量；等图传稳定了再单独验共存（那是一次干净的单变量实验）。
+#ifndef P4_ENABLE_SDCARD
+#define P4_ENABLE_SDCARD 0
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

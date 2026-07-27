@@ -1,0 +1,30 @@
+menu "P4 wireless video (plan D)"
+
+    config P4V_WIFI_SSID
+        string "SSID of the AP to join (the K230 SoftAP)"
+        default "K230_AP"
+        help
+            Topology C: the K230 is the access point and the TCP video server,
+            the P4 (through the on-board ESP32-C5 over SDIO) is the station and
+            the client. Real value is set in sdkconfig.defaults.
+
+    config P4V_WIFI_PASSWORD
+        string "PSK of that AP"
+        default ""
+        help
+            WPA2 pre-shared key. Kept out of the repo: workbench/esp32p4/ is
+            gitignored, and the in-repo evidence copies carry a placeholder.
+
+    # 刻意没有 "max retry" 这一项：本固件永不放弃重连（K230 可能后开机或中途重启，
+    # 不该要求人去重新上电 P4）。屏上那行状态会一直显示当前在等什么。
+
+    config P4V_PING_ON_BOOT
+        bool "ICMP-ping the gateway once after DHCP"
+        default y
+        help
+            Costs about a second at boot and prints one grep-able
+            "PING SUMMARY ... -> PING_OK" line, which is the same verdict format
+            the standalone p4_sta_host build prints. Cheap way to tell
+            "radio link is fine, the server is not up" from "radio link is down".
+
+endmenu

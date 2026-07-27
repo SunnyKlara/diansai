@@ -52,3 +52,43 @@ powershell -File ..\..\tools\hosted_bringup.ps1 -Project p4_sta_host
 | `boot_log_sta_ping_PASS_2026-07-27.txt` | 真机证据 | `PING SUMMARY tx=5 rx=5 loss=0% -> PING_OK` |
 
 > 上游例程为 Apache-2.0（Espressif），`main.c` 保留原始版权头。
+
+---
+
+## 附：`p4_lcd` 合并固件（收帧 + 硬件解码 + 上屏）的重建差异
+
+`p4_lcd` 是屏工程，本体也在 `workbench/esp32p4/`（不入库）。方案 D 最后一段把无线收帧合进了它，
+所以这里多存一组 `p4_lcd.*` 前缀的文件。**基线**：屏工程原始的 6 个原创源码在 `../`
+（`ai_panel.{c,h}` / `imu_qmi8658.{c,h}` / `sdcard.{c,h}`），上游差异在 `../upstream_local.patch`。
+
+```powershell
+# 放回顺序：先按 ../../README.md §六 把屏工程重建出来，再覆盖下面这些
+copy p4_lcd.sdkconfig.defaults       ..\..\..\esp32p4\p4_lcd\sdkconfig.defaults
+copy p4_lcd.main.c                   ..\..\..\esp32p4\p4_lcd\main\main.c
+copy p4_lcd.main.CMakeLists.txt      ..\..\..\esp32p4\p4_lcd\main\CMakeLists.txt
+copy p4_lcd.main.idf_component.yml   ..\..\..\esp32p4\p4_lcd\main\idf_component.yml
+copy p4_lcd.main.Kconfig.projbuild   ..\..\..\esp32p4\p4_lcd\main\Kconfig.projbuild
+copy p4_lcd.jpeg_view.c              ..\..\..\esp32p4\p4_lcd\main\jpeg_view.c
+copy p4_lcd.jpeg_view.h              ..\..\..\esp32p4\p4_lcd\main\jpeg_view.h
+copy p4_lcd.video_stream.c           ..\..\..\esp32p4\p4_lcd\main\video_stream.c
+copy p4_lcd.video_stream.h           ..\..\..\esp32p4\p4_lcd\main\video_stream.h
+copy ..\ai_panel.c ..\ai_panel.h ..\sdcard.c ..\sdcard.h ..\imu_qmi8658.c ..\imu_qmi8658.h ^
+     ..\..\..\esp32p4\p4_lcd\main\
+# 还要把 K230 编码器产出的那张真帧放回去（EMBED_FILES 要它，缺了编不过）：
+#   ..\..\..\esp32p4\p4_lcd\main\k230_frame1.jpg  <- k230_jpeg_frame1_PASS_*.txt 里的 base64 解出来
+powershell -File ..\..\tools\build_p4.ps1        # ⛔ 永远不要对 p4_lcd 跑 set-target
+```
+
+| 文件 | 是什么 |
+|---|---|
+| `p4_lcd.video_stream.{c,h}` | **本役新增**：WiFi STA(经 esp_hosted 到 C5) → TCP 拉 `'JF'` 分帧 → 硬件 JPEG 解码 → 双缓冲挂到 `lv_canvas`。解码引擎建一次复用；永不放弃重连 |
+| `p4_lcd.main.Kconfig.projbuild` | **本役新增**：`P4V_WIFI_SSID` / `P4V_WIFI_PASSWORD` / `P4V_PING_ON_BOOT` |
+| `p4_lcd.sdkconfig.defaults` | 屏配置 + **本役新增的 esp_hosted 块**（与 `p4_sta_host.sdkconfig.defaults` 同源，一字未改）。**PSK 已抹成 `<K230_AP_PSK>`** |
+| `p4_lcd.main.c` | 第 7 步起 `video_stream_start(ai_panel_video_canvas())`；microSD 按 `P4_ENABLE_SDCARD` 编译期关闭 |
+| `p4_lcd.main.CMakeLists.txt` | `+video_stream.c`、`REQUIRES esp_hosted`、`PRIV_REQUIRES +esp_wifi nvs_flash esp_event esp_netif lwip` |
+| `p4_lcd.main.idf_component.yml` | 屏依赖 + `esp_hosted 3.0.5` / `esp_wifi_remote`（与 `p4_sta_host` 保持逐字一致） |
+| `p4_lcd.jpeg_view.{c,h}` | 嵌入帧的一次性解码（现在的角色：开机自检 + 网络没通时的占位画面） |
+| `k230_ap_stream_view.py` | K230 侧长跑版推流（180s + 每 2s 进度），给人眼看屏用；`k230_ap_stream.py` 是 20s 的验收版 |
+
+> ⚠️ **合并固件端到端未验证**：编译烧录都过了，但首次上板约 4 分钟后 P4 的 USB 口整个掉了（疑供电）。
+> 判据与后续动手步骤见 [`../../README.md` §10.11](../../README.md)。

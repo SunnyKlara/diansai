@@ -1,0 +1,22 @@
+dependencies:
+  # ST7703 720x720 MIPI-DSI 面板驱动
+  waveshare/esp_lcd_st7703: "*"
+  # ST7701 480x480 MIPI-DSI 面板驱动（2.76 寸）
+  espressif/esp_lcd_st7701: "*"
+  # LVGL 图形栈 + ESP LVGL 移植层 + GT911 触摸
+  lvgl/lvgl: "9.5.0"
+  espressif/esp_lvgl_port: "~2.7.0"
+  espressif/esp_lcd_touch_gt911: "*"
+  # 方案 D 无线半边：板载 ESP32-C5 当协处理器，主机侧走 esp_hosted + esp_wifi_remote。
+  # 版本钉死 3.0.5：必须与 C5 上跑的协处理器固件同一版；且 2.x 的 targets 里没有
+  # esp32c5。这两个依赖与 p4_sta_host/main/idf_component.yml 保持逐字一致。
+  espressif/esp_hosted:
+    version: '3.0.5'
+  espressif/esp_wifi_remote:
+    rules:
+    - if: target in [esp32p4, esp32h2]
+    - if: idf_version <6.1
+    version: '>=1.3.1'
+  idf:
+    # esp_hosted 3.0.5 要求 >=5.5（本机 v5.5.4）
+    version: ">=5.5"
