@@ -17,7 +17,7 @@ gc.collect()
 print("LINK mem_free=%d" % gc.mem_free())
 
 SSID   = "P4_STREAM"
-KEY    = "p4stream2026"
+KEY    = "<AP_PSK>"
 HOST   = "192.168.7.1"   # AP moved off 192.168.4.x on purpose (see softap_example_main.c)
 PORT   = 5000
 FRAME  = 40 * 1024          # ~ a 640x480 JPEG at decent quality

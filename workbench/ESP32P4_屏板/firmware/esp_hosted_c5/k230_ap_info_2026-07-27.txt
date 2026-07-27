@@ -1,0 +1,5 @@
+﻿  AP config ok ssid=K230_AP
+  AP info -> {"ssid":"K230_AP", "bssid":A4:E8:8D:1A:B8:90, "channel":6, "rssi":0, "security":"SECURITY_WPA2_AES_PSK", "band":"2.4G", "hidden":0}
+  AP status -> True
+  AP ifconfig -> ('192.168.169.1', '255.255.255.0', '192.168.169.1', '192.168.169.1')
+  AP active -> True

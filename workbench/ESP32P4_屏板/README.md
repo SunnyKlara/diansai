@@ -653,3 +653,46 @@ LVGL v9 侧：填 `lv_image_dsc_t`（`header.magic = LV_IMAGE_HEADER_MAGIC` / `c
 
 **⬜ 还差的唯一一环就是网络那一跳**（§10.5，等 C5 OTA）。
 **⬜ 上屏效果待人眼确认**：屏上应出现 `JPEG HW DECODE: PASS 640x480 ...` 绿字 + 右侧一张照片（放在 x=620，屏高 452 < 图高 480，**底部约 28 行会被裁掉**属预期）。若照片红蓝互换，把 `jpeg_view.c` 里 `.rgb_order` 从 `_BGR` 改 `_RGB` 即可（一行）。
+
+### 10.10 🎉 方案 D 数据通路打通：**真相机视频 1025 帧过无线，零坏帧**（2026-07-27）
+
+**结论先行：把"谁当 AP"翻过来就通了 —— 不需要先给 C5 做 OTA。**
+
+| 拓扑 | 结果 |
+|---|---|
+| A：P4/C5 当 **AP** + K230 当 STA 主动连 | ❌ 关联时好时坏、TCP `ENOTCONN`（见 §10.5） |
+| B：P4/C5 当 AP，**P4 主动外连** K230 的 server | ❌ 关联本身就上不去，没走到 TCP |
+| **C：K230 当 AP + server，P4 当 STA + client** | ✅ **全通** |
+
+**为什么翻转有效（有实测证据，不是运气）**：P4 自己的日志显示，它当 AP 时每 **~15.58 s** 成对出现 `WIFI_EVENT_HOME_CHANNEL_CHANGE`（实测间隔 15584 / 15580 / 15585 / 15585 ms），**这个 AP 在周期性离开自己的信道**，而我们没让它这么干 —— station 想关联时它常常不在。而 **P4 当 STA 的路径早就被证明过**（§9.7 关联 ESP-01S 的 AP + ping 5/5）。⇒ 把不可靠的那一侧从关键路径上拿掉。
+
+**拓扑 C 的三步实测**：
+
+```
+① K230 起 AP（k230_ap_up.py）
+   AP info -> ssid=K230_AP bssid=A4:E8:8D:1A:B8:90 channel=6 security=SECURITY_WPA2_AES_PSK band=2.4G
+   AP ifconfig -> ('192.168.169.1', '255.255.255.0', '192.168.169.1', '192.168.169.1')
+
+② P4 当 STA 关联 + ping（p4_sta_host）
+   got ip:192.168.169.2 gw:192.168.169.1 mask:255.255.255.0     <- K230 的 AP 真的发了 DHCP 租约
+   PING SUMMARY tx=5 rx=5 loss=0% duration=14 ms -> PING_OK      <- 且在 K230 自己的网段, 无歧义
+
+③ 真相机视频（k230_ap_stream.py 推 / p4_sta_host 的 video_client 收）
+   K230 发: STREAM sent 1025 frames 7759967 bytes in 20009 ms -> 51.23 fps  3.10 Mbps   RESULT: PASS
+   P4  收: VIDEO first frame 6616 B jpeg_markers=OK
+           VIDEO 57 fps | 3.33 Mbps | frame 7283..7322 B | total 977
+           VIDEO link closed after 1025 frames (bad=0)           <- 1025 发 1025 收, 零坏帧
+```
+
+**⇒ 这条链路现在是真的**：K230 摄像头 → 硬件 JPEG 编码 → WiFi(K230 AP) → C5 → SDIO → P4 → `'JF'`+长度分帧解析 → 校验 `FFD8..FFD9`。前一轮更长的一次跑到 **1050 帧同样零坏帧**。
+
+**一个重要的数据修正**：这次看到单帧最大 **58315 B**（画面变化剧烈时），坐实了 §10.8 那句"7KB/帧是下限不是代表值"。⇒ **接收缓冲不能按 7KB 设计**；现在按 64KB 分配（并做了 64→32→16KB 的降级，见下）。
+
+**四个坑（都花了真金白银，已入坑库）**：
+1. **⭐ 我的抓日志工具默认会 RTS 复位板子，把正在传输的连接掐了** —— 第一次跑时 K230 明明报 `sent 374 frames ... 33.34 fps`、P4 侧却只有一串 `connect failed errno=104`。原因是我在流传输中途用默认参数抓 P4 日志 ⇒ 板子重启、连接被 reset。**测量工具本身改变了被测系统**。修法：观察正在运行的系统一律 `-NoReset`。
+2. **码率公式错 100 倍，靠"两端各自独立测同一量"才发现** —— P4 侧打出 `440 Mbps`（这条链路物理上不可能），而 K230 侧说 3.12 Mbps。`bytes*800/ms/10` 应为 `bytes*8/(ms*10)`。**⇒ 关键指标要有两个独立来源；只有一个数时，先问"它物理上可能吗"。**
+3. **MicroPython 的监听 socket 默认非阻塞** —— 裸 `srv.accept()` 立刻抛 `OSError(11)/EAGAIN` 而不是等。修法：`srv.setblocking(True)` + 循环捕获 EAGAIN 重试（带总超时）。
+4. **`malloc(128KB)` 在这个工程里失败** —— 它没开 PSRAM，WiFi+lwIP 已吃掉大部分内部堆。修法：**64→32→16KB 逐级降级并打印实际拿到多少**（`VIDEO frame buffer 65536 B (free heap 242560)`），而不是为一个远大于载荷的缓冲直接放弃。
+
+**⬜ 还差最后一段**：把接收到的帧喂给 §10.9 已验证的硬件 JPEG 解码器并上屏 —— 两侧都已单独验过（解码 3.31ms/帧、接收 0 坏帧），**只剩把 `p4_sta_host` 的接收循环和 `p4_lcd` 的解码显示合到一个工程里**。
+**⬜ C5 OTA 已不再是前置**（但仍值得做：升到 3.0.5 才能吃到 SW_AGGR 吞吐、并修掉 §10.5 那些 RPC 返回垃圾的问题）。

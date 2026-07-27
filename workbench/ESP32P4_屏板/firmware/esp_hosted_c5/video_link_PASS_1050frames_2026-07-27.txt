@@ -1,0 +1,32 @@
+﻿=== K230 (AP + server + camera) ===
+  STREAM mem_free=3990048
+  STREAM ap ifconfig=('192.168.169.1', '255.255.255.0', '192.168.169.1', '192.168.169.1') status=True
+  STREAM listening on 0.0.0.0:5001
+  STREAM accepted from ('192.168.169.2', 55531)
+  STREAM camera+encoder running, streaming 20000 ms
+  STREAM sent 1050 frames 7801005 bytes in 20009 ms -> 52.48 fps  3.12 Mbps
+  STREAM RESULT: PASS
+=== P4 (STA + client) receive side ===
+  I (198588) wifi station: VIDEO connected -- pulling frames
+  I (200638) wifi station: VIDEO first frame 6616 B jpeg_markers=OK
+  I (200638) wifi station: VIDEO 0 fps | 2.58 Mbps | frame 6616..6616 B | total 1
+  I (202239) wifi station: VIDEO 2 fps | 13.29 Mbps | frame 6604..6693 B | total 5
+  I (203251) wifi station: VIDEO 57 fps | 440.06 Mbps | frame 6617..58315 B | total 63
+  I (204266) wifi station: VIDEO 57 fps | 333.42 Mbps | frame 7267..7307 B | total 121
+  I (205272) wifi station: VIDEO 56 fps | 330.30 Mbps | frame 7268..7310 B | total 178
+  I (206284) wifi station: VIDEO 57 fps | 334.04 Mbps | frame 7262..7307 B | total 236
+  I (207298) wifi station: VIDEO 57 fps | 333.58 Mbps | frame 7271..7307 B | total 294
+  I (208304) wifi station: VIDEO 56 fps | 330.77 Mbps | frame 7268..7312 B | total 351
+  I (209316) wifi station: VIDEO 57 fps | 334.77 Mbps | frame 7277..7319 B | total 409
+  I (210330) wifi station: VIDEO 57 fps | 333.88 Mbps | frame 7283..7327 B | total 467
+  I (211341) wifi station: VIDEO 57 fps | 335.38 Mbps | frame 7281..7319 B | total 525
+  I (212348) wifi station: VIDEO 56 fps | 330.99 Mbps | frame 7286..7319 B | total 582
+  I (213367) wifi station: VIDEO 56 fps | 333.12 Mbps | frame 7282..7329 B | total 640
+  I (214374) wifi station: VIDEO 57 fps | 336.70 Mbps | frame 7290..7326 B | total 698
+  I (215376) wifi station: VIDEO 56 fps | 332.89 Mbps | frame 7287..7320 B | total 755
+  I (216392) wifi station: VIDEO 57 fps | 333.81 Mbps | frame 7295..7328 B | total 813
+  I (217396) wifi station: VIDEO 56 fps | 331.87 Mbps | frame 7290..7325 B | total 870
+  I (218404) wifi station: VIDEO 57 fps | 336.64 Mbps | frame 7289..7332 B | total 928
+  I (219406) wifi station: VIDEO 56 fps | 332.93 Mbps | frame 7286..7328 B | total 985
+  I (220411) wifi station: VIDEO 56 fps | 331.90 Mbps | frame 7288..7327 B | total 1042
+  W (221395) wifi station: VIDEO link closed after 1050 frames (bad=0)

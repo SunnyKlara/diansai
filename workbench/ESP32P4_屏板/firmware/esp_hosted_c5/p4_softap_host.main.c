@@ -31,6 +31,7 @@
 #define AP_IP_ADDR        "192.168.7.1"  /* deliberately NOT 192.168.4.x -- see wifi_init_softap */
 #define MAX_FRAME_BYTES   (128 * 1024)   /* 640x480 JPEG is ~40-60 kB; 128 kB is slack */
 static void video_sink_task(void *arg);
+static void video_client_task(void *arg);
 static void sta_watch_task(void *arg);
 
 /* The examples use WiFi configuration that you can set via project configuration menu.
@@ -171,15 +172,28 @@ void wifi_init_softap(void)
 static void sink_stats(uint32_t frames, uint64_t bytes, uint32_t win_ms,
                        uint32_t fmin, uint32_t fmax)
 {
-    /* bytes*8/1000 / win_ms = kbit/ms = Mbit/s */
-    uint32_t mbps_x100 = (uint32_t)((bytes * 800ULL) / (win_ms ? win_ms : 1) / 10ULL);
+    /* bits / ms = kbit/s  =>  Mbps*100 = bytes*8 / (ms*10).
+     * (The first version was 100x too big; see the note in p4_sta_host/main/main.c.) */
+    const uint32_t ms = win_ms ? win_ms : 1;
+    uint32_t mbps_x100 = (uint32_t)((bytes * 8ULL) / (10ULL * ms));
     ESP_LOGI(TAG, "SINK %lu frames in %lu ms -> %lu.%02lu fps | %lu.%02lu Mbps | frame %lu..%lu B",
              (unsigned long)frames, (unsigned long)win_ms,
-             (unsigned long)(frames * 1000UL / (win_ms ? win_ms : 1)),
-             (unsigned long)((frames * 100000UL / (win_ms ? win_ms : 1)) % 100),
+             (unsigned long)(frames * 1000UL / ms),
+             (unsigned long)((frames * 100000UL / ms) % 100),
              (unsigned long)(mbps_x100 / 100), (unsigned long)(mbps_x100 % 100),
              (unsigned long)fmin, (unsigned long)fmax);
 }
+
+/* LOCAL: which side opens the TCP connection is a real experiment, not a taste.
+ * K230 -> P4 (K230 connects) reproducibly dies with ENOTCONN on the K230 while
+ * association and DHCP are fine. Flipping it (P4 connects out to a server on the
+ * K230) tests whether the DATA PATH works at all on the current mismatched stack:
+ *   - works  => plan D can proceed now, no co-processor OTA needed first
+ *   - fails  => the path itself is broken, and the OTA really is the prerequisite
+ * Both directions are compiled in; the client just retries in the background. */
+#define PEER_PORT        5001
+#define PEER_IP_FIRST    2      /* the AP's DHCP pool starts at .2, but don't assume */
+#define PEER_IP_LAST     6
 
 static bool read_exact(int sock, uint8_t *dst, size_t want)
 {
@@ -192,6 +206,98 @@ static bool read_exact(int sock, uint8_t *dst, size_t want)
         got += (size_t)n;
     }
     return true;
+}
+
+/* LOCAL: the frame-reading loop, shared by both directions (server-accept and
+ * client-connect) so the two experiments differ ONLY in how the socket was made. */
+static void drain_frames(int cs, uint8_t *frame, const char *who)
+{
+    uint32_t frames = 0, fmin = 0xFFFFFFFF, fmax = 0, bad = 0;
+    uint64_t bytes = 0;
+    int64_t t_win = esp_timer_get_time();
+
+    while (1) {
+        uint8_t hdr[6];
+        if (!read_exact(cs, hdr, sizeof(hdr))) {
+            break;
+        }
+        if (hdr[0] != 'J' || hdr[1] != 'F') {
+            if (++bad < 5) {
+                ESP_LOGW(TAG, "%s bad magic %02x %02x -- stream desync", who, hdr[0], hdr[1]);
+            }
+            continue;
+        }
+        uint32_t len = (uint32_t)hdr[2] | ((uint32_t)hdr[3] << 8) |
+                       ((uint32_t)hdr[4] << 16) | ((uint32_t)hdr[5] << 24);
+        if (len == 0 || len > MAX_FRAME_BYTES) {
+            ESP_LOGE(TAG, "%s frame length %lu out of range (max %d) -- dropping link",
+                     who, (unsigned long)len, MAX_FRAME_BYTES);
+            break;
+        }
+        if (!read_exact(cs, frame, len)) {
+            break;
+        }
+        bool jpeg_ok = (frame[0] == 0xFF && frame[1] == 0xD8 &&
+                        frame[len - 2] == 0xFF && frame[len - 1] == 0xD9);
+        if (frames == 0) {
+            ESP_LOGI(TAG, "%s first frame %lu B jpeg_markers=%s",
+                     who, (unsigned long)len, jpeg_ok ? "OK" : "BAD");
+        } else if (!jpeg_ok && bad < 5) {
+            bad++;
+            ESP_LOGW(TAG, "%s frame %lu B without FFD8..FFD9", who, (unsigned long)len);
+        }
+
+        frames++;
+        bytes += len;
+        if (len < fmin) { fmin = len; }
+        if (len > fmax) { fmax = len; }
+
+        int64_t now = esp_timer_get_time();
+        if (now - t_win >= 1000000) {
+            sink_stats(frames, bytes, (uint32_t)((now - t_win) / 1000), fmin, fmax);
+            frames = 0; bytes = 0; fmin = 0xFFFFFFFF; fmax = 0;
+            t_win = now;
+        }
+    }
+    ESP_LOGW(TAG, "%s peer gone (bad_frames=%lu)", who, (unsigned long)bad);
+}
+
+/* LOCAL: direction B -- the P4 dials out to a server on the station. */
+static void video_client_task(void *arg)
+{
+    uint8_t *frame = malloc(MAX_FRAME_BYTES);
+    if (!frame) {
+        ESP_LOGE(TAG, "CLIENT cannot allocate frame buffer");
+        vTaskDelete(NULL);
+        return;
+    }
+    while (1) {
+        for (int host = PEER_IP_FIRST; host <= PEER_IP_LAST; host++) {
+            char ip[16];
+            snprintf(ip, sizeof(ip), "192.168.7.%d", host);
+            int cs = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+            if (cs < 0) {
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                continue;
+            }
+            struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+            setsockopt(cs, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+            struct sockaddr_in a = { 0 };
+            a.sin_family = AF_INET;
+            a.sin_port   = htons(PEER_PORT);
+            a.sin_addr.s_addr = inet_addr(ip);
+            if (connect(cs, (struct sockaddr *)&a, sizeof(a)) == 0) {
+                int one = 1;
+                setsockopt(cs, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+                struct timeval rtv = { .tv_sec = 10, .tv_usec = 0 };
+                setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, &rtv, sizeof(rtv));
+                ESP_LOGI(TAG, "CLIENT connected to %s:%d -- direction B works", ip, PEER_PORT);
+                drain_frames(cs, frame, "CLIENT");
+            }
+            close(cs);
+        }
+        vTaskDelay(pdMS_TO_TICKS(3000));
+    }
 }
 
 static void video_sink_task(void *arg)
@@ -235,58 +341,7 @@ static void video_sink_task(void *arg)
         }
         setsockopt(cs, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
         ESP_LOGI(TAG, "SINK client %s connected", inet_ntoa(peer.sin_addr));
-
-        uint32_t frames = 0, fmin = 0xFFFFFFFF, fmax = 0, bad = 0;
-        uint64_t bytes = 0;
-        int64_t t_win = esp_timer_get_time();
-
-        while (1) {
-            uint8_t hdr[6];
-            if (!read_exact(cs, hdr, sizeof(hdr))) {
-                break;
-            }
-            if (hdr[0] != 'J' || hdr[1] != 'F') {
-                if (++bad < 5) {
-                    ESP_LOGW(TAG, "SINK bad magic %02x %02x -- stream desync", hdr[0], hdr[1]);
-                }
-                continue;   /* byte-wise resync is not worth it; sender is ours */
-            }
-            uint32_t len = (uint32_t)hdr[2] | ((uint32_t)hdr[3] << 8) |
-                           ((uint32_t)hdr[4] << 16) | ((uint32_t)hdr[5] << 24);
-            if (len == 0 || len > MAX_FRAME_BYTES) {
-                ESP_LOGE(TAG, "SINK frame length %lu out of range (max %d) -- dropping link",
-                         (unsigned long)len, MAX_FRAME_BYTES);
-                break;
-            }
-            if (!read_exact(cs, frame, len)) {
-                break;
-            }
-            /* Sanity: a real JPEG starts FFD8 and ends FFD9. Cheap, and it catches
-             * "the bytes arrive but they are not what we think" before any decoder work. */
-            bool jpeg_ok = (frame[0] == 0xFF && frame[1] == 0xD8 &&
-                            frame[len - 2] == 0xFF && frame[len - 1] == 0xD9);
-            if (frames == 0) {
-                ESP_LOGI(TAG, "SINK first frame %lu B jpeg_markers=%s",
-                         (unsigned long)len, jpeg_ok ? "OK" : "BAD");
-            } else if (!jpeg_ok && bad < 5) {
-                bad++;
-                ESP_LOGW(TAG, "SINK frame %lu B without FFD8..FFD9", (unsigned long)len);
-            }
-
-            frames++;
-            bytes += len;
-            if (len < fmin) { fmin = len; }
-            if (len > fmax) { fmax = len; }
-
-            int64_t now = esp_timer_get_time();
-            if (now - t_win >= 1000000) {
-                sink_stats(frames, bytes, (uint32_t)((now - t_win) / 1000), fmin, fmax);
-                frames = 0; bytes = 0; fmin = 0xFFFFFFFF; fmax = 0;
-                t_win = now;
-            }
-        }
-
-        ESP_LOGW(TAG, "SINK client gone (bad_frames=%lu)", (unsigned long)bad);
+        drain_frames(cs, frame, "SINK");
         close(cs);
         close(ls);
     }
@@ -339,4 +394,8 @@ void app_main(void)
      * both candidate APs served 192.168.4.0/24, so even its IP proved nothing.
      * The AP knows the truth: ask it. */
     xTaskCreate(sta_watch_task, "sta_watch", 3072, NULL, 4, NULL);
+
+    /* LOCAL: direction-B experiment -- the P4 dials out to a server on the station,
+     * so both connection directions are exercised from one firmware. */
+    xTaskCreate(video_client_task, "video_client", 4096, NULL, 5, NULL);
 }

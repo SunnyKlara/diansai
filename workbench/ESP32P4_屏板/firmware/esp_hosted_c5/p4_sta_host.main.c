@@ -11,6 +11,7 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "esp_system.h"
+#include "esp_heap_caps.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -28,9 +29,31 @@
  * P4 -> SDIO -> C5 -> air path, which the video-streaming plan needs anyway.
  * -------------------------------------------------------------------------- */
 #include <inttypes.h>
+#include <errno.h>
+#include <stdlib.h>
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "ping/ping_sock.h"
 #include "lwip/inet.h"
+#include "lwip/sockets.h"
+
+/* ---- LOCAL: MJPEG receiver, topology C (K230 = AP + server, P4 = STA + client) --
+ * Measured on this hardware: with the P4/C5 as SoftAP the association is unreliable
+ * (the AP emits WIFI_EVENT_HOME_CHANNEL_CHANGE pairs every ~15.58 s, i.e. it keeps
+ * leaving its own channel) and the K230's outgoing connect() dies with ENOTCONN.
+ * With the roles flipped -- K230 as AP -- the P4 associates, gets a DHCP lease
+ * (192.168.169.2) and pings the K230 5/5. So the data path is fine; only the
+ * ESP-side SoftAP was not. Hence: the P4 dials out to the K230 and pulls frames.
+ * Frame format: 'J' 'F' | uint32 LE length | JPEG bytes                          */
+#define VIDEO_PORT       5001
+/* MEASURED: malloc(128 KiB) fails in this project -- it has no PSRAM enabled and the
+ * Wi-Fi + lwIP stacks have already taken most of the internal heap. Real frames from
+ * the K230 are ~7 KiB (640x480 JPEG), so try big, then settle for smaller and SAY
+ * which one we got, instead of dying on a buffer far larger than the payload. */
+#define FRAME_BUF_TRY_1  (64 * 1024)
+#define FRAME_BUF_TRY_2  (32 * 1024)
+#define FRAME_BUF_TRY_3  (16 * 1024)
+static void video_client_task(void *arg);
 
 /* The examples use WiFi configuration that you can set via project configuration menu
 
@@ -87,8 +110,8 @@ static int s_retry_num = 0;
  * ESP-01S SoftAP on the car (gateway 192.168.4.1, .2 is taken by the PC-side
  * module, so we take .3). Set STATIC_FALLBACK_ENABLE to 0 to test DHCP only. */
 #define STATIC_FALLBACK_ENABLE   1
-#define STATIC_FALLBACK_IP       "192.168.4.3"
-#define STATIC_FALLBACK_GW       "192.168.4.1"
+#define STATIC_FALLBACK_IP       "192.168.169.50"
+#define STATIC_FALLBACK_GW       "192.168.169.1"
 #define STATIC_FALLBACK_MASK     "255.255.255.0"
 #define DHCP_WAIT_MS             12000
 
@@ -303,6 +326,122 @@ void wifi_init_sta(void)
     }
 }
 
+/* ---- LOCAL ADDITION: pull MJPEG frames from the K230 and measure the link ---- */
+static bool rx_exact(int sock, uint8_t *dst, size_t want)
+{
+    size_t got = 0;
+    while (got < want) {
+        int n = recv(sock, dst + got, want - got, 0);
+        if (n <= 0) {
+            return false;
+        }
+        got += (size_t)n;
+    }
+    return true;
+}
+
+static void video_client_task(void *arg)
+{
+    size_t cap = 0;
+    uint8_t *frame = NULL;
+    const size_t tries[] = { FRAME_BUF_TRY_1, FRAME_BUF_TRY_2, FRAME_BUF_TRY_3 };
+    for (int i = 0; i < 3 && !frame; i++) {
+        frame = malloc(tries[i]);
+        if (frame) { cap = tries[i]; }
+    }
+    if (!frame) {
+        ESP_LOGE(TAG, "VIDEO no frame buffer at all (largest free block too small)");
+        vTaskDelete(NULL);
+        return;
+    }
+    ESP_LOGI(TAG, "VIDEO frame buffer %u B (free heap %lu)",
+             (unsigned)cap, (unsigned long)esp_get_free_heap_size());
+    char gw[16];
+    snprintf(gw, sizeof(gw), IPSTR, IP2STR(&s_gw_ip));
+
+    while (1) {
+        int cs = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+        if (cs < 0) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+        struct sockaddr_in a = { 0 };
+        a.sin_family      = AF_INET;
+        a.sin_port        = htons(VIDEO_PORT);
+        a.sin_addr.s_addr = inet_addr(gw);
+        ESP_LOGI(TAG, "VIDEO dialing %s:%d", gw, VIDEO_PORT);
+        if (connect(cs, (struct sockaddr *)&a, sizeof(a)) != 0) {
+            ESP_LOGW(TAG, "VIDEO connect failed errno=%d, retrying", errno);
+            close(cs);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+        int one = 1;
+        setsockopt(cs, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        struct timeval rtv = { .tv_sec = 10, .tv_usec = 0 };
+        setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, &rtv, sizeof(rtv));
+        ESP_LOGI(TAG, "VIDEO connected -- pulling frames");
+
+        uint32_t frames = 0, fmin = 0xFFFFFFFF, fmax = 0, bad = 0, total_frames = 0;
+        uint64_t bytes = 0;
+        int64_t t_win = esp_timer_get_time();
+        while (1) {
+            uint8_t hdr[6];
+            if (!rx_exact(cs, hdr, sizeof(hdr))) {
+                break;
+            }
+            if (hdr[0] != 'J' || hdr[1] != 'F') {
+                if (++bad < 5) {
+                    ESP_LOGW(TAG, "VIDEO bad magic %02x %02x", hdr[0], hdr[1]);
+                }
+                continue;
+            }
+            uint32_t len = (uint32_t)hdr[2] | ((uint32_t)hdr[3] << 8) |
+                           ((uint32_t)hdr[4] << 16) | ((uint32_t)hdr[5] << 24);
+            if (len == 0 || len > cap) {
+                ESP_LOGE(TAG, "VIDEO length %lu exceeds buffer %u -- raise FRAME_BUF_TRY_1 or lower the JPEG quality",
+                         (unsigned long)len, (unsigned)cap);
+                break;
+            }
+            if (!rx_exact(cs, frame, len)) {
+                break;
+            }
+            bool jpeg_ok = (frame[0] == 0xFF && frame[1] == 0xD8 &&
+                            frame[len - 2] == 0xFF && frame[len - 1] == 0xD9);
+            if (total_frames == 0) {
+                ESP_LOGI(TAG, "VIDEO first frame %lu B jpeg_markers=%s",
+                         (unsigned long)len, jpeg_ok ? "OK" : "BAD");
+            }
+            frames++; total_frames++;
+            bytes += len;
+            if (len < fmin) { fmin = len; }
+            if (len > fmax) { fmax = len; }
+
+            int64_t now = esp_timer_get_time();
+            if (now - t_win >= 1000000) {
+                uint32_t ms = (uint32_t)((now - t_win) / 1000);
+                /* bits / ms = kbit/s, so Mbps*100 = bytes*8 / (ms*10).
+                 * The first version was bytes*800/ms/10 = 100x too big and printed
+                 * "440 Mbps" over a link that physically cannot do it -- caught only
+                 * because the sender independently reported 3.12 Mbps. Always have a
+                 * second, independent measurement of the same quantity. */
+                uint32_t mbps_x100 = (uint32_t)((bytes * 8ULL) / (10ULL * ms));
+                ESP_LOGI(TAG, "VIDEO %lu fps | %lu.%02lu Mbps | frame %lu..%lu B | total %lu",
+                         (unsigned long)(frames * 1000UL / ms),
+                         (unsigned long)(mbps_x100 / 100), (unsigned long)(mbps_x100 % 100),
+                         (unsigned long)fmin, (unsigned long)fmax,
+                         (unsigned long)total_frames);
+                frames = 0; bytes = 0; fmin = 0xFFFFFFFF; fmax = 0;
+                t_win = now;
+            }
+        }
+        ESP_LOGW(TAG, "VIDEO link closed after %lu frames (bad=%lu)",
+                 (unsigned long)total_frames, (unsigned long)bad);
+        close(cs);
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+}
+
 void app_main(void)
 {
     //Initialize NVS
@@ -321,4 +460,11 @@ void app_main(void)
 
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
     wifi_init_sta();
+
+    /* LOCAL: only worth dialling out if we actually have a gateway to dial. */
+    if (s_gw_ip.addr != 0) {
+        xTaskCreate(video_client_task, "video_client", 4096, NULL, 5, NULL);
+    } else {
+        ESP_LOGW(TAG, "VIDEO not started -- no gateway address");
+    }
 }

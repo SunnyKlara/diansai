@@ -1,0 +1,9 @@
+﻿=== K230 sender ===
+  STREAM accepted from ('192.168.169.2', 54298)
+  STREAM sent 1025 frames 7759967 bytes in 20009 ms -> 51.23 fps  3.10 Mbps
+  STREAM RESULT: PASS
+=== P4 receiver (corrected Mbps) ===
+  ...
+  I (184481) wifi station: VIDEO 57 fps | 3.33 Mbps | frame 7283..7322 B | total 919
+  I (185492) wifi station: VIDEO 57 fps | 3.35 Mbps | frame 7285..7313 B | total 977
+  W (187233) wifi station: VIDEO link closed after 1025 frames (bad=0)
