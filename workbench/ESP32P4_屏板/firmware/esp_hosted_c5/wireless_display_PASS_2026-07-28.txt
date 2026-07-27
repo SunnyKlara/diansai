@@ -1,0 +1,57 @@
+方案 D 无线图传端到端真机证据（2026-07-28）
+
+验证边界
+- 机器可观测链路：PASS（K230→WiFi→ESP32-C5→SDIO→ESP32-P4→JPEG 硬解→LVGL canvas）。
+- 屏幕观感：待人眼确认（右半边是否实时变化、颜色是否正常、方向是否正确）。
+- P4 使用独立电脑 USB 口供电；K230=COM3，P4=COM7。
+- 本文件不含 WiFi PSK；仓库配置只允许使用 <K230_AP_PSK> 占位符。
+
+[30 秒独立 USB 启动日志原始行]
+I (916) eh_sdio: transport[host]: SDIO 4-bit 40000 kHz CLK=18 CMD=19 D0=14 D1=15 D2=16 D3=17 RESET=36
+I (1486) jpeg_view: JPEG_VIEW RESULT: PASS 640x480 6625B->614400B 3.35ms
+I (2653) eh_init_evt: slave chip id: 0x17 (esp32c5)
+I (3468) lvgl: FPS 60.5  (refreshes=121 in 2s, t=2s)
+I (3943) video: got ip:192.168.169.2 gw:192.168.169.1
+I (6943) video: PING SUMMARY tx=3 rx=3 loss=0% duration=9 ms -> PING_OK
+I (29487) lvgl: FPS 63.0  (refreshes=126 in 2s, t=28s)
+
+[K230 180 秒长跑原始行]
+VIEW t=179s  16.4 fps  2.40 Mbps  frame 57570B  sent 3039
+VIEW sent 3042 frames 56299775 bytes in 180024 ms -> 16.90 fps  2.50 Mbps
+VIEW RESULT: PASS
+
+[P4 长窗口末尾原始行]
+I (273250) video: 17.0 fps | 2.46 Mbps | frame 7196 B | decode 3495 us | total 2977 bad 0
+I (274284) video: 16.4 fps | 2.61 Mbps | frame 7189 B | decode 3723 us | total 2994 bad 0
+I (275345) video: 16.9 fps | 2.38 Mbps | frame 7211 B | decode 3615 us | total 3012 bad 0
+
+[不复位 P4 后的短跑首帧原始行]
+I (762779) video: connected -- pulling frames
+I (764947) video: first frame 5657 B, markers OK
+I (764951) video: 0.4 fps | 0.02 Mbps | frame 5657 B | decode 3290 us | total 3043 bad 0
+
+[短跑发送端原始行]
+STREAM accepted from ('192.168.169.2', 56817)
+STREAM sent 348 frames 6129356 bytes in 20035 ms -> 17.37 fps  2.45 Mbps
+STREAM RESULT: PASS
+
+帧数对账
+- P4 长窗口比 K230 推流结束早约 1.8 秒，所以日志只覆盖到 total=3012，不能据此判丢 30 帧。
+- P4 未复位；下一轮短跑第一帧完成后累计值为 total=3043，因此上一轮结束累计值必为 3042。
+- 发送端上一轮汇总为 3042 帧，故机器侧对账为 3042/3042，bad=0。
+
+锚定错误扫描（仅匹配固件日志行，避开 REPL 源码回显）
+- decode failed=0
+- lvgl lock timeout=0
+- panic=0
+- assert=0
+- brownout=0
+- link closed=0
+- K230 长跑 send error=0，VIEW FAIL=0
+
+待人眼确认
+1. 屏幕右半边画面是否持续实时变化？
+2. 颜色是否正常（无红蓝互换）？
+3. 方向是否正确（无镜像/旋转错误）？
+
+在以上三项得到人眼反馈前，不把“屏上观感”标为 PASS。
