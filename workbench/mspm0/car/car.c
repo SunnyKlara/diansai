@@ -123,36 +123,6 @@ static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v
 /* ==== 串口命令 ==== */
 static char cbuf[16];
 static int  clen = 0;
-static uint32_t g_cmd_rej = 0;      /* 被格式门拒掉的行数(遥测里可见=门在干活) */
-
-/* 命令健壮化(2026-07-27 加, 为"ESP-01S 无线遥测"铺路) —— 两层防护:
- *
- * 【层1: 上电静默窗 CMD_MUTE_MS】上电后头一段时间只读走 RX 字节、不解析。
- * 【层2: 严格格式门 cmd_format_ok】只接受 "<字母>[-][数字...]" 这一种形状(允许可选 '#' 前缀)。
- *
- * 起因(PC 侧回放实测, 见 esp_boot_risk.ps1 与证据
- *      ../../天猛星主板平台/无线遥测_ESP01S_boot字节证据.txt):
- *   把 ESP-01S 的 TXD 接到 MCU 的 UART RX 后, ESP 每次上电/掉压复位都会吐一段 boot 日志,
- *   里面的 "tail 0" / "tail 4" / "tail 0" 三行, 首字符正好是本固件的命令 't'(设定目标值)!
- *   parse_int(" 0") 遇空格即返回 0 => 每次 ESP 上电都会静默执行 3 次 "改目标 + reset_all_pid()",
- *   真车上表现为"跑着突然停/目标莫名归零", 而凶手在 ESP 的启动日志里, 查电机/编码器/PID 永远查不到。
- *   同段日志还含纯乱码行, 撞上 'x'/'y' 就是直接驱动电机。
- *
- * 为什么用"格式门"而不是"加 '#' 帧头":
- *   现有全部上位机脚本(uart_send / tune_step / pos_step / disturb_test / iloop / xtalk)发的都是
- *   严格的 "<字母><数字>" (m3 / t900 / p150 / z / ?), 所以格式门**向后 100% 兼容、脚本零改动**;
- *   而实测那段 boot 日志逐行都被它拒掉(每行都含空格或多余字母)。'#' 前缀仍被接受, 想再加固可随时切。
- */
-#define CMD_MUTE_MS   2000UL        /* 上电后静默期(ms): 覆盖 ESP boot 日志全程(实测 ~600ms 内结束) */
-
-static int cmd_format_ok(const char *s, int n)
-{
-    int i = 1;                                  /* s[0]=命令字母, 由 run_cmd 的 switch 认 */
-    if (n < 1) return 0;
-    if (i < n && s[i] == '-') i++;               /* 允许负数(如 x-300) */
-    for (; i < n; i++) { if (s[i] < '0' || s[i] > '9') return 0; }
-    return 1;
-}
 
 static int parse_int(const char *s, int n)
 {
@@ -171,9 +141,7 @@ static void print_status(void)
         uart_dbg_puts(" Ki*1e3="); uart_dbg_put_int((int)(gki[li] * 1000));
         uart_dbg_puts(" Kd*1e3="); uart_dbg_put_int((int)(gkd[li] * 1000));
     }
-    uart_dbg_puts(" (PWM_CAP="); uart_dbg_put_int(PWM_CAP); uart_dbg_puts("%)");
-    /* 被格式门拒掉的行数: 接了 ESP 之后每次 ESP 上电应看到它跳 ~20(=boot 日志行数), 是"门在干活"的证据 */
-    uart_dbg_puts(" rej="); uart_dbg_put_int((int)g_cmd_rej); uart_dbg_puts("\n");
+    uart_dbg_puts(" (PWM_CAP="); uart_dbg_put_int(PWM_CAP); uart_dbg_puts("%)\n");
 }
 /* IMU 验活读数(命令 'g'): 任何时候 5 秒问清"IMU 到底通不通"的常备命令。
  * 打印 WHO_AM_I(应=71=0x47) + 陀螺(0.01°/s) + 加速度(mg) + 温度(0.1℃) + |a| 与定轴提示。
@@ -278,20 +246,7 @@ static void poll_uart(void)
 {
     uint8_t ch;
     while (DL_UART_receiveDataCheck(DBG_UART_INST, &ch)) {
-        /* 层1: 上电静默窗——字节必须读走(否则 FIFO 里的旧字节会在解禁后被当命令解析), 但不入 buffer */
-        if (g_st < CMD_MUTE_MS * ST_PER_MS) { clen = 0; continue; }
-
-        if (ch == '\r' || ch == '\n') {
-            if (clen > 0) {
-                char *p = cbuf;
-                int   n = clen;
-                if (p[0] == '#') { p++; n--; }       /* 可选帧头, 想加固时上位机加 '#' 即可 */
-                /* 层2: 严格格式门——形状不对的整行丢弃(ESP boot 日志/乱码全落这里) */
-                if (n > 0 && cmd_format_ok(p, n)) run_cmd(p, n);
-                else g_cmd_rej++;
-                clen = 0;
-            }
-        }
+        if (ch == '\r' || ch == '\n') { if (clen > 0) { run_cmd(cbuf, clen); clen = 0; } }
         else if (clen < 15) cbuf[clen++] = (char)ch;
     }
 }
