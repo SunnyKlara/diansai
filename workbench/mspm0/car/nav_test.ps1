@@ -273,8 +273,31 @@ L ""
 L ("-- GO : {0} --" -f $cmd)
 if (-not (SendConfirm $cmd $wantMode)) {
     Send "z"
-    L "  The link is dropping the DOWNLINK, not just telemetry."
-    L "  Move the PC-side ESP module down near the floor / closer to the car, or try channel 1 or 6."
+    # Two very different causes look identical here, and the old message only named one of them.
+    # Distinguish them with what ALREADY happened earlier in this same session: `f<ms>` and `k`
+    # both landed (we have telemetry and a cal-done line), so the downlink demonstrably works and
+    # the only remaining explanation is that THE FIRMWARE DOES NOT KNOW THIS COMMAND.
+    # Cost of getting this wrong, measured on 2026-07-27: the old text sent us off to move the ESP
+    # module and change WiFi channels, when the real cause was that the nav layer had never been
+    # flashed - it existed only in the source tree.
+    $linkAlive = ($script:calDone -or $rows.Count -gt 20)
+    if ($script:calLine) {
+        L "  The firmware DOES have the nav layer (it answered the c0 readback above) and the link"
+        L "  is alive, so neither of the usual suspects fits. Look at the firmware's own reason:"
+        L "  re-run and watch for a [nav] FAIL=... line, and check the move is not being refused"
+        L "  (NO_CAL = odometry not calibrated, STALL = wheels blocked)."
+    } elseif ($linkAlive) {
+        L "  BUT the link is fine: telemetry arrived and earlier commands (f/k) did land in this"
+        L "  same session. So this is NOT a link problem - the chip most likely does not have this"
+        L "  command at all, i.e. it is running an older image than the source tree."
+        L "  Decisive check: send c0 - a firmware WITH the nav layer answers [nav] counts/mm*100=..."
+        L "  and one without it answers nothing. If the answer is missing: build.ps1 then flash.ps1."
+        L "  Do NOT use 'telemetry has a NAV: field' as the version fingerprint - that field is only"
+        L "  appended while in a nav mode, so it is absent in IDLE on BOTH versions."
+    } else {
+        L "  No telemetry arrived either, so the link itself is suspect."
+        L "  Move the PC-side ESP module down near the floor / closer to the car, or try channel 1 or 6."
+    }
     Finish "INCONCLUSIVE - could not confirm the move command; did NOT keep driving." 2
 }
 

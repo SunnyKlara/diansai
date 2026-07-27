@@ -99,9 +99,13 @@ static int run_until_done(nav_t *n, simcar_t *s, int hdg_ok, double dt, double t
 /* ============ 1. 未标定必须拒绝，不许"当 1.0 用" ============ */
 static void test_no_calibration(void)
 {
-    printf("test_no_calibration (ENC_COUNTS_PER_MM=0 时走 mm 必须拒绝):\n");
+    printf("test_no_calibration (counts_per_mm=0 时走 mm 必须拒绝):\n");
     nav_t n; nav_init(&n);
-    ck("counts_per_mm 默认未标定", n.counts_per_mm, 0.0f, 1e-6f);
+    /* ⚠ 2026-07-27 改: 原来这里断言 "counts_per_mm 默认就是 0"，即**依赖 config.h 的占位值**。
+     * 里程标定落地后 ENC_COUNTS_PER_MM 变成 5.109，那条断言就必然挂 —— 而它想验的从来不是
+     * "默认值是多少"，是"**未标定时拒绝行驶**"这个安全机制。所以显式把它置 0 再验机制本身，
+     * 这样以后不管 config.h 填什么值，这个测试都还在守着它该守的东西。 */
+    n.counts_per_mm = 0.0f;
     ck_true("nav_calibrated()==0", nav_calibrated(&n) == 0);
 
     nav_start_straight(&n, 500.0f, 0, 0, 0.0f);
@@ -123,6 +127,10 @@ static void test_straight_distance(void)
     printf("test_straight_distance (走 1000mm):\n");
     nav_t n; nav_init(&n);
     n.counts_per_mm = 12.0f;          /* 假标定值: 12 counts/mm */
+    /* ⚠ 仿真车**没有滑行物理**（指令归零就立刻停），所以"预留滑行余量"在仿真里只会表现为
+     * 提前 coast_mm 停下。要验"距离精度"就必须先把补偿关掉，否则测的是补偿量而不是精度。
+     * 补偿本身由 test_straight_coast 单独验（真机滑行数据见 config.h CFG_NAV_COAST_MM）。 */
+    n.coast_mm = 0.0f;
     simcar_t s; sim_init(&s);
     nav_start_straight(&n, 1000.0f, 0, 0, 0.0f);
     int k = run_until_done(&n, &s, 1, 0.01, 30.0);
@@ -132,6 +140,37 @@ static void test_straight_distance(void)
     ck_true("没超调过头(<=目标+容差)", n.done_mm <= 1000.0f + n.tol_mm);
     ck_true("用了合理拍数(不是首拍就宣布完成)", k > 10);
     printf("        [info] %d 拍完成, 峰值航向偏差 %.2f deg\n", k, n.peak_hdg_deg);
+}
+
+/* ============ 2b. 滑行余量: 停止点必须沿行进方向提前 coast_mm ============
+ * 真机依据(2026-07-27 两趟 n300): PWM 归零后车还滑 16.4mm / 14.3mm，只差 2mm ⇒ 确定性可补偿。
+ * 仿真里没有滑行，所以这里验的是"**补偿量是否被正确地、按方向地减掉**"——
+ * 即同一目标下 coast=15 应该比 coast=0 少走约 15mm，倒车时同样少走 15mm(绝对值)。
+ * 这条测试挡住两种最容易写错的实现: ① 符号搞反(倒车时反而多走) ② 用 fabs 导致方向无关。 */
+static void test_straight_coast(void)
+{
+    printf("test_straight_coast (停止点 = 目标 - max(coast_mm, tol_mm), 且随行进方向):\n");
+    /* ⚠ 别断言"coast=15 比 coast=0 少走 15mm" —— coast=0 时**本来就已经提前 tol_mm=10 停**
+     * (到位容差的固有行为)，所以差值只有 15-10=5。直接断言契约本身更清楚也更难写错。 */
+    const float tgt[2] = { 1000.0f, -1000.0f };
+    const float cs[2]  = { 0.0f, 15.0f };
+    for (int d = 0; d < 2; d++) {
+        for (int c = 0; c < 2; c++) {
+            nav_t n; nav_init(&n);
+            n.counts_per_mm = 12.0f;
+            n.coast_mm = cs[c];
+            simcar_t s; sim_init(&s);
+            nav_start_straight(&n, tgt[d], 0, 0, 0.0f);
+            run_until_done(&n, &s, 1, 0.01, 30.0);
+            float lead = (cs[c] > n.tol_mm) ? cs[c] : n.tol_mm;      /* 该提前多少收油 */
+            float want = tgt[d] - ((tgt[d] >= 0.0f) ? lead : -lead); /* 提前量跟方向 */
+            char name[112];
+            snprintf(name, sizeof name, "tgt%+.0f coast=%.0f -> 停在目标前 %.0fmm",
+                     (double)tgt[d], (double)cs[c], (double)lead);
+            ck(name, n.done_mm, want, 3.0f);
+            ck_true("符号没被 coast 弄反", (tgt[d] >= 0.0f) ? (n.done_mm > 0.0f) : (n.done_mm < 0.0f));
+        }
+    }
 }
 
 /* ============ 3. 走直: 有扰动时航向环必须把车拉回来(符号不能反) ============ */
@@ -196,6 +235,7 @@ static void test_straight_reverse(void)
     printf("test_straight_reverse (走 -600mm):\n");
     nav_t n; nav_init(&n);
     n.counts_per_mm = 12.0f;
+    n.coast_mm = 0.0f;                /* 同 test_straight_distance: 仿真无滑行, 验精度要先关补偿 */
     simcar_t s; sim_init(&s);
     nav_start_straight(&n, -600.0f, 0, 0, 0.0f);
     run_until_done(&n, &s, 1, 0.01, 30.0);
@@ -366,6 +406,7 @@ int main(void)
            (double)ENC_CPR, (double)ENC_COUNTS_PER_MM, (double)ENC_COUNTS_PER_DEG);
     test_no_calibration();
     test_straight_distance();
+    test_straight_coast();
     test_straight_heading_hold();
     test_straight_ramp();
     test_straight_reverse();

@@ -21,13 +21,14 @@ static float fsignf(float v) { return v > 0.0f ? 1.0f : (v < 0.0f ? -1.0f : 0.0f
 void nav_init(nav_t *n)
 {
     /* 参数默认值全部来自 config.h —— 赛场只翻那一个文件(工作台规范 §2 铁律) */
-    n->counts_per_mm  = ENC_COUNTS_PER_MM;      /* 现在是 0.0f = 未标定, 落地标完回填 */
+    n->counts_per_mm  = ENC_COUNTS_PER_MM;      /* 2026-07-27 已落地标定 = 5.109 */
     n->counts_per_deg = ENC_COUNTS_PER_DEG;
     n->v_cruise       = CFG_NAV_V_CRUISE;
     n->v_min          = CFG_NAV_V_MIN;
     n->accel_rpm_s    = CFG_NAV_ACCEL;
     n->decel_mm       = CFG_NAV_DECEL_MM;
     n->tol_mm         = CFG_NAV_TOL_MM;
+    n->coast_mm       = CFG_NAV_COAST_MM;
     n->kp_hdg         = CFG_KP_HDG;
     n->kd_hdg         = CFG_KD_HDG;
     n->w_max          = CFG_NAV_W_MAX;
@@ -173,7 +174,18 @@ nav_state_t nav_step(nav_t *n, const nav_in_t *in, int *v_rpm, int *w_rpm)
         n->done_mm = dist;
         n->err_mm  = rem;
 
-        if (fabsf(rem) <= n->tol_mm)
+        /* ---- 到位判据: 预留刹车滑行余量 ----
+         * PWM 归零后车不是立刻停, 而是靠摩擦滑一段。实测(2026-07-27 两趟 n300, 末端 v_min=35RPM
+         * ≈107mm/s): 滑行 16.4mm 与 14.3mm, **只差 2mm ⇒ 确定性、可直接减掉**。
+         * 同两趟的误差预算: 滑行贡献 14~16mm、标定只贡献 1~4mm、"提前进容差就停"抵掉 4~9mm
+         *   ⇒ 净 +10~15mm 超程由滑行支配, 所以补偿它比调 tol_mm 或磨标定常数都值。
+         * 实现: 沿**行进方向**的剩余距离降到 max(coast_mm, tol_mm) 就收油。
+         *   用 rem_dir(带方向) 而不是 fabsf(rem), 于是"已经冲过头"(rem_dir 变负) 也会立刻结束
+         *   —— 旧的对称判据在大幅冲过头时会掉头往回追, 而往回追之后还会再滑一次, 越追越乱。
+         * coast_mm=0 时退化为旧行为(阈值就是 tol_mm), PC 单测据此保持向后兼容。 */
+        float rem_dir = fsignf(n->tgt_mm) * rem;                  /* 沿行进方向还剩多少 */
+        float stop_at = n->coast_mm > n->tol_mm ? n->coast_mm : n->tol_mm;
+        if (rem_dir <= stop_at)
             return nav_finish(n, NAV_F_NONE, v_rpm, w_rpm);      /* 到位: 立刻停, 不 settle
                                                                   * (走直没有"回摆"问题, 车是被摩擦刹住的) */
 

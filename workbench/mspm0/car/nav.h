@@ -90,6 +90,8 @@ typedef struct {
     float accel_rpm_s;      /* 速度斜坡 (RPM/秒)：缓起步防打滑 */
     float decel_mm;         /* 提前减速距离 (mm)：剩这么远开始线性降速 */
     float tol_mm;           /* 走直到位容差 (mm) */
+    float coast_mm;         /* 刹车滑行余量 (mm)：PWM 归零后车靠惯性还会往前滑这么多 ⇒ 停止判据
+                             * 提前这么多松油门。0 = 不补偿(旧行为)。实测依据见 config.h 同名宏。 */
     float kp_hdg, kd_hdg;   /* 航向保持 PD：输出单位 = 差速 RPM（kp: RPM/度, kd: RPM/(度/秒)）*/
     float w_max;            /* 航向修正上限 (RPM)：别让纠偏把车拐成原地转 */
     float hdg_max_deg;      /* 走直允许的最大航向偏差 (度)：超了判 OFFCOURSE 停车 */
