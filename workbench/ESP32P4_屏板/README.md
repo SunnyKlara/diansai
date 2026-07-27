@@ -154,3 +154,42 @@ Copy-Item "..\..\ESP32P4_屏板\firmware\*.c","..\..\ESP32P4_屏板\firmware\*.h
 | ✅ 已做 | 背光判决测试 **v2 在 `ai_panel.c` 内**（自解释判据 + 800ms 渲染窗口 + 3s 灭 + 33s 自动循环）。`main/main.c` 的旧 `BL_BLINK_TEST` **已默认 0**——挪走后必须关掉，否则两处抢同一个 GPIO |
 | ⬜ 待做 | `sdkconfig` + `sdkconfig.defaults`：flash `4MB → 16MB`，`partitions.csv` 的 factory 从 3M 放大（板子有 16MB，现在只用 4MB）。⚠️ 改 defaults 不影响已存在的 `sdkconfig`，两处都要改并回读确认 |
 | 🚫 别动 | `IDF_EXPERIMENTAL_FEATURES=y`（花屏根因）、`ESP_TASK_WDT_EN=n`、PSRAM HEX/200M/XIP、`FREERTOS_HZ=1000`、LVGL 任务栈 ≥16KB —— 上游作者标注"缺一不显示" |
+
+## 八、无线图传方案评估（2026-07-27 · 资料核实，**未动代码、未上板**）
+
+> 起因：问"这块 P4 板能不能和 K230 一起做无线图传"。下面的能力数字全部来自官方文档（已内联出处），**不是本板实测**；本板真机验过的东西在第一、二节。
+
+### 8.1 两边能力对照（决定架构的关键）
+
+| 能力 | ESP32-P4 | K230 |
+|---|---|---|
+| 摄像头输入 | MIPI-CSI（板上 24P 座已布线，模组待买） | MIPI-CSI |
+| H.264 **编码** | **硬件，1080P@30fps**（[esp_h264](https://components.espressif.com/components/espressif/esp_h264/versions/1.2.0~1/readme)） | 硬件 H.264/H.265 |
+| H.264 **解码** | ⚠️ **软件**（tinyH264），性能差 | 硬件 |
+| JPEG | **硬件编解码都有**（[IDF jpeg 外设文档](https://docs.espressif.com/projects/esp-idf/en/v5.4/esp32p4/api-reference/peripherals/jpeg.html)，官方例程解 1080p/720p） | 硬件 |
+| NPU | **无** | **有 KPU** —— P4 给不了的东西 |
+| 无线 | 靠 ESP32-C5 协处理器走 SDIO | CanMV 有 [WLAN 例程](https://developer.canaan-creative.com/k230_canmv/en/main/example/network/wlan.html) |
+| 屏 | ✅ 本板已点亮 1280×452 / 60+FPS | 需外接 |
+
+**链路带宽不是瓶颈**：ESP-Hosted 官方实测 SDIO **streaming 模式 80 Mbit/s**（Tx 队列 20；队列 ≥25 后收益饱和），省内存的 **packet 模式 33 Mbit/s**（[esp-hosted-mcu sdio.md](https://github.com/espressif/esp-hosted-mcu/blob/main/docs/sdio.md)）。真瓶颈在 C5 那端的 WiFi 实际吞吐。
+
+> ⇒ **核心判断**：只要"无线图传"，**P4 单板就够，用不上 K230**；要"识别"才需要 K230 的 NPU。两者合理分工**不是"K230 传图给 P4"**，而是 **K230 当眼睛+大脑、P4 当屏幕+电台**（传大图再转发是绕路）。
+
+### 8.2 四种架构（按工作量排序）
+
+| 方案 | 链路 | 评价 |
+|---|---|---|
+| **A** K230 单干 | K230 采集+编码+WiFi → PC/手机 | 最省事，CanMV 例程即可，**P4 不参与** |
+| **B** P4 单干 ⭐ | CSI 摄像头 → P4 硬件 H.264 → RTSP → C5 WiFi | 链路最短、全官方组件、正是 P4 硬件编码器的设计用途；**无 NPU 不能识别**；需买 CSI 模组 + 24P 排线 |
+| **C** 协同 ⭐ | K230 识别 → 有线(UART/SPI) → P4 显示 + C5 转发遥测 | K230 只传**结果+小图**，带宽需求低、最稳，也最贴合赛题真实需要 |
+| **D** 无线图传到本地屏 | K230 → WiFi → C5 → SDIO → P4 解码 → 屏 | 可行但**必须用 MJPEG 不能用 H.264**（P4 只有硬件编码器、解码是软件的）；四者中工作量最大 |
+
+### 8.3 三个真实的坎（动手前必须知道）
+
+1. **C5 的 WiFi 在本板从未验证过** —— 要给 C5 单独刷 ESP-Hosted slave 固件，走顶部 6P `BOOT` 排针（`C5_TXD0/RXD0/EN/BOOT`）。这是 B/D 的共同前置，从零开始的一整块工作。
+2. **C5 的 SDIO 会和 microSD 抢 SDMMC 控制器** —— 原理图上 C5 SDIO 走 **GPIO14-19**（`C5_D0..D3=IO14..17 / C5_CLK=IO18 / C5_CMD=IO19`，`待生成配置核对`），不是 slot0 的 IOMUX 脚(39-44)，所以它得走 GPIO matrix 用 **slot1**，而 SD 卡占着 **slot0**。官方正好有例程 **`mcu_hosted_sdio_sdmmc_combined`**（同一 SDMMC 控制器、两 slot 分别跑 ESP-Hosted 与 SD 卡），照它做。
+3. **console 占着 GPIO37/38，而那正是 P4↔C5 的 UART** —— 启动日志明写 `GPIO 38 and 37 are used as console UART I/O pins`。用 C5 前要先把 UART console 关掉、只留 USB-JTAG。
+
+### 8.4 对电赛的定位（别高估）
+
+图传**对多数赛题不加分**：赛题要的是"识别结果驱动执行机构"，不是把画面传出来。且赛场几十支队伍同时开热点，无线图传实测会卡到不可用。**图传的价值在调试与演示**，正式方案里感知链路应走有线。真要用 K230+P4，选**方案 C**。
