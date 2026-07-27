@@ -179,9 +179,13 @@ workbench/mspm0/**/esp_*.txt
 # 原始 CSV 只是过程数据(且 -Csv 是可选参数, 名字随手起)。原先只忽略 run_*.csv, 盖不住
 # nav300.csv / straight1.csv 这类, 于是每跑一趟 git status 就多几行噪声。
 workbench/mspm0/**/*.csv
-# 输出被 shell 吞掉时的重定向落脚点(本会话被迫用了十几次): 统一叫 _scratch*.txt, 天生被忽略,
+# 输出被 shell 吞掉时的重定向落脚点: 统一叫 _scratch*, 天生被忽略,
 # 免得再出现 fp1.txt/mdw2.txt/nav_run3.txt 这类一次性文件散落在工程里。
-workbench/mspm0/**/_scratch*.txt
+# ⚠️ 原规则写成 workbench/mspm0/**/_scratch*.txt, 作用域错了 —— agent shell 的 cwd 是
+# **仓库根**, 落脚点实际掉在根目录, 那条规则一个都盖不住(实测积到 48 个, 把 git status
+# 里 55 个 untracked 中的 48 个变成噪声, 直接妨碍"提交即清账")。
+# 现改为**不带斜杠的模式 ⇒ 任意层级都匹配**, 并去掉 .txt 限制(也会有 .ps1/.json 落脚点)。
+_scratch*
 workbench/mspm0/**/*_log.txt
 # 每台机自己的工具链路径覆盖（industry pattern: local.properties / .env.local / CMakeUserPresets）
 # 机器配置不进版本控制，但它的"形状"要进 ⇒ 模板 _tools.local.example.ps1 是入库的。
