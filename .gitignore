@@ -175,7 +175,13 @@ workbench/mspm0/**/esp_*_com*.txt
 # AT 事务日志与采集数据 = 运行产物, 不入库(要点已提炼进 天猛星主板平台/调试日志.md)。
 # 只匹配 .txt/.csv 后缀, 所以 esp_*.ps1 工具与 run_log.ps1 不受影响。
 workbench/mspm0/**/esp_*.txt
-workbench/mspm0/**/run_*.csv
+# 真机采集的 CSV = 测量副产品, 不入库: 每个有意义的数字都已被curated进 调试日志.md 的表里,
+# 原始 CSV 只是过程数据(且 -Csv 是可选参数, 名字随手起)。原先只忽略 run_*.csv, 盖不住
+# nav300.csv / straight1.csv 这类, 于是每跑一趟 git status 就多几行噪声。
+workbench/mspm0/**/*.csv
+# 输出被 shell 吞掉时的重定向落脚点(本会话被迫用了十几次): 统一叫 _scratch*.txt, 天生被忽略,
+# 免得再出现 fp1.txt/mdw2.txt/nav_run3.txt 这类一次性文件散落在工程里。
+workbench/mspm0/**/_scratch*.txt
 workbench/mspm0/**/*_log.txt
 # 每台机自己的工具链路径覆盖（industry pattern: local.properties / .env.local / CMakeUserPresets）
 # 机器配置不进版本控制，但它的"形状"要进 ⇒ 模板 _tools.local.example.ps1 是入库的。
