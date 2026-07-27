@@ -172,6 +172,10 @@ workbench/mspm0/**/*_out.txt
 # 脚本运行产物（串口/AT 会话记录、扫描/探测转储），不是资产
 # 命名放宽到 esp_*_com*.txt：实际出现过 esp_probe_comN / esp_scan_comN 两种前缀
 workbench/mspm0/**/esp_*_com*.txt
+# AT 事务日志与采集数据 = 运行产物, 不入库(要点已提炼进 天猛星主板平台/调试日志.md)。
+# 只匹配 .txt/.csv 后缀, 所以 esp_*.ps1 工具与 run_log.ps1 不受影响。
+workbench/mspm0/**/esp_*.txt
+workbench/mspm0/**/run_*.csv
 workbench/mspm0/**/*_log.txt
 # 每台机自己的工具链路径覆盖（industry pattern: local.properties / .env.local / CMakeUserPresets）
 # 机器配置不进版本控制，但它的"形状"要进 ⇒ 模板 _tools.local.example.ps1 是入库的。

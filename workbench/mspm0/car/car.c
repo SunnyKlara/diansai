@@ -41,6 +41,7 @@ static const char *mode_name[MODE_N] = { "IDLE", "CURR", "SPD", "POS", "OPEN", "
 static volatile int g_mode   = MODE_IDLE;
 static volatile int g_target = 0;       /* mA / RPM / counts / PWM% (随模式) */
 static volatile int g_print_ms = PRINT_MS;   /* 遥测周期(真实ms). 整定时 f20 调快抓暂态, f100 复原 */
+static uint32_t g_tele_seq = 0;              /* 遥测行号(行尾 #<seq>): 无线丢包只能靠它算, 见打印处注释 */
 /* 位置环精定位(2026-07-25, 运行时可调免重烧): 死区前馈% + 到位死区counts */
 static int g_pwm_dz  = CFG_POS_FF_DZ;   /* 死区前馈%(默认值+依据见 config.h). 运行时命令 w<v> 可改 */
 static int g_pos_tol = CFG_POS_TOL;     /* 到位死区counts(默认值+依据见 config.h). 运行时命令 e<v> 可改 */
@@ -987,6 +988,16 @@ int main(void)
             /* 航向: Y=yaw(0.1°, 连续累计可超±360, 便于"转5圈"标度校验) W=偏航角速度(0.01dps) */
             uart_dbg_puts(" | Y:"); uart_dbg_put_int((int)(g_att.yaw * 10.0f));
             uart_dbg_puts(" W:");   uart_dbg_put_int((int)(g_wz_dps * 100.0f));
+            /* 行尾两个固定字段(无线场景的刚需, 有线时也有用):
+             *   #<seq> = 单调递增的遥测行号   t<ms> = 固件端时间戳(上电毫秒)
+             * 为什么必须有 seq: 无线走 UDP、无重传, 跑出范围那段遥测**永久消失**;
+             *   没有行号就分不清"这段没数据"到底是**丢包**还是**车真的没动** —— 那是分析数据时最要命的歧义。
+             *   有了它, 丢包率 = 收到行数 ÷ (末seq − 首seq + 1), 是真丢包率而非"行数对不对得上期望"。
+             * 为什么时间戳要**固件端**出: PC 端收到的时刻含"成包突发"(实测单行间隔 0~187ms、6.9% 挤在同一
+             *   UDP 包里齐到) ⇒ PC 时间戳只能看速率趋势、算不出精确 dt。固件端 t 是真实节拍。
+             * 为什么放行尾: 现有 6 个 .ps1 都按字段名正则取值, 追加尾字段不破解析(与 D:/Y: 同理)。 */
+            uart_dbg_puts(" | #"); uart_dbg_put_int((int)(++g_tele_seq));
+            uart_dbg_puts(" t");   uart_dbg_put_int((int)(now / ST_PER_MS));
             if (g_cal_left > 0) uart_dbg_puts(" CAL");
             uart_dbg_puts("\n");
         }
