@@ -171,7 +171,17 @@ Copy-Item "..\..\ESP32P4_屏板\firmware\*.c","..\..\ESP32P4_屏板\firmware\*.h
 | 无线 | 靠 ESP32-C5 协处理器走 SDIO | CanMV 有 [WLAN 例程](https://developer.canaan-creative.com/k230_canmv/en/main/example/network/wlan.html) |
 | 屏 | ✅ 本板已点亮 1280×452 / 60+FPS | 需外接 |
 
-**链路带宽不是瓶颈**：ESP-Hosted 官方实测 SDIO **streaming 模式 80 Mbit/s**（Tx 队列 20；队列 ≥25 后收益饱和），省内存的 **packet 模式 33 Mbit/s**（[esp-hosted-mcu sdio.md](https://github.com/espressif/esp-hosted-mcu/blob/main/docs/sdio.md)）。真瓶颈在 C5 那端的 WiFi 实际吞吐。
+**链路带宽不是瓶颈（含端到端 iperf 实测，比 raw 吞吐更有用）**——[esp-hosted-mcu README 传输对照表](https://github.com/espressif/esp-hosted-mcu/blob/main/README.md)：
+
+| 传输 | Host Tx (Mbps) | Host Rx (Mbps) | 备注 |
+|---|---|---|---|
+| **SDIO 4-bit** | udp 79.5 / **tcp 53.4** | udp 68.1 / **tcp 44** | 最高性能；**官方标注"PCB only"**——跳线不行，本板是 PCB 走线 ✅ |
+| 标准 SPI | udp 24 / tcp 22 | udp 25 / tcp 22 | 快速验证用 |
+| UART | 0.68 | 0.68 | 只够低速数据，不可能图传 |
+
+- **ESP32-C5 明确在协处理器支持列表内**（ESP32 / C2 / C3 / **C5** / C6 / S2 / S3），且 **SDIO 4-bit 的支持芯片正好含 C5**。
+- 另有 SDIO 内部 raw 吞吐数据（streaming 80 / packet 33 Mbit/s，见 [sdio.md](https://github.com/espressif/esp-hosted-mcu/blob/main/docs/sdio.md)）——那是链路层裸速，**做带宽预算要用上表的端到端 iperf 数字**。
+- ⇒ **P4 接收方向可用约 TCP 44 / UDP 68 Mbps**，是方案 D 的带宽上限。
 
 > ⇒ **核心判断**：只要"无线图传"，**P4 单板就够，用不上 K230**；要"识别"才需要 K230 的 NPU。两者合理分工**不是"K230 传图给 P4"**，而是 **K230 当眼睛+大脑、P4 当屏幕+电台**（传大图再转发是绕路）。
 
@@ -193,3 +203,21 @@ Copy-Item "..\..\ESP32P4_屏板\firmware\*.c","..\..\ESP32P4_屏板\firmware\*.h
 ### 8.4 对电赛的定位（别高估）
 
 图传**对多数赛题不加分**：赛题要的是"识别结果驱动执行机构"，不是把画面传出来。且赛场几十支队伍同时开热点，无线图传实测会卡到不可用。**图传的价值在调试与演示**，正式方案里感知链路应走有线。真要用 K230+P4，选**方案 C**。
+
+### 8.5 方案 D 的阻力清单（2026-07-27 逐项核实，按拦路程度排序）
+
+> D = K230 采集编码 → WiFi → 板载 C5 → SDIO → P4 解码 → MIPI 屏显示。
+> **结论：没有死路，全部是工作量而非不可行。** 下面每条都给了"为什么"和"怎么绕"。
+
+| # | 阻力 | 性质 | 处理 |
+|---|---|---|---|
+| 1 | **C5 的 WiFi 在本板从未验证** | 最大工作量，**非死路** | ESP-Hosted 官方支持列表含 **ESP32-C5**；需给 C5 刷 slave 固件（走顶部 6P `BOOT` 排针）+ P4 侧配 `esp_hosted`/`esp_wifi_remote` |
+| 2 | **C5 SDIO 与 microSD 争 SDMMC 控制器** | 配置问题 | C5 走 GPIO14-19（非 slot0 IOMUX）⇒ 用 **slot1**，SD 卡留 slot0；官方对症例程 `mcu_hosted_sdio_sdmmc_combined` |
+| 3 | **console 占着 GPIO37/38 = P4↔C5 的 UART** | 一行配置 | 关掉 UART console、只留 USB-JTAG |
+| 4 | **编码格式只能 MJPEG，不能 H.264** | 硬件限制，**必须遵守** | P4 只有硬件 H.264 **编码器**，解码是软件 tinyH264 ⇒ 收流显示走 **JPEG 硬解**；K230 侧输出 MJPEG |
+| 5 | 带宽 | **不是阻力**（已算） | 可用 TCP≈44Mbps；1280×452 MJPEG@30fps 约 21Mbps（YUV420 868KB/帧、10:1 压缩估）、640×480@30fps 约 4Mbps ⇒ 余量充足 |
+| 6 | P4 侧要写：socket 收流 + JPEG 硬解 + 送 LVGL | 常规开发 | IDF 有 `jpeg_decode` 例程 + `esp_lv_decoder`；LVGL 侧用 canvas/image |
+| 7 | K230 侧要写：抓帧 + JPEG 编码 + socket 推流 | 常规开发 | CanMV(MicroPython) 有 WLAN 例程可打底 |
+| 8 | 屏比例 **1280×452** 极端长条 | 体验问题 | 摄像头 4:3/16:9 画面贴上去会大量留白或裁切 |
+
+**⚠️ 先想清值不值**：若目标只是"人能看到画面"，方案 A（K230 直推手机/PC 浏览器）几分钟就能出效果，且不受这块长条屏比例限制。**D 的真正价值是打通"C5 无线链路 + P4 硬件解码显示"这套技能栈**，不是画面本身。要练这套栈就做 D，要看画面就做 A。
