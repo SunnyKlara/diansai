@@ -216,9 +216,43 @@ static void test_deadband_equivalence(void)
     check("deadband=0 -> pure integ", a3.yaw, 0.1f * 1.0f, 1e-3f);   /* 0.1dps*1s */
 }
 
+/* 测试9: 偏航投影法 —— 关键性质是"IMU 装歪也读得对", 这正是挑轴法做不到的 */
+static void test_yaw_projection(void)
+{
+    printf("test_yaw_projection:\n");
+    /* (a) 理想安装: up=+Z, 绕竖直轴 90dps -> 投影应得 90 */
+    float up_z[3] = { 0, 0, 1 };
+    float g_z[3]  = { 0, 0, 90.0f };
+    check("proj up=Z", attitude_yaw_rate(g_z, up_z), 90.0f, 1e-4f);
+
+    /* (b) 板子绕 X 轴歪装 30°: 天顶方向变成 (0, -sin30, cos30)。
+     *     车真实地绕竖直轴转 90dps => 传感器读到的角速度沿天顶方向分布。
+     *     投影法应还原出 90；而"挑最近轴(Z)"只会读到 90*cos30 = 77.9 (少 13%)。 */
+    const float s = 0.5f, c = 0.8660254f;          /* sin30, cos30 */
+    float up_t[3] = { 0.0f, -s, c };
+    float g_t[3]  = { 0.0f, -s * 90.0f, c * 90.0f };
+    check("proj tilted 30deg", attitude_yaw_rate(g_t, up_t), 90.0f, 1e-3f);
+    check("axis-pick would err", g_t[2], 90.0f * c, 1e-3f);   /* 记录挑轴法的误差有多大 */
+
+    /* (c) 纯 pitch/roll 转动(绕水平轴)不该被算成偏航 —— 与天顶方向正交 => 投影为 0 */
+    float g_perp[3] = { 120.0f, 0.0f, 0.0f };      /* 绕 X 转, X 与 up_t 正交 */
+    check("perp rotation -> 0 yaw", attitude_yaw_rate(g_perp, up_t), 0.0f, 1e-4f);
+
+    /* (d) 投影后再积分: 200Hz 下 90dps 积 1s 应得 90°(经 car.c 那条"加回零偏"的借道) */
+    attitude_t a; attitude_init(&a, 0.005f, 0.98f);
+    float acc[3] = { 0, 0, 1 };
+    for (int i = 0; i < 200; i++) {
+        float wz = attitude_yaw_rate(g_t, up_t);
+        float gm[3] = { 0.0f, 0.0f, a.gbias[2] + wz };
+        attitude_update(&a, gm, acc);
+    }
+    check("proj integrated 1s", a.yaw, 90.0f, 0.5f);
+}
+
 int main(void)
 {
     printf("==== attitude.c PC unit test ====\n");
+    test_yaw_projection();
     test_yaw_integration();
     test_bias_calibration();
     test_accel_tilt();

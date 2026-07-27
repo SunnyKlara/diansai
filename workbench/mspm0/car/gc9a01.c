@@ -197,11 +197,10 @@ static const uint8_t FONT8x8[96][8] = {
 {0x6E,0x3B,0x00,0x00,0x00,0x00,0x00,0x00},{0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
 };
 
-void GC9A01_DrawChar(int16_t x, int16_t y, char ch, uint16_t fg, uint16_t bg, uint8_t scale)
+/* 逐点慢路径: 透明底或越界裁剪时用(FillRect 内部会裁剪)。 */
+static void draw_char_slow(int16_t x, int16_t y, const uint8_t *g,
+                           uint16_t fg, uint16_t bg, uint8_t scale)
 {
-    if (ch < 0x20 || ch > 0x7E) ch = ' ';
-    if (scale < 1) scale = 1;
-    const uint8_t *g = FONT8x8[(uint8_t)ch - 0x20];
     for (uint8_t row = 0; row < 8; row++) {
         uint8_t bits = g[row];
         for (uint8_t col = 0; col < 8; col++) {
@@ -209,6 +208,74 @@ void GC9A01_DrawChar(int16_t x, int16_t y, char ch, uint16_t fg, uint16_t bg, ui
             if (c == 0xFFFE) continue;               /* 0xFFFE == transparent bg sentinel */
             GC9A01_FillRect(x + col * scale, y + row * scale, scale, scale, c);
         }
+    }
+}
+
+/*
+ * 2026-07-27 改写: 不透明底走"一次 set_window + 整块像素流"。
+ *   旧版对字模逐 bit 调一次 FillRect => **每个字符 64 次 set_window**(每次=2条命令+8字节坐标+
+ *   CS/DC 翻转+spi_done 忙等)。scale=3 时一个字符约 1856 字节, 一行 9 字约 33ms —— 这正是本工程
+ *   历史上"数主循环拍×假设1ms → 报的 RPM 虚高 5x"(commit 4bbaae5 修掉)的**机制层根因**:
+ *   当时只治了症状(改用 SysTick 真实时基), 没查"LCD 为什么这么慢"。
+ *   现在 scale=3 一个字符 = 1 次 set_window + 1152 字节连续流, 并省掉 63 次窗口/CS 开销。
+ * 判据(可自测): 有效像素字节 / 实际发出字节 —— 旧版约 0.62 且窗口开销不随时钟缩短, 新版≈1.0。
+ */
+void GC9A01_DrawChar(int16_t x, int16_t y, char ch, uint16_t fg, uint16_t bg, uint8_t scale)
+{
+    if (ch < 0x20 || ch > 0x7E) ch = ' ';
+    if (scale < 1) scale = 1;
+    const uint8_t *g = FONT8x8[(uint8_t)ch - 0x20];
+    int16_t w = (int16_t)(8 * scale);
+
+    /* 透明底无法整块流(要跳过背景像素); 越界也交给慢路径, 由 FillRect 做裁剪 */
+    if (bg == 0xFFFE || x < 0 || y < 0 || x + w > LCD_W || y + w > LCD_H) {
+        draw_char_slow(x, y, g, fg, bg, scale);
+        return;
+    }
+    uint8_t fh = (uint8_t)(fg >> 8), fl = (uint8_t)(fg & 0xFF);
+    uint8_t bh = (uint8_t)(bg >> 8), bl = (uint8_t)(bg & 0xFF);
+    gc9a01_set_window(x, y, x + w - 1, y + w - 1);
+    DC_DAT(); CS_L();
+    for (uint8_t row = 0; row < 8; row++) {
+        uint8_t bits = g[row];
+        for (uint8_t ry = 0; ry < scale; ry++) {                 /* 纵向放大: 同一行重复 scale 次 */
+            for (uint8_t col = 0; col < 8; col++) {
+                int on = (bits & (1u << col)) ? 1 : 0;
+                for (uint8_t rx = 0; rx < scale; rx++) {         /* 横向放大 */
+                    if (on) { spi_wr(fh); spi_wr(fl); } else { spi_wr(bh); spi_wr(bl); }
+                }
+            }
+        }
+    }
+    spi_done(); CS_H();
+}
+
+void GC9A01_DrawCircle(int16_t cx, int16_t cy, int16_t r, uint16_t color, uint8_t dot)
+{
+    if (r <= 0) return;
+    if (dot < 1) dot = 1;
+    int16_t x = r, y = 0, err = 0;
+    uint16_t n = 0;
+    while (x >= y) {
+        if ((n++ % dot) == 0) {                                  /* 虚线环: 只画每第 dot 个点 */
+            GC9A01_DrawPixel(cx + x, cy + y, color); GC9A01_DrawPixel(cx + y, cy + x, color);
+            GC9A01_DrawPixel(cx - y, cy + x, color); GC9A01_DrawPixel(cx - x, cy + y, color);
+            GC9A01_DrawPixel(cx - x, cy - y, color); GC9A01_DrawPixel(cx - y, cy - x, color);
+            GC9A01_DrawPixel(cx + y, cy - x, color); GC9A01_DrawPixel(cx + x, cy - y, color);
+        }
+        y++; err += 1 + 2 * y;
+        if (2 * (err - x) + 1 > 0) { x--; err += 1 - 2 * x; }
+    }
+}
+
+void GC9A01_FillCircle(int16_t cx, int16_t cy, int16_t r, uint16_t color)
+{
+    if (r < 0) return;
+    int32_t r2 = (int32_t)r * r;
+    for (int16_t dy = -r; dy <= r; dy++) {
+        int16_t dx = 0;                                          /* 整数开方: 不引 sqrt */
+        while ((int32_t)(dx + 1) * (dx + 1) + (int32_t)dy * dy <= r2) dx++;
+        GC9A01_FillRect(cx - dx, cy + dy, (int16_t)(2 * dx + 1), 1, color);
     }
 }
 

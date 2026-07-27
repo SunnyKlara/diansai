@@ -27,6 +27,7 @@ const SPI    = scripting.addModule("/ti/driverlib/SPI", {}, false);
 const SPI1   = SPI.addInstance();
 const PWM    = scripting.addModule("/ti/driverlib/PWM", {}, false);
 const PWM1   = PWM.addInstance();
+const PWM2   = PWM.addInstance();   /* 电磁铁(第三颗 DRV8231), 见文末 PWM_MAG */
 const UART   = scripting.addModule("/ti/driverlib/UART", {}, false);
 const UART1  = UART.addInstance();
 const UART2  = UART.addInstance();
@@ -126,6 +127,23 @@ PWM1.PWM_CHANNEL_2.dutyCycle     = 0;
 PWM1.PWM_CHANNEL_3.$name         = "PWM_M2_IN2";
 PWM1.PWM_CHANNEL_3.dutyCycle     = 0;
 
+/* ---- 电磁铁 PWM: TIMA1_C0 = PB0, ~20kHz (板载第三颗 DRV8231) ----
+ * 硬件事实(SSOT §B / 载板 §5.8): IN1=PB0, **IN2 在板上直接接 GND ⇒ 只能单向**, 12V 直供,
+ *   电流采样 IPROPI = PA24(ADC0 通道 3, 见下面 ADC_CUR 的 MEM2)。
+ * ⚠ 单向的两个后果(硬件决定, 固件改不了):
+ *   ① 没有反向励磁 ⇒ 断电靠线圈自然退磁 + 铁芯剩磁, 想"主动推开"做不到;
+ *   ② DRV8231 真值表里 IN2=0 时只剩 coast(00) 与 forward(10) 两态 ⇒ PWM 关断期是 **fast decay**
+ *      (电流经体二极管回灌电源), 纹波比 slow decay(11 制动态) 大。这条按真值表推断, `待实测`。
+ * 频率取与电机同样的 ~20kHz: 电感对高频斩波的平滑更好, 且在听觉之外。 */
+PWM2.$name                      = "PWM_MAG";
+PWM2.clockPrescale              = 1;
+PWM2.timerCount                 = 1600;      /* 32MHz/1/1600 ≈ 20kHz */
+PWM2.ccIndex                    = [0];
+PWM2.peripheral.$assign         = "TIMA1";
+PWM2.peripheral.ccp0Pin.$assign = "PB0";     /* 电磁铁 IN1 = TIMA1_C0 */
+PWM2.PWM_CHANNEL_0.$name        = "PWM_MAG_IN1";
+PWM2.PWM_CHANNEL_0.dutyCycle    = 0;         /* 上电必须是 0: 电磁铁通电即发热, 不许默认吸合 */
+
 /* ---- 调试串口 UART0: TX=PA10 RX=PA11, 115200-8N1 (接 DAP VCOM 看 log) ---- */
 UART1.$name                    = "DBG_UART";
 UART1.enableFIFO               = true;
@@ -149,8 +167,14 @@ UART2.peripheral.$assign       = "UART3";
 UART2.peripheral.rxPin.$assign = "PB3";
 UART2.peripheral.txPin.$assign = "PB2";
 
-/* ---- 电流采样 ADC0: 序列采 2 路 DRV8231 IPROPI(H2.ADC 脚) ---- */
-/*   MEM0=CHAN_0=PA27(M1电流)  MEM1=CHAN_1=PA26(M2电流), 参考=VDDA 3.3V */
+/* ---- 电流采样 ADC0: 序列采 3 路 DRV8231 IPROPI ---- */
+/*   MEM0=CHAN_0=PA27  MEM1=CHAN_1=PA26  MEM2=CHAN_3=PA24(电磁铁), 参考=VDDA 3.3V
+ * ⚠ M1/M2 的通道映射**按真机实测**是与本注释原假设相反的(M1=PA26=MEM1, M2=PA27=MEM0),
+ *   真值在 motor.c 顶部, 别照这里的脚序推。
+ * ⚠ MEM 下标与通道号**不必相同**(SDK 例程 adc12_sequence_conversion 就是 MEM0<-CHAN_2),
+ *   这里 MEM2 取 CHAN_3 是因为 PA24 就是 ADC0 的 A0_3(同例程 adcPin3.$assign="PA24" 可证)。
+ * ⚠ **序列从 2 路变 3 路 ⇒ 一次转换耗时变长**: motor.c 里等转换完成的 delay 必须同步加长,
+ *   否则读到的是上一轮的陈旧值(那种错误不报警、只是数据慢半拍)。见 motor.c ADC_SEQ_N。 */
 ADC121.$name                      = "ADC_CUR";
 ADC121.sampClkSrc                 = "DL_ADC12_CLOCK_ULPCLK";
 ADC121.sampClkDiv                 = "DL_ADC12_CLOCK_DIVIDE_8";
@@ -158,11 +182,13 @@ ADC121.powerDownMode              = "DL_ADC12_POWER_DOWN_MODE_MANUAL";
 ADC121.samplingOperationMode      = "sequence";
 ADC121.adcMem0chansel             = "DL_ADC12_INPUT_CHAN_0";
 ADC121.adcMem1chansel             = "DL_ADC12_INPUT_CHAN_1";
-ADC121.endAdd                     = 1;
+ADC121.adcMem2chansel             = "DL_ADC12_INPUT_CHAN_3";
+ADC121.endAdd                     = 2;
 ADC121.sampleTime0                = "40 us";
 ADC121.peripheral.$assign         = "ADC0";
 ADC121.peripheral.adcPin0.$assign = "PA27";
 ADC121.peripheral.adcPin1.$assign = "PA26";
+ADC121.peripheral.adcPin3.$assign = "PA24";
 
 SYSCTL.forceDefaultClkConfig = true;
 SYSCTL.clockTreeEn  = true;

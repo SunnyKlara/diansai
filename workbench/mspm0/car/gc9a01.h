@@ -35,4 +35,11 @@ void GC9A01_DrawString(int16_t x, int16_t y, const char *s, uint16_t fg, uint16_
 /* centered string (by pixel width) at row y */
 void GC9A01_DrawStringCentered(int16_t y, const char *s, uint16_t fg, uint16_t bg, uint8_t scale);
 
+/* 圆形原语（为"水平仪"页加的；圆屏上圆形刻度天然合适） ——
+ * DrawCircle: 圆环轮廓(中点画圆法)。dot>1 时只画每第 dot 个点 => 虚线环, 像素数≈1/dot,
+ *   因为每个点都是一次 set_window(约 13 字节), 实线环在这块屏上并不便宜。
+ * FillCircle: 实心圆, 按行用 FillRect 铺(一行一次 set_window), r=7 约 0.8ms。 */
+void GC9A01_DrawCircle(int16_t cx, int16_t cy, int16_t r, uint16_t color, uint8_t dot);
+void GC9A01_FillCircle(int16_t cx, int16_t cy, int16_t r, uint16_t color);
+
 #endif /* GC9A01_H */

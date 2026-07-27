@@ -21,6 +21,11 @@ void motor_stop_all(void);                    /* 两电机滑行停 */
  * 内部先 enableConversions 再等转换完成。IPROPI 脚未接则读到噪声/0。 */
 void motor_read_current_raw(uint16_t *m1_raw, uint16_t *m2_raw);
 
+/* 同上, 但一次取回**整条 ADC 序列**的三路: 两路电机 + 电磁铁(PA24)。任一指针可为 NULL。
+ * ADC 只有一个、序列一次触发全部转换 ⇒ **触发点必须只有这一处**, 电磁铁不许自己去 startConversion
+ * (两边互相打断对方的序列, 症状是读数偶发串到别的通道上, 很难查)。 */
+void motor_adc_read_all(uint16_t *m1_raw, uint16_t *m2_raw, uint16_t *mag_raw);
+
 /* ADC 原始值 -> 电机电流(mA)。定标: IPROPI≈1575uA/A + R≈680Ω + Vref 3.3V。
  * I(mA) ≈ raw*3300/(4096*1.071) = raw*3300/4387。R 因模块批次不同, 需实测校准。 */
 int32_t motor_current_ma(uint16_t raw);
