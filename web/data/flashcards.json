@@ -99,7 +99,7 @@
     "id": "fc-017", "topic": "通用", "tags": ["MSPM0", "HAL"],
     "front": "MSPM0 vs STM32 选谁？",
     "back": "**MSPM0G3507（TI，电赛官方推荐）**：\n- ✅ 国赛官方推荐 + 提供 + 免费\n- ✅ 80MHz Cortex-M0+，价格便宜\n- ✅ TI 全家桶（MSP430、TI 电源）配套好\n- ❌ 生态比 STM32 弱，社区资料少\n- ❌ Sysconfig 工具门槛高\n- ❌ 没有 FPU（影响 PID/FFT 浮点性能）\n\n**STM32G474**：\n- ✅ 170MHz + FPU + DSP 指令\n- ✅ HRTIM 高分辨率定时器（电源神器）\n- ✅ 资料海量\n- ❌ 价格高、需要自购\n\n**选型原则**：\n- 控制类（小车 / 磁悬浮）：MSPM0 够用 → 2024H\n- 仪表 / 电源 / DSP：STM32G474 → 2024B 用 MSP430 是因低功耗题",
-    "ref": "library/物资准备/"
+    "ref": "workbench/26材料清单素材/"
   },
   {
     "id": "fc-018", "topic": "综合", "tags": ["三子棋", "Minimax"],
