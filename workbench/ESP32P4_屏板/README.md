@@ -606,3 +606,50 @@ encoder.Start(); sensor.run()
 ⚠️ **诚实边界：7KB/帧是下限，不是代表值** —— 当时画面很暗、细节极少，JPEG 自然很小。明亮复杂场景同参数下可能是 20~60KB/帧（即 30fps 下 5~15 Mbps）。**但即便如此，也远低于这条链路的能力**（官方 SDIO 4-bit 端到端 TCP 44 Mbps；就算当前退化的 streaming 模式只有零头也够）⇒ **带宽从头到尾都不是方案 D 的瓶颈，链路能不能通才是。**
 
 **仍未做**：这些帧**一帧都没送上网**（TCP 那半见 §10.5）；P4 侧 JPEG 硬解 + 上屏没开工。
+
+### 10.9 ✅ P4 侧硬件 JPEG 解码 **3.31 ms/帧**（2026-07-27，同样不经网络）
+
+把 §10.8 里 K230 真实产出的那一帧**嵌进屏工程固件**（`main/k230_frame1.jpg` + `EMBED_FILES`），用 P4 的硬件 JPEG 解码器解出来送 LVGL 上屏。**刻意不经网络** —— 网络那一跳另有阻塞，摘掉它才是单变量；把数据源从"嵌入数组"换成"socket 缓冲"是两行改动，其余（解码引擎/缓冲/LVGL 描述符）都不用变。
+
+新增 `p4_lcd/main/jpeg_view.c/.h`（源码备份见 `firmware/esp_hosted_c5/`），真机日志：
+
+```
+jpeg_view: embedded frame: 6625 bytes, first2=FFD8 last2=FFD9
+jpeg_view: header says 640x480 sampling=50331650
+jpeg_view: decoded 614400 B in 3310 us | green avg 8/63 | nonzero 43886/43886 | raw 32..65535
+jpeg_view: JPEG_VIEW RESULT: PASS 640x480 6625B->614400B 3.31ms
+```
+
+| 读数 | 判读 |
+|---|---|
+| `614400 B` 输出 | = 640×480×2 ⇒ **RGB565 输出正确** |
+| **3.31 ms/帧** | ⇒ **约 302 fps 的解码能力**，30fps 只用掉 10% |
+| green avg **8**/63 · 采样点 **100% 非零** · 原始值 **32..65535** | **输出是真图像、不是一片零**（"decode 返回 ESP_OK" 骗过我们不止一次，所以专门算了这几个数） |
+
+**API 要点（IDF v5.5.4 `driver/jpeg_decode.h`）**：
+```c
+jpeg_decoder_get_info(bitstream, size, &info);              // 先拿宽高，再按需分配
+jpeg_new_decoder_engine(&(jpeg_decode_engine_cfg_t){ .timeout_ms = 40 }, &dec);
+// 输入/输出缓冲都必须用官方 helper 分配（DMA 能力 + 对齐），普通 malloc 或直接指 flash 常量都不行
+in  = jpeg_alloc_decoder_mem(size,   &(jpeg_decode_memory_alloc_cfg_t){ JPEG_DEC_ALLOC_INPUT_BUFFER  }, &in_alloc);
+out = jpeg_alloc_decoder_mem(w*h*2,  &(jpeg_decode_memory_alloc_cfg_t){ JPEG_DEC_ALLOC_OUTPUT_BUFFER }, &out_alloc);
+memcpy(in, embedded_jpg, size);                            // 拷进 DMA 缓冲
+jpeg_decoder_process(dec, &cfg, in, size, out, out_alloc, &out_len);
+// cfg: .output_format = JPEG_DECODE_OUT_FORMAT_RGB565, .rgb_order = ..._BGR, .conv_std = JPEG_YUV_RGB_CONV_STD_BT601
+```
+LVGL v9 侧：填 `lv_image_dsc_t`（`header.magic = LV_IMAGE_HEADER_MAGIC` / `cf = LV_COLOR_FORMAT_RGB565` / `stride = w*2`），再 `lv_image_create` + `lv_image_set_src`。
+
+**两个真实的坑**：
+1. **`k230_jpg_end[-2]` 编不过** —— 嵌入符号声明成 `const uint8_t []`，GCC 认为是数组、`-Werror=array-bounds` 直接拒（`array subscript -2 is below array bounds`）。改成先取运行时指针 `const uint8_t *p = start;` 再 `p[size-2]`。
+2. **烧录后首次启动可能在 `MSPI Timing: Enter psram timing tuning` 处 panic 循环**（`Store/AMO access fault`）。**别急着怀疑自己刚写的代码** —— 那是 app_main 之前的 PSRAM 时序整定阶段。**连续复位 4 次实测：0 panic、每次都跑到 `jpeg_view` 的 4 行日志** ⇒ 判为烧录后首启的瞬态（这块是 v1.3 早期片 + PSRAM HEX 200MHz 的激进配置）。**判据：让它多复位几次，看是不是确定性的**，比读栈快得多。
+
+**⇒ 方案 D 的两端算力都测完了，都不是瓶颈**：
+
+| 环节 | 实测 | 30fps 需求 | 余量 |
+|---|---|---|---|
+| K230 硬件 JPEG **编码** | 56.98 fps | 30 | 1.9× |
+| P4 硬件 JPEG **解码** | 3.31 ms/帧 ≈ 302 fps | 30 | 10× |
+| 码率 | 1.7~3.2 Mbps（暗场景下限） | — | 链路能力的零头 |
+
+**⬜ 还差的唯一一环就是网络那一跳**（§10.5，等 C5 OTA）。
+**⬜ 上屏效果待人眼确认**：屏上应出现 `JPEG HW DECODE: PASS 640x480 ...` 绿字 + 右侧一张照片（放在 x=620，屏高 452 < 图高 480，**底部约 28 行会被裁掉**属预期）。若照片红蓝互换，把 `jpeg_view.c` 里 `.rgb_order` 从 `_BGR` 改 `_RGB` 即可（一行）。

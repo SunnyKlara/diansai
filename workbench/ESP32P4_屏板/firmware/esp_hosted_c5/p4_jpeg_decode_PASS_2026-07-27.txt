@@ -1,0 +1,17 @@
+﻿  I (6492) ai_panel: IMU addr=0x6A whoami=0x05 | a=(12,75,985)mg |a|=988mg | g=(1.11,-1.69,-0.05)dps | 29.6C  [????????????: |a|???1000??50, |w|<2]
+  I (8) boot: compile time Jul 27 2026 05:28:47
+  I esp_psram: Found 32MB PSRAM device
+  I esp_psram: Speed: 200MHz
+  I (820) esp_psram: SPI SRAM memory test OK
+  I (830) app_init: Project name:     p4_mipi_lcd
+  I (830) app_init: Compile time:     Jul 27 2026 05:28:11
+  I (833) esp_psram: Adding pool of 32000K of PSRAM memory to heap allocator
+  I (833) esp_psram: Adding pool of 2K of PSRAM memory gap generated due to end address alignment of irom to the heap allocator
+  I (834) esp_psram: Adding pool of 2K of PSRAM memory gap generated due to end address alignment of drom to the heap allocator
+  I (837) esp_psram: Reserving pool of 32K of internal memory for DMA/internal allocations
+  I (1419) jpeg_view: embedded frame: 6625 bytes, first2=FFD8 last2=FFD9
+  I (1419) jpeg_view: header says 640x480 sampling=50331650
+  I (1432) jpeg_view: decoded 614400 B in 3310 us | green avg 8/63 | nonzero 43886/43886 | raw 32..65535
+  I (1432) jpeg_view: JPEG_VIEW RESULT: PASS 640x480 6625B->614400B 3.31ms
+  I (1433) ai_panel: AI verification panel created (build Jul 27 2026 20:48:58), bl_test=0
+  I (1446) lvgl: ??? ai_panel(??????????????????) ?????????
