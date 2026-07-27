@@ -552,3 +552,57 @@ powershell -File tools\p4_boot_read.ps1 -Port COM7 -Seconds 60   # 看 OTA 进�
   - `k230_repl.ps1 -HardReset` 的"等端口先消失"分支 —— 实测那次打印 `disappeared=False`（复位太快没抓到消失），**该分支未被真正走到**。
 - ⚠️ `k230_link_test.py` 里的 AP 口令是明文占位（归档副本已抹）；真值只在一处，别复制。
 - ⚠️ **"不需要 USB-TTL"这句要限定范围**：§九 的结论（扫 AP + ping）确实不需要它，因为 C5 出厂自带固件。但**给 C5 做 OTA 之前想先备份出厂固件，就必须有 USB-TTL**（读 C5 的 flash 只能走它的 UART）。两处别混着读。
+
+### 10.8 ✅ K230 采集链路真机通过：硬件 JPEG **57 fps**（2026-07-27，无网络参与）
+
+链路的网络那半卡住时，先把**不依赖网络的那半**做完 —— 而且它恰好包含全链路唯一真正未知的 API。
+
+**做法（刻意隔离变量）**：`k230_jpeg_test.py` 只做 摄像头 → 硬件 VENC(JPEG) → 数字，**完全不碰网络**。这样万一失败，锅只能是相机/编码器，与那个卡住的 TCP 问题不混在一起。
+
+**实测（一次通过）**：
+
+```
+JPEG mem_free=3990912
+JPEG sensor configured 640x480 YUV420SP
+JPEG ChnAttrStr accepted profile=2          <- 全仓库唯一没人验过的 API, 现在有答案
+JPEG pipeline running, grabbing 60 frames
+JPEG 60 frames in 1053 ms -> 56.98 fps
+JPEG frame bytes min=6608 avg=7111 max=7239
+JPEG first-frame markers FFD8..FFD9 = True (len=6625)
+JPEG implied bitrate at measured fps = 3.24 Mbps
+JPEG wrote first frame to /sdcard/jpeg_test.jpg
+JPEG RESULT: PASS
+```
+
+**又把那一帧传回 PC 独立验证**（base64 过 REPL → 6625 字节，与板上报的一致 → `System.Drawing` 解码）：
+**`DECODED OK -> 640x480`**，`FFD8`开头 `FFD9`结尾，是一张**真实可解码的照片**（画面偏暗、左侧一道亮边 —— 镜头当时对着暗处）。
+证据入库：[`firmware/esp_hosted_c5/k230_jpeg_frame1_PASS_2026-07-27.jpg`](firmware/esp_hosted_c5/k230_jpeg_frame1_PASS_2026-07-27.jpg) + [`k230_jpeg_encode_PASS_2026-07-27.txt`](firmware/esp_hosted_c5/k230_jpeg_encode_PASS_2026-07-27.txt)。
+
+**已确定的 API（照抄即可，别再试）**：
+
+```python
+width = ALIGN_UP(640, 16)
+sensor = Sensor(); sensor.reset()
+sensor.set_framesize(width=width, height=480, alignment=12)
+sensor.set_pixformat(Sensor.YUV420SP)
+encoder = Encoder(); encoder.SetOutBufs(8, width, 480)
+chnAttr = ChnAttrStr(encoder.PAYLOAD_TYPE_JPEG, encoder.H264_PROFILE_MAIN, width, 480)  # profile=2, JPEG 下无意义但必须给
+encoder.Create(chnAttr)
+link = MediaManager.link(sensor.bind_info()['src'], (VIDEO_ENCODE_MOD_ID, VENC_DEV_ID, encoder.chn))
+encoder.Start(); sensor.run()
+# 取帧：GetStream -> 遍历 pack_cnt 用 uctypes.bytearray_at 拿字节 -> ReleaseStream
+```
+⚠️ `bytearray_at()` 给的是**指向编码器缓冲的视图**，`ReleaseStream()` 之后就失效 —— 要留着用必须先拷（本脚本里 `bytes(b)`）。
+
+**对方案 D 的影响（下调了带宽预算）**：
+
+| 项 | README §八 原先的纸面估算 | 本轮实测 |
+|---|---|---|
+| 分辨率 | 1280×452（贴屏比例） | 640×480 |
+| 帧率 | 30 fps（假设） | **57 fps 实测**（硬件编码器余量很大） |
+| 单帧大小 | ~87KB（按 10:1 压缩推） | **6.6~7.2KB** |
+| 需要的码率 | ~21 Mbps | **3.24 Mbps @57fps ≈ 1.7 Mbps @30fps** |
+
+⚠️ **诚实边界：7KB/帧是下限，不是代表值** —— 当时画面很暗、细节极少，JPEG 自然很小。明亮复杂场景同参数下可能是 20~60KB/帧（即 30fps 下 5~15 Mbps）。**但即便如此，也远低于这条链路的能力**（官方 SDIO 4-bit 端到端 TCP 44 Mbps；就算当前退化的 streaming 模式只有零头也够）⇒ **带宽从头到尾都不是方案 D 的瓶颈，链路能不能通才是。**
+
+**仍未做**：这些帧**一帧都没送上网**（TCP 那半见 §10.5）；P4 侧 JPEG 硬解 + 上屏没开工。

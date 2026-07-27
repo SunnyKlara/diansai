@@ -1,0 +1,11 @@
+﻿  ===         raise RuntimeError("ChnAttrStr rejected every profile value")
+  JPEG mem_free=3990912
+  JPEG sensor configured 640x480 YUV420SP
+  JPEG ChnAttrStr accepted profile=2
+  JPEG pipeline running, grabbing 60 frames
+  JPEG 60 frames in 1053 ms -> 56.98 fps
+  JPEG frame bytes min=6608 avg=7111 max=7239
+  JPEG first-frame markers FFD8..FFD9 = True (len=6625)
+  JPEG implied bitrate at measured fps = 3.24 Mbps
+  JPEG wrote first frame to /sdcard/jpeg_test.jpg
+  JPEG RESULT: PASS
