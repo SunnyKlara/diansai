@@ -263,10 +263,20 @@ if ($script:calLine -and $script:calLine -match 'counts/mm\*100=(\d+)') {
     }
 }
 
-# The low-speed compensation gate. With dz_drv=0 the end-of-turn correction asks for ~11 rpm, which
-# the speed loop turns into ~4.5% PWM - well under the ~10% motor deadband - so the wheel simply
-# does not move and the turn ends in FAIL=STALL. Measured: W0 -> STALL at 94.6 deg, W10 -> 90.2 deg.
-# It is an ENABLE, not a tuning knob, so refusing to drive without it saves a wasted run.
+# Low-speed floor check. Read the history right or you will re-run a dead end:
+#   * 2026-07-28 believed the end-of-turn STALL was caused by dz_drv=0 and "fixed" it with W10.
+#     That whole batch (8 W x Kd runs, plus the single "W10 -> j90 = 90.2 deg") was RETRACTED on
+#     07-29: the runs were mechanically contaminated and, more importantly, they were tuning the
+#     WRONG LAYER.
+#   * the real cause was the SPEED loop not delivering at low command: measured spin-in-place
+#     delivery ratio r25 -> 55%, r40 -> 72%, r60 -> 86%, r90 -> 91%. Below ~55 rpm the PWM bounces
+#     between the W floor and the breakaway floor, so the wheel crawls instead of turning.
+#   * the fix was CFG_TURN_W_MIN 30 -> 55 (keep the turn loop inside the range the layer below can
+#     actually honour). After that: j90 0.3 deg, j-90 1.1 deg, j360 x4 +/-0.3 deg per lap, gyro
+#     scale verified against an external reference to <0.35%. NOT ONE PID GAIN WAS CHANGED.
+# So dz_drv is still worth reporting (it is the low-speed PWM floor) but it is NOT the turn gate,
+# and this script must not claim it is. CFG_TURN_W_MIN is compile-time and `?` does not read it
+# back, so it cannot be checked from here - if turns stall, check that first, not the gains.
 $script:statLine = $null
 Send "?"; Wait 0.8
 if ($script:statLine) {
@@ -274,14 +284,14 @@ if ($script:statLine) {
     if ($script:statLine -match 'dz_drv=(\d+)') {
         $dzdrv = [int]$Matches[1]
         if ($dzdrv -le 0) {
-            L ""
-            L "dz_drv = 0 on the chip => every turn will very likely end in FAIL=STALL."
-            L "Fix, cheapest first:"
-            L "  a) this session only (RAM):  uart_send.ps1 -Port $Port -Cmd W10"
-            L "  b) permanent: CFG_DRV_FF_DZ is already 10 in config.h - reflash to put it on the chip"
-            L "     (note: the image is still 44192 bytes, so 'wrote N bytes' CANNOT tell the two"
-            L "      builds apart - verify with `?` reporting dz_drv=10)"
-            Finish "INCONCLUSIVE - low-speed compensation disabled, did NOT drive." 2
+            # A warning, NOT a stop: the chip that passed the whole turn acceptance run had
+            # CFG_DRV_FF_DZ = 10, so 0 means you are on an older image than the verified one.
+            L "  WARNING: dz_drv = 0 => the low-speed PWM floor is off, and this is NOT the image"
+            L "           that passed the turn acceptance (that one had dz_drv=10)."
+            L "           Set it for this session with:  uart_send.ps1 -Port $Port -Cmd W10"
+            L "           Permanent: CFG_DRV_FF_DZ is already 10 in config.h - reflash."
+            L "           Beware: 'wrote N bytes' cannot tell these builds apart when only a"
+            L "           constant changed - confirm with `?` reporting dz_drv=10."
         }
     }
 } else { L "firmware status      : NO READBACK" }
