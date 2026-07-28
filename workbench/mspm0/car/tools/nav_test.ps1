@@ -291,7 +291,7 @@ if (-not (SendConfirm $cmd $wantMode)) {
         L "  same session. So this is NOT a link problem - the chip most likely does not have this"
         L "  command at all, i.e. it is running an older image than the source tree."
         L "  Decisive check: send c0 - a firmware WITH the nav layer answers [nav] counts/mm*100=..."
-        L "  and one without it answers nothing. If the answer is missing: build.ps1 then flash.ps1."
+        L "  and one without it answers nothing. If the answer is missing: ..\build.ps1 then ..\flash.ps1."
         L "  Do NOT use 'telemetry has a NAV: field' as the version fingerprint - that field is only"
         L "  appended while in a nav mode, so it is absent in IDLE on BOTH versions."
     } else {

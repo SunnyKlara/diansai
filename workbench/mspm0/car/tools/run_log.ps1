@@ -186,8 +186,19 @@ L ("yaw net change         : {0:N1} deg   (min {1:N1} / max {2:N1})" -f $yawNet,
 L ("peak |wz|              : {0:N1} dps" -f $wzPeak)
 L ("peak |rpm| L / R       : {0} / {1}" -f $vPeak1, $vPeak2)
 L "  Straight-line read: DIFF near 0 and small yaw net change = it went straight."
-L "  ENC_COUNTS_PER_MM is still 0 in config.h, so counts are NOT millimetres yet -"
-L "  tape-measure the real distance once and back-fill it, then this becomes mm."
+# Do NOT hardcode the calibration state here - this line said "still 0" long after
+# config.h had been back-filled (caught 2026-07-28). Read the real value instead.
+L "  counts -> mm uses ENC_COUNTS_PER_MM in config.h (current value below); it is board-,"
+L "  wheel- and floor-specific, so re-measure with a tape after ANY of those change."
+$cfgH = Join-Path $PSScriptRoot '..\config.h'
+if (Test-Path $cfgH) {
+    $m = [regex]::Match((Get-Content $cfgH -Raw), '#define\s+ENC_COUNTS_PER_MM\s+([0-9.]+)f?')
+    if ($m.Success) {
+        $cpm = [double]$m.Groups[1].Value
+        if ($cpm -le 0) { L "  config.h ENC_COUNTS_PER_MM = 0  -> NOT calibrated, counts are NOT millimetres yet." }
+        else            { L ("  config.h ENC_COUNTS_PER_MM = {0}  -> {1:N1} mm travelled this run (L/R mean)." -f $cpm, ((($dC1 + $dC2) / 2.0) / $cpm)) }
+    }
+}
 
 if ($Csv -ne "") {
     $rows | Export-Csv -Path $Csv -NoTypeInformation -Encoding ASCII

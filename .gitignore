@@ -167,14 +167,16 @@ workbench/mspm0/**/gcc/device.lds.genlibs
 workbench/mspm0/**/gcc/Event.dot
 workbench/mspm0/**/gcc/*.log
 workbench/mspm0/**/gcc/_sctest/
-# 整定/探活串口抓数临时输出(tune_step.ps1/probe_serial.ps1 产出; 关键数据手动归档到调试日志,不入库)
-workbench/mspm0/**/*_out.txt
-# 脚本运行产物（串口/AT 会话记录、扫描/探测转储），不是资产
-# 命名放宽到 esp_*_com*.txt：实际出现过 esp_probe_comN / esp_scan_comN 两种前缀
-workbench/mspm0/**/esp_*_com*.txt
-# AT 事务日志与采集数据 = 运行产物, 不入库(要点已提炼进 天猛星主板平台/调试日志.md)。
-# 只匹配 .txt/.csv 后缀, 所以 esp_*.ps1 工具与 run_log.ps1 不受影响。
-workbench/mspm0/**/esp_*.txt
+# ---- MSPM0 真机采集产物: 一律不入库 ----
+# ⚠️ 2026-07-28 从"按名字逐个盖"改成"按后缀整体盖"，原因是按名字盖**实测盖不住**:
+#   历史规则只有 *_out.txt / esp_*.txt / *_log.txt 三种前后缀。但脚本的 -Out 是可自定义的,
+#   那晚整定时按 -Csv <tag>.csv 配对写成 -Out <tag>.txt (brk_w10_j90 / floor30_ground_left90_retry …),
+#   .csv 被下面的通配盖住了、.txt 一个都没盖住 ⇒ car/ 根积了 41 个 untracked .txt,
+#   git status 93 条里 68 条是噪声(73%), 直接妨碍"提交即清账"(噪声一多就看不见真该提交的资产)。
+# 判据: `git ls-files workbench/mspm0 | ? {$_ -like '*.txt'}` = **0 个**
+#   ⇒ 本工程从来没有任何该入库的 .txt, 整体忽略零副作用。
+#   (workbench 下 3 个该入库的 .txt 都在 mspm0 之外: ESP32P4 boot log / 天猛星 boot 字节证据 / ICM42688 说明)
+workbench/mspm0/**/*.txt
 # 真机采集的 CSV = 测量副产品, 不入库: 每个有意义的数字都已被curated进 调试日志.md 的表里,
 # 原始 CSV 只是过程数据(且 -Csv 是可选参数, 名字随手起)。原先只忽略 run_*.csv, 盖不住
 # nav300.csv / straight1.csv 这类, 于是每跑一趟 git status 就多几行噪声。
@@ -186,7 +188,11 @@ workbench/mspm0/**/*.csv
 # 里 55 个 untracked 中的 48 个变成噪声, 直接妨碍"提交即清账")。
 # 现改为**不带斜杠的模式 ⇒ 任意层级都匹配**, 并去掉 .txt 限制(也会有 .ps1/.json 落脚点)。
 _scratch*
-workbench/mspm0/**/*_log.txt
+# 采集产物的统一落脚点: workbench/mspm0/car/_logs/ (2026-07-28 建, 122+25 个历史文件已挪进去)。
+# 内容不入库, 但**目录说明要入库** —— 否则换机/新对话看不到"该往哪写"这条规矩, 又会散回工程根。
+# 注: 排除写成 _logs/* 而不是 _logs/ , 否则父目录被排除后无法再用 ! 重新包含子文件(同 vendor_ref 那段)。
+workbench/mspm0/**/_logs/*
+!workbench/mspm0/**/_logs/README.md
 # 每台机自己的工具链路径覆盖（industry pattern: local.properties / .env.local / CMakeUserPresets）
 # 机器配置不进版本控制，但它的"形状"要进 ⇒ 模板 _tools.local.example.ps1 是入库的。
 workbench/mspm0/**/_tools.local.ps1

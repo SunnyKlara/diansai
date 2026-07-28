@@ -18,8 +18,9 @@
 
 $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-Set-Location $here
-. (Join-Path $here '_tools.ps1')
+$proj = Split-Path $here -Parent      # car/  <- 2026-07-28: this script moved into car/tools/
+Set-Location $proj
+. (Join-Path $proj '_tools.ps1')      # _tools.ps1 stays at the project root, one level up
 $openocd = (Find-Openocd).Exe
 $scripts = Find-OpenocdScripts
 

@@ -107,7 +107,7 @@ if ($A -eq $null) {
     L "       MCU, not the wireless link."
     L "    2. openocd init: 'SWD DPIDR ...' OK but 'Examination failed' => target half-dead."
     L "       #1 suspect after a session with lots of motor running is BATTERY BROWN-OUT."
-    L "    3. Only if power is known-good and it still fails: unbrick_flash.ps1 (real lockup)."
+    L "    3. Only if power is known-good and it still fails: ..\unbrick_flash.ps1 (real lockup)."
     L "  Do NOT retry openocd in a loop - that is how the DAP USB got wedged before."
     Set-Content $Out $log.ToString() -Encoding ASCII
     try { $sp.Close(); $sp.Dispose() } catch {}
