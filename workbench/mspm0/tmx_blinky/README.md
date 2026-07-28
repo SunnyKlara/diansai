@@ -1,3 +1,18 @@
+# tmx_blinky —— 最小起步工程（血统 = TI SDK 例程 `gpio_toggle_output` + 后加的 GC9A01）
+
+> **它在本仓库的用途只有两个**：① 开新题时**复制它**当空白工程骨架（`car/` 是整车 26 个源文件，不适合当骨架）；
+> ② `car` 那边出问题时，用它证明"工具链 + CMSIS-DAP + 板子"这条链还活着（2026-07-24 首次真机点亮 PB22 就是它）。
+> **平时不要在这里写功能代码。** 引脚/参数真值一律看 [`工程事实SSOT.md`](../../../.kiro/steering/工程事实SSOT.md)。
+>
+> **2026-07-28 已瘦身 27 → 9 个文件**：删掉 `iar/`(8) `keil/`(4) `ticlang/`(3) 与 TI 原版 `README.html`(70KB) —— 我们只走 `gcc/` 路径，
+> 那 16 个是 SDK 样板、**全仓 0 引用**（删前已 `git grep` 核过）。要找回：`git checkout <本次commit>^ -- workbench/mspm0/tmx_blinky`。
+>
+> ⚠️ **两个已知坑，动它之前先知道**：
+> 1. **`gc9a01.c` 是旧副本**（11.6KB），`car/gc9a01.c`（14.8KB，含"一次 set_window + 整块像素流"的提速改写）才是现役版本。**别在这里改屏驱动**，改了也不会进 `car`。
+> 2. **`一键编译烧录.bat` 里的工具路径是写死的**（这台机恰好对得上），换机会挂。`car/一键编译烧录.bat` 才是自动探测版；换机先跑 `car\env_check.ps1`。
+>
+> ⬇️ 以下是 TI 原版例程说明，**讲的是 LaunchPad（J5/J6/J7 跳线、RGB LED），不是天猛星底板**，只当引脚参考读。
+
 ## Example Summary
 
 Toggles three GPIO pins using HW toggle register.
