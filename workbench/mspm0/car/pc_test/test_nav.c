@@ -363,6 +363,130 @@ static void test_turn_deadband_sign(void)
     ck_true("右转小制动力不被放大到死区下限", w < (int)n.turn_w_min);
 }
 
+/* ============ 10b. 起转下限的回差: 容差边缘不许再踹 ============
+ * 真机来源(2026-07-29 方形链式测试, 逐拍 f50 抓到):
+ *   err 仅 0.7 度时 PD 只要 w=-1, 旧逻辑却因 |err|>tol(2度) 把它抬到 w_min=55 (PWM 30%),
+ *   车被踹出容差 -> err 2.9 -> 4.4 度, 往回修又被踹 => settle 反复重置, 转角耗时
+ *   2.9/9.8/22.5s 随机, 最坏撞 15s 硬上限被强停(脚本侧 = TIMEOUT / 无 [nav] 成绩单)。
+ *   单独跑 j90 不暴露它(从 90 度误差起跑能量大, 常一次冲进容差就 settle 完)。
+ * 断言的是那条"只在离目标还远时才抬下限"的规则本身, 不是某个具体数值。 */
+static void test_turn_ff_hysteresis(void)
+{
+    printf("test_turn_ff_hysteresis (容差边缘不许被抬到起转下限):\n");
+    nav_t n; nav_init(&n);
+    n.kp_turn = 2.5f; n.kd_turn = 0.25f; n.turn_w_min = 55.0f; n.turn_tol_deg = 2.0f;
+    nav_start_turn(&n, 90.0f, 0, 0, 0.0f);
+    int v = 0, w = 0;
+
+    /* (a) 真机那一拍: 差 0.7 度、几乎不转 => PD 输出很小, 且必须**保持**很小 */
+    nav_in_t in = { 0, 0, 89.3f, 0.5f, 0.0f, 0.02f, 1 };
+    nav_step(&n, &in, &v, &w);
+    ck_true("容差内(0.7deg)不被抬到 w_min", abs(w) < (int)n.turn_w_min);
+    ck_true("容差内指令保持小量(<=Kp*err 量级)", abs(w) <= 5);
+
+    /* (b) 刚出容差但仍在回差带内(3 度 < tol*2=4) 且**车正在转** => 仍不抬, 交给 PD。
+     *     ⚠ 2026-07-29 翻案说明: 本条原来不带 "车正在转" 这个前提, 断言的是"回差带内一律不抬"。
+     *     真机方形第 4 个转角把它推翻了 —— 车停在 err=2.6°(正落在这个带里), PD 只给
+     *     2.5*2.6≈6.5RPM, 起不动静止的车, 700ms 后判 FAIL=STALL(done 87.3°)。
+     *     ⇒ 现在的规则是"**运动中**不抬(避免恒幅振荡), **卡住了**才抬(破静摩擦)"，
+     *     两个前提各自有真机证据, 所以这里按 rate 拆成 (b) 和 (b2) 两条。 */
+    nav_init(&n);
+    n.kp_turn = 2.5f; n.kd_turn = 0.25f; n.turn_w_min = 55.0f; n.turn_tol_deg = 2.0f;
+    nav_start_turn(&n, 90.0f, 0, 0, 0.0f);
+    in.yaw_deg = 87.0f; in.wz_dps = 20.0f;         /* err = +3 度, 车正在转(20dps) */
+    nav_step(&n, &in, &v, &w);
+    ck_true("回差带内且车正在转 -> 不抬到 w_min", w < (int)n.turn_w_min);
+    ck_true("回差带内方向依然正确(左转)", w > 0);
+    /* (b2) 同样的 3 度, 但车**卡住不动** => 必须抬到 w_min 破静摩擦, 否则就是那次 STALL */
+    nav_init(&n);
+    n.kp_turn = 2.5f; n.kd_turn = 0.25f; n.turn_w_min = 55.0f; n.turn_tol_deg = 2.0f;
+    nav_start_turn(&n, 90.0f, 0, 0, 0.0f);
+    in.yaw_deg = 87.0f; in.wz_dps = 0.0f;          /* err = +3 度, 车静止 */
+    nav_step(&n, &in, &v, &w);
+    ck_int("回差带内但车卡住 -> 抬到 w_min(破静摩擦)", w, (long)n.turn_w_min);
+    /* (b3) 真机那一次的原始数值回放: err=+2.6 度 静止 => 必须给一脚, 不许坐等 STALL */
+    nav_init(&n);
+    n.kp_turn = 2.5f; n.kd_turn = 0.25f; n.turn_w_min = 55.0f; n.turn_tol_deg = 2.0f;
+    nav_start_turn(&n, 90.0f, 0, 0, 0.0f);
+    in.yaw_deg = 87.4f; in.wz_dps = 0.0f;          /* err = +2.6 度 = 方形 leg4 的 STALL 点 */
+    nav_step(&n, &in, &v, &w);
+    ck_int("方形 leg4 的 STALL 点(2.6deg 静止) 现在会被踹一脚", w, (long)n.turn_w_min);
+
+    /* (c) 明显离目标还远(20 度)且 PD 输出仍小 => 必须抬, 否则回到 STALL 老病 */
+    nav_init(&n);
+    n.kp_turn = 0.01f; n.kd_turn = 0.0f; n.turn_w_min = 55.0f; n.turn_tol_deg = 2.0f;
+    nav_start_turn(&n, 90.0f, 0, 0, 0.0f);
+    in.yaw_deg = 70.0f; in.wz_dps = 0.0f;          /* err = +20 度, Kp 故意极小 */
+    nav_step(&n, &in, &v, &w);
+    ck_int("远离目标时仍抬到 w_min(卡死治法没被弄坏)", w, (long)n.turn_w_min);
+
+    /* (d) 反向对称: 冲过头 0.7 度也不许被踹回去 */
+    nav_init(&n);
+    n.kp_turn = 2.5f; n.kd_turn = 0.25f; n.turn_w_min = 55.0f; n.turn_tol_deg = 2.0f;
+    nav_start_turn(&n, 90.0f, 0, 0, 0.0f);
+    in.yaw_deg = 90.7f; in.wz_dps = 0.0f;          /* err = -0.7 度 */
+    nav_step(&n, &in, &v, &w);
+    ck_true("过冲 0.7deg 也不被抬到 w_min", abs(w) < (int)n.turn_w_min);
+}
+/* ============ 10b. 容差内指令必须**恰好 0**(躲开速度环的静摩擦补偿) ============
+ * 为什么 10 的 "abs(w)<=5" 不够: 速度环的 breakaway 补偿(CFG_DRV_BREAKAWAY_*)看的是
+ * "目标非 0 而轮子没转", 只要 w=±1 它就给 30% 占空。2026-07-29 真机逐拍: `w=2 -> PWM=-30,+30`,
+ * 一脚踹出 |wz|=25~35dps, 而到位判据的角速度闸门只有 NAV_STALL_DPS*3=9dps ⇒ settle_t 反复清零
+ * ⇒ 转到 15s 硬上限被强停、nav_finish 从未执行 ⇒ 连 [nav] 成绩单都不打(方形测试 leg1 turn
+ * 21.2s TIMEOUT 而 dYaw 显示已到位 89.9°)。⇒ 容差内必须**一点指令都不给**, 差 1RPM 都不行。 */
+static void test_turn_deadband_exact_zero(void)
+{
+    printf("test_turn_deadband_exact_zero (容差内指令必须恰好 0):\n");
+    nav_t n; nav_init(&n);
+    n.kp_turn = 2.5f; n.kd_turn = 0.25f; n.turn_w_min = 55.0f; n.turn_tol_deg = 2.0f;
+    nav_start_turn(&n, 90.0f, 0, 0, 0.0f);
+    int v = 0, w = 0;
+    nav_in_t in = { 0, 0, 89.3f, 0.5f, 0.0f, 0.02f, 1 };
+    /* (a) 容差内: 恰好 0, 不是"很小" */
+    nav_step(&n, &in, &v, &w);
+    ck_int("err=+0.7deg -> w 恰好 0", w, 0);
+    /* (b) 容差内 + 车还在快转: 也不给制动指令(制动指令同样会被 breakaway 放大成 30%);
+     *     靠 20:1 减速比与摩擦停车, 真机实测 |wz| 25.4->1.1dps 只用一拍 50ms */
+    in.yaw_deg = 90.5f; in.wz_dps = 30.0f;
+    nav_step(&n, &in, &v, &w);
+    ck_int("容差内即使 |wz|=30dps 也不给制动指令", w, 0);
+    /* (c) 容差边界外必须立刻有指令 —— 死区与作用区严格互补, 不许出现"两边都不管"的夹缝
+     *     (那会让车停在 2~4 度不动, 又是一种永不 DONE) */
+    in.yaw_deg = 87.5f; in.wz_dps = 0.0f;          /* err = +2.5 度, 出容差但在回差带内 */
+    nav_step(&n, &in, &v, &w);
+    ck_true("err=+2.5deg(刚出容差) 必须有非零指令", w != 0);
+    ck_true("且方向正确(左转为正)", w > 0);
+    in.yaw_deg = 92.5f;                            /* err = -2.5 度, 反向对称 */
+    nav_step(&n, &in, &v, &w);
+    ck_true("err=-2.5deg 反向也必须有非零指令", w != 0);
+    ck_true("且方向正确(右转为负)", w < 0);
+    /* (d) 死区没有把"能到位"弄坏: 整趟仿真仍须 DONE */
+    nav_t n2; nav_init(&n2);
+    simcar_t s; sim_init(&s);
+    nav_start_turn(&n2, 90.0f, 0, 0, 0.0f);
+    run_until_done(&n2, &s, 1, 0.01, 20.0);
+    ck_true("加死区后整趟仍到位 (NAV_DONE)", n2.state == NAV_DONE);
+    ck("终点仍在容差内", (float)s.yaw, 90.0f, 3.0f);
+    /* (e) STALL 检测必须**命令感知**: 死区内我们故意给 0, 车当然不转, 不许把这算成卡住。
+     *     原代码只看 rate ⇒ stall_t 照样累加, 与注释写的"给了指令但车不转"语义不符。 */
+    nav_t n3; nav_init(&n3);
+    n3.kp_turn = 2.5f; n3.kd_turn = 0.25f; n3.turn_w_min = 55.0f; n3.turn_tol_deg = 2.0f;
+    nav_start_turn(&n3, 90.0f, 0, 0, 0.0f);
+    nav_in_t q = { 0, 0, 89.5f, 0.0f, 0.0f, 0.02f, 1 };   /* err=+0.5 度, 车静止 */
+    nav_step(&n3, &q, &v, &w);
+    ck_int("死区内指令为 0", w, 0);
+    ck("死区内不许累加 stall_t(指令为 0 就不算卡住)", n3.stall_t, 0.0f, 1e-6f);
+    /* (f) 真·卡住仍必须抓到: 出容差 + 不转 => 指令被抬到 ±w_min(非 0) => stall_t 照常累加 */
+    nav_t n4; nav_init(&n4);
+    n4.kp_turn = 2.5f; n4.kd_turn = 0.25f; n4.turn_w_min = 55.0f; n4.turn_tol_deg = 2.0f;
+    n4.stall_s = 0.10f;
+    nav_start_turn(&n4, 90.0f, 0, 0, 0.0f);
+    nav_in_t r = { 0, 0, 80.0f, 0.0f, 0.0f, 0.02f, 1 };   /* err=+10 度, 车死活不转 */
+    nav_state_t st = NAV_RUN;
+    for (int i = 0; i < 20 && st == NAV_RUN; i++) st = nav_step(&n4, &r, &v, &w);
+    ck_true("真卡住(出容差+不转) 仍判 STALL", n4.fail == NAV_F_STALL);
+}
+
 /* ============ 11. 编码器兜底: 陀螺不可用时仍能转 ============ */
 static void test_turn_encoder_fallback(void)
 {
@@ -431,6 +555,8 @@ int main(void)
     test_turn_90();
     test_turn_settle();
     test_turn_deadband_sign();
+    test_turn_ff_hysteresis();
+    test_turn_deadband_exact_zero();
     test_turn_encoder_fallback();
     test_idempotent();
 

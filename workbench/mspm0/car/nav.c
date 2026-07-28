@@ -14,6 +14,12 @@
 #define NAV_STALL_RPM      5.0f    /* 走直: |平均转速| 低于此视为"没动" */
 #define NAV_STALL_DPS      3.0f    /* 转角: |角速度| 低于此视为"没转" */
 #define NAV_WZ_LP          0.3f    /* 编码器兜底时角速度差分的低通系数(越小越平滑) */
+/* 转角起转下限的**回差比例**: 只有 |err| > turn_tol_deg * 本值 时才抬到 turn_w_min。
+ * 结构常数, 不是要真机整定的参数, 故留在此而非 config.h。取 2.0 = 容差的两倍。
+ * 为什么必须 >1: 见 nav_turn 里那段注释 —— =1 时 err 在容差边缘反复穿越会让下限时开时关,
+ * 真机(2026-07-29 方形链式)表现为末端被 30% 占空反复踹出容差、settle 反复重置、最坏撞硬上限。
+ * 为什么不宜过大: 抬得太晚会让"离目标不远但动不了"重新变成 STALL(那正是 turn_w_min 要治的)。 */
+#define NAV_TURN_FF_HYST   2.0f
 
 static float fclampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 static float fsignf(float v) { return v > 0.0f ? 1.0f : (v < 0.0f ? -1.0f : 0.0f); }
@@ -265,17 +271,63 @@ nav_state_t nav_step(nav_t *n, const nav_in_t *in, int *v_rpm, int *w_rpm)
         float w = n->kp_turn * err - n->kd_turn * rate;
         /* 起转下限只补“仍朝目标方向但太小”的指令。D 项若已要求反向制动，必须原样保留；
          * 不能把小反向制动强改成沿误差方向继续推。2026-07-27 真机已抓到旧逻辑在 87.6°
-         * 把制动改成 +30RPM，导致过冲、反打与 STALL。w==0 时乘积为 0，仍会正常获得起转下限。 */
-        if (fabsf(err) > n->turn_tol_deg &&
+         * 把制动改成 +30RPM，导致过冲、反打与 STALL。w==0 时乘积为 0，仍会正常获得起转下限。
+         *
+         * ⚠ 回差(滞环) NAV_TURN_FF_HYST —— 2026-07-29 链式(方形)测试逼出来的，别去掉：
+         *   原判据只有 |err| > tol，而 tol 边缘 err 会反复穿越 ⇒ 下限时开时关。真机逐拍抓到
+         *   err 仅 0.7° 时仍被抬到 w_min=55（PWM 30%），把车踹到 2.9° → 4.4°，往回修又被踹,
+         *   于是 settle 计时反复重置 ⇒ 转角耗时 2.9/9.8/22.5s 随机，最坏撞 15s 硬上限被强停
+         *   (脚本侧表现为 "TIMEOUT / 没有 [nav] 成绩单")。
+         *   单独跑 j90 不暴露: 从 90° 误差起跑能量大, 常一次冲进容差就 settle 完; 链式时车带着
+         *   直线残留的 ~1.1° 航向误差进转角, 末端更易停在容差边缘 ⇒ 极限环概率大增。
+         *   ⇒ 只在“离目标还远”时才抬下限; 进了容差就交给 PD 自然收敛(它此时本来就够用)。 */
+        /* ⚠ 第二个触发条件 `stuck` —— 2026-07-29 方形第 4 个转角 FAIL=STALL 逼出来的：
+         *   光有 `far`(|err| > tol*HYST) 会留下一个**夹缝 tol ~ tol*HYST(2°~4°)**: 既进不了
+         *   下面的死区, PD 又只给 2.5*2.6 ≈ 6.5RPM —— 而实测低速达成率 r25 仅 55%，这么小的
+         *   指令**起不动静止的车**。真机: 车停在 err=2.6° 不动, stall_t 攒满 700ms 判 STALL
+         *   (done 87.3°)。⇒ 补一条"**按证据**触发"的静摩擦破除: 出了容差**而且车确实没在转**
+         *   就给一脚 w_min。它与 `far` 的区别是不看误差大小、只看"是不是真卡住了"，触发时机
+         *   恰好与下面 STALL 检测开始计数的时机相同(同一个 NAV_STALL_DPS 判据)。
+         *   为什么不改成 HYST=1.0(出容差就抬): 那会在**运动中**也抬到 55RPM，一脚约走 3°、
+         *   直接冲过 4° 宽的容差带, 再被抬回来 ⇒ 恒幅继电式振荡, 正是回差要治的老病。
+         *   收敛性: 一脚 ~3° < 容差带全宽 4° ⇒ 踹一下就落进带内, 然后死区归零停住。 */
+        int far   = fabsf(err) > n->turn_tol_deg * NAV_TURN_FF_HYST;
+        int stuck = fabsf(err) > n->turn_tol_deg && fabsf(rate) < NAV_STALL_DPS;
+        if ((far || stuck) &&
             fabsf(w) < n->turn_w_min &&
             w * err >= 0.0f)
             w = fsignf(err) * n->turn_w_min;
+
+        /* ⚠ 容差内**指令归零**(死区) —— 2026-07-29 链式(方形)测试第二次逼出来的，别去掉：
+         * 上一版回差只挡住了 nav 层把指令抬到 turn_w_min，但**下一层速度环还有静摩擦补偿**
+         * (CFG_DRV_BREAKAWAY_*, 30% 占空)，它照样把 w=±2RPM 这种微小指令放大成 30% 占空。
+         * 真机逐拍抓到 `w=2 -> PWM=-30,+30`，那一脚把车身踹到 |wz|=25~35dps，而到位判据的
+         * 角速度闸门只有 NAV_STALL_DPS*3 = 9dps ⇒ settle_t 被反复清零、永远攒不满 300ms
+         * ⇒ 一直转到 15s 硬上限被强停、nav_finish 从未执行 ⇒ **连成绩单都不打**
+         * (脚本侧只能干等满 SegTimeout 报 TIMEOUT，而 dYaw 显示车其实已经转到位 89.9°)。
+         * ⇒ 进了容差就彻底不给指令: 目标 0 时速度环不加 breakaway(实测 w=0 -> PWM=0,0)，
+         *   车靠 20:1 减速比与摩擦立刻停(实测 |wz| 25.4 -> 1.1dps 只用一拍 50ms)，
+         *   rate 闸门随即满足，300ms 后 DONE。
+         * 掉出容差后 err>tol 时 PD 立刻重新接管，且容差内不再注入能量 ⇒ 每次穿越都在耗能，
+         * 收敛而非极限环。⚠ **原先这里写"死区与作用区严格互补、不存在夹缝"是错的**，已被真机
+         * 推翻: 作用区里 PD 的指令可能小到起不动静止的车(方形第 4 个转角 STALL 在 2.6°)，
+         * 夹缝确实存在 —— 它由上面的 `stuck` 项补掉，不是由死区本身保证。
+         * 代价: 静态误差最大 = turn_tol_deg(2°)，仍优于阶梯目标 ≤3°(实测单次 0.3°)。 */
+        if (fabsf(err) <= n->turn_tol_deg)
+            w = 0.0f;
+
         *w_rpm = (int)fclampf(w, -n->turn_w_max, n->turn_w_max);
         *v_rpm = 0;                      /* 原地转: 线速度恒 0 */
 
-        /* 卡住检测(转角版): 给了指令但车不转 */
-        if (fabsf(rate) < NAV_STALL_DPS) n->stall_t += in->dt_s;
-        else                             n->stall_t = 0.0f;
+        /* 卡住检测(转角版): **给了指令**但车不转。
+         * ⚠ 2026-07-29 修: 原先只看 rate、**不看有没有给指令**，与注释所写的语义不符。
+         *   加了上面的死区之后这变成真 bug: 容差内我们是**故意**给 0 的, 车当然不转,
+         *   stall_t 却照样在攒 —— settle(300ms) 比 stall(700ms) 短所以多数时候 DONE 先赢,
+         *   但只要 err 在容差边界附近来回穿越, settle_t 反复清零而 stall_t 只认 rate、
+         *   一直累加 ⇒ 会把"正在正常收敛"误判成 STALL。
+         *   真·卡住仍然抓得到: 卡住时上面的 `stuck` 项必然把指令抬到 ±w_min(非 0)。 */
+        if (*w_rpm != 0 && fabsf(rate) < NAV_STALL_DPS) n->stall_t += in->dt_s;
+        else                                            n->stall_t = 0.0f;
         if (n->stall_s > 0.0f && n->stall_t >= n->stall_s)
             return nav_finish(n, NAV_F_STALL, v_rpm, w_rpm);
 
