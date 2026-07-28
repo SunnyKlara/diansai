@@ -50,6 +50,9 @@ static volatile int g_print_ms = PRINT_MS;   /* 遥测周期(真实ms). 整定�
 static uint32_t g_tele_seq = 0;              /* 遥测行号(行尾 #<seq>): 无线丢包只能靠它算, 见打印处注释 */
 /* 位置环精定位(2026-07-25, 运行时可调免重烧): 死区前馈% + 到位死区counts */
 static int g_pwm_dz  = CFG_POS_FF_DZ;   /* 死区前馈%(默认值+依据见 config.h). 运行时命令 w<v> 可改 */
+/* 速度环死区补偿（差速/转角/导航共用的 drive_closed_loop 用）。默认见 config.h §5；
+ * 运行时命令 `W<%>` 设置运动时最小 PWM；W0 同时关闭方向化 breakaway，完整退回旧行为。 */
+static int g_drv_dz  = CFG_DRV_FF_DZ;
 static int g_pos_tol = CFG_POS_TOL;     /* 到位死区counts(默认值+依据见 config.h). 运行时命令 e<v> 可改 */
 static int g_m1duty  = 0, g_m2duty = 0;  /* MODE_DUAL 调试(m5): 独立每电机 PWM%(命令 x/y), 每拍读双电流, 专门测通道串扰 */
 /* 差速层(m6 DRIVE 开环 / m7 DRIVE_CL 闭环)的车级指令: 命令 v<线速度> / r<角速度>。
@@ -217,6 +220,9 @@ static void print_status(void)
         uart_dbg_puts(" Kd*1e3="); uart_dbg_put_int((int)(gkd[li] * 1000));
     }
     uart_dbg_puts(" (PWM_CAP="); uart_dbg_put_int(PWM_CAP); uart_dbg_puts("%)");
+    /* 两个死区前馈都回读: 它们是"整定完必须回填 config.h"的运行时值, 不打出来就会忘掉自己在试哪个 */
+    uart_dbg_puts(" dz_pos="); uart_dbg_put_int(g_pwm_dz);
+    uart_dbg_puts(" dz_drv="); uart_dbg_put_int(g_drv_dz);
 #if CFG_ESP_UART_EN
     /* sinks=当前输出去向(1有线/2无线/3双发, `l<mask>` 改) | rej=被格式门拒掉的行数。
      * rej 是"门在干活"的唯一可观测证据: 接了 ESP 后每次 ESP 上电它应该跳 ~20(boot 日志行数)。
@@ -472,6 +478,12 @@ static void run_cmd(const char *s, int n)
                   break;
         case 'f': if (v >= 5 && v <= 2000) g_print_ms = v; break;   /* 遥测周期 ms(整定抓暂态用) */
         case 'w': if (v >= 0 && v <= 30)  g_pwm_dz  = v; break;     /* 位置死区前馈% */
+        /* W<%>: 速度环死区前馈(差速/转角/导航共用)。0=关(旧行为)。大写, 小写 w 是位置环那个。
+         * 整定完必须回填 config.h 的 CFG_DRV_FF_DZ, 否则断电即失。机理见 drive_closed_loop 注释。 */
+        case 'W': if (v >= 0 && v <= 30) { g_drv_dz = v;
+                      uart_dbg_puts("[drv] speed-loop deadzone FF = ");
+                      uart_dbg_put_int(g_drv_dz); uart_dbg_puts("%\n"); }
+                  return;
         case 'e': if (v >= 0 && v <= 300) g_pos_tol = v; break;     /* 位置到位死区 counts */
         case 'x': g_m1duty = clampi(v, -PWM_CAP, PWM_CAP); break;   /* DUAL(m5): M1 直驱 PWM% */
         case 'y': g_m2duty = clampi(v, -PWM_CAP, PWM_CAP); break;   /* DUAL(m5): M2 直驱 PWM% */
@@ -942,6 +954,34 @@ static void car_drive_mix(int v, int w, int *left, int *right)
  * 抽出来的理由与 stop_all() 完全一样: 这段逻辑原本只在 m7 里, 后来 m8/m9/m10 都要用它 ——
  * 复制四份的结局是"某天只改了其中三份", 而分叉出来的那一份平时看不出问题、只在特定模式下犯错。
  * 目标 0 时强制停 + 清积分: 否则停车指令下积分残留会让轮子 creep。 */
+static int drive_breakaway_floor(int motor, int target)
+{
+    if (motor == 0) {
+        return target > 0 ? CFG_DRV_BREAKAWAY_M1_POS : CFG_DRV_BREAKAWAY_M1_NEG;
+    }
+    return target > 0 ? CFG_DRV_BREAKAWAY_M2_POS : CFG_DRV_BREAKAWAY_M2_NEG;
+}
+
+static int drive_ff_step(int motor, int target, float speed, int pid_out)
+{
+    int floor;
+
+    /* W0 is the compatibility switch: no dynamic floor and no breakaway floor. */
+    if (g_drv_dz <= 0 || target == 0) return pid_out;
+
+    floor = g_drv_dz;
+    if (fabsf(speed) < CFG_DRV_BREAKAWAY_RPM) {
+        int breakaway = drive_breakaway_floor(motor, target);
+        if (breakaway > floor) floor = breakaway;
+    }
+
+    /* Follow the requested wheel direction, not the instantaneous PID-output sign.
+     * Near zero, using PID sign would flip the compensation and recreate the proven hunt bug. */
+    if (target > 0 && pid_out < floor)       pid_out = floor;
+    else if (target < 0 && pid_out > -floor) pid_out = -floor;
+    return clampi(pid_out, -PWM_CAP, PWM_CAP);
+}
+
 static void drive_closed_loop(int v, int w, const float spd[2], int out[2])
 {
     int l, r;
@@ -950,6 +990,15 @@ static void drive_closed_loop(int v, int w, const float spd[2], int out[2])
     else        { out[0] = (int)pid_step(&pid_v[0], (float)l, spd[0]); }
     if (r == 0) { pid_reset(&pid_v[1]); out[1] = 0; }
     else        { out[1] = (int)pid_step(&pid_v[1], (float)r, spd[1]); }
+
+    /* ---- Speed-loop PWM deadzone compensation ----
+     * The old additive W raised the whole turn, so W12 made j-90 overshoot worse. This version
+     * treats W as a moving-friction floor; only a stopped wheel gets the measured directional
+     * breakaway floor. Once speed is nonzero, the larger floor disappears automatically.
+     * Target zero still means exact stop + PID reset, so compensation can never create creep.
+     * This path is shared by m7/m8/m9/m10; W0 restores the exact pre-feature behavior. */
+    out[0] = drive_ff_step(0, l, spd[0], out[0]);
+    out[1] = drive_ff_step(1, r, spd[1], out[1]);
 }
 
 /* 位置环内环一步(精定位): |位置误差|<=到位死区 -> 停+复位速度PID(防末端抖/creep);

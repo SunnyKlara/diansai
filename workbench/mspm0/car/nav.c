@@ -263,9 +263,12 @@ nav_state_t nav_step(nav_t *n, const nav_in_t *in, int *v_rpm, int *w_rpm)
         }
 
         float w = n->kp_turn * err - n->kd_turn * rate;
-        /* 死区前馈: |误差| 还在容差外但指令太小 ⇒ 抬到 turn_w_min, **符号取误差方向**。
-         * ⚠ 不能按 PID 输出符号叠 —— 位置环精定位就因此在末端狂震过一次(config.h §5)。 */
-        if (fabsf(err) > n->turn_tol_deg && fabsf(w) < n->turn_w_min)
+        /* 起转下限只补“仍朝目标方向但太小”的指令。D 项若已要求反向制动，必须原样保留；
+         * 不能把小反向制动强改成沿误差方向继续推。2026-07-27 真机已抓到旧逻辑在 87.6°
+         * 把制动改成 +30RPM，导致过冲、反打与 STALL。w==0 时乘积为 0，仍会正常获得起转下限。 */
+        if (fabsf(err) > n->turn_tol_deg &&
+            fabsf(w) < n->turn_w_min &&
+            w * err >= 0.0f)
             w = fsignf(err) * n->turn_w_min;
         *w_rpm = (int)fclampf(w, -n->turn_w_max, n->turn_w_max);
         *v_rpm = 0;                      /* 原地转: 线速度恒 0 */

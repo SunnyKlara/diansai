@@ -328,7 +328,7 @@ static void test_turn_settle(void)
 /* ============ 10. 原地转: 死区前馈符号必须跟误差, 且末端不许翻号 ============ */
 static void test_turn_deadband_sign(void)
 {
-    printf("test_turn_deadband_sign (小误差也要给得动的指令, 且符号跟误差):\n");
+    printf("test_turn_deadband_sign (起转补偿不许覆盖 D 制动):\n");
     nav_t n; nav_init(&n);
     n.kp_turn = 0.01f; n.kd_turn = 0.0f;     /* 故意让 P 算出来的指令小于死区 */
     nav_start_turn(&n, 90.0f, 0, 0, 0.0f);
@@ -343,8 +343,24 @@ static void test_turn_deadband_sign(void)
     nav_step(&n, &in, &v, &w);
     ck_int("负误差 -> 负指令(右转回来)", (w < 0) ? 1 : 0, 1);
     ck_int("幅值同为死区前馈值", -w, (long)n.turn_w_min);
-    /* 这一条对应位置环精定位那个真机 bug: 前馈若按"PID 输出符号"叠, 末端过零会反复翻号 -> 狂震。
-     * 按误差方向叠时, 只要没跨过目标, 符号就是恒定的。 */
+
+    /* 真机回放点: tgt=90, yaw=87.6, wz=+50, Kp=2.5, Kd=0.60 => raw w=-24。
+     * 负号是 D 在目标前主动制动；旧逻辑因 |w|<30 把它强改为 +30，反而继续加速。 */
+    nav_init(&n);
+    n.kp_turn = 2.5f; n.kd_turn = 0.60f; n.turn_w_min = 30.0f;
+    nav_start_turn(&n, 90.0f, 0, 0, 0.0f);
+    in.yaw_deg = 87.6f; in.wz_dps = 50.0f;
+    nav_step(&n, &in, &v, &w);
+    ck_true("左转目标前 D 反向制动不被改回正向", w < 0);
+    ck_true("左转小制动力不被放大到死区下限", -w < (int)n.turn_w_min);
+
+    nav_init(&n);
+    n.kp_turn = 2.5f; n.kd_turn = 0.60f; n.turn_w_min = 30.0f;
+    nav_start_turn(&n, -90.0f, 0, 0, 0.0f);
+    in.yaw_deg = -87.6f; in.wz_dps = -50.0f;
+    nav_step(&n, &in, &v, &w);
+    ck_true("右转目标前 D 反向制动不被改回负向", w > 0);
+    ck_true("右转小制动力不被放大到死区下限", w < (int)n.turn_w_min);
 }
 
 /* ============ 11. 编码器兜底: 陀螺不可用时仍能转 ============ */
