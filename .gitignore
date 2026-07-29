@@ -167,8 +167,35 @@ workbench/mspm0/**/gcc/device.lds.genlibs
 workbench/mspm0/**/gcc/Event.dot
 workbench/mspm0/**/gcc/*.log
 workbench/mspm0/**/gcc/_sctest/
-# 整定/探活串口抓数临时输出(tune_step.ps1/probe_serial.ps1 产出; 关键数据手动归档到调试日志,不入库)
-workbench/mspm0/**/*_out.txt
+# ---- MSPM0 真机采集产物: 一律不入库 ----
+# ⚠️ 2026-07-28 从"按名字逐个盖"改成"按后缀整体盖"，原因是按名字盖**实测盖不住**:
+#   历史规则只有 *_out.txt / esp_*.txt / *_log.txt 三种前后缀。但脚本的 -Out 是可自定义的,
+#   那晚整定时按 -Csv <tag>.csv 配对写成 -Out <tag>.txt (brk_w10_j90 / floor30_ground_left90_retry …),
+#   .csv 被下面的通配盖住了、.txt 一个都没盖住 ⇒ car/ 根积了 41 个 untracked .txt,
+#   git status 93 条里 68 条是噪声(73%), 直接妨碍"提交即清账"(噪声一多就看不见真该提交的资产)。
+# 判据: `git ls-files workbench/mspm0 | ? {$_ -like '*.txt'}` = **0 个**
+#   ⇒ 本工程从来没有任何该入库的 .txt, 整体忽略零副作用。
+#   (workbench 下 3 个该入库的 .txt 都在 mspm0 之外: ESP32P4 boot log / 天猛星 boot 字节证据 / ICM42688 说明)
+workbench/mspm0/**/*.txt
+# 真机采集的 CSV = 测量副产品, 不入库: 每个有意义的数字都已被curated进 调试日志.md 的表里,
+# 原始 CSV 只是过程数据(且 -Csv 是可选参数, 名字随手起)。原先只忽略 run_*.csv, 盖不住
+# nav300.csv / straight1.csv 这类, 于是每跑一趟 git status 就多几行噪声。
+workbench/mspm0/**/*.csv
+# 输出被 shell 吞掉时的重定向落脚点: 统一叫 _scratch*, 天生被忽略,
+# 免得再出现 fp1.txt/mdw2.txt/nav_run3.txt 这类一次性文件散落在工程里。
+# ⚠️ 原规则写成 workbench/mspm0/**/_scratch*.txt, 作用域错了 —— agent shell 的 cwd 是
+# **仓库根**, 落脚点实际掉在根目录, 那条规则一个都盖不住(实测积到 48 个, 把 git status
+# 里 55 个 untracked 中的 48 个变成噪声, 直接妨碍"提交即清账")。
+# 现改为**不带斜杠的模式 ⇒ 任意层级都匹配**, 并去掉 .txt 限制(也会有 .ps1/.json 落脚点)。
+_scratch*
+# 采集产物的统一落脚点: workbench/mspm0/car/_logs/ (2026-07-28 建, 122+25 个历史文件已挪进去)。
+# 内容不入库, 但**目录说明要入库** —— 否则换机/新对话看不到"该往哪写"这条规矩, 又会散回工程根。
+# 注: 排除写成 _logs/* 而不是 _logs/ , 否则父目录被排除后无法再用 ! 重新包含子文件(同 vendor_ref 那段)。
+workbench/mspm0/**/_logs/*
+!workbench/mspm0/**/_logs/README.md
+# 每台机自己的工具链路径覆盖（industry pattern: local.properties / .env.local / CMakeUserPresets）
+# 机器配置不进版本控制，但它的"形状"要进 ⇒ 模板 _tools.local.example.ps1 是入库的。
+workbench/mspm0/**/_tools.local.ps1
 
 # ---------- 天猛星资料：第三方大包/固件/工具不入库（可重下，避免撑大仓库 + Windows 超长路径）----------
 workbench/天猛星主板平台/资料/ESP8266-01S/原装出厂固件库/
@@ -186,10 +213,25 @@ workbench/天猛星主板平台/资料/**/*.zip
 library/**/参考工程_2024H电赛车_MIT/rollout-*.jsonl
 
 # ---------- 外部参考仓库镜像 library/vendor_ref/ ----------
-# 只入库「索引 + 刷新脚本」，克隆下来的第三方代码本体一律不入库。
-# 原因(合规，非洁癖)：清单里多数仓库【没有 LICENSE 文件】，无权在我们这个公开仓库里
-#   再分发；本地留副本用于"读思路/赛场离线查阅"是合规的。许可逐仓看 00_INDEX.md。
+# 只入库「总索引 + 刷新脚本 + 四个桶各自的 README」，克隆下来的第三方代码本体一律不入库。
+# 原因(合规，非洁癖)：30 个仓库里 22 个【没有 LICENSE 文件】，无权在我们这个公开仓库里
+#   再分发；本地留副本用于"读思路/赛场离线查阅"是合规的。许可逐仓看 00_INDEX.md §3。
 # 需要重建镜像：cd library/vendor_ref && .\_refresh.ps1
+# 注：git 规则是「父目录被排除后，子文件无法再被 ! 重新包含」，所以必须逐层
+#     先 !目录/ 再 目录/* 再 !目录/README.md —— 别改成通配，会把第三方仓库自带的
+#     README 也一起 staged 进来。
 library/vendor_ref/*
 !library/vendor_ref/00_INDEX.md
 !library/vendor_ref/_refresh.ps1
+!library/vendor_ref/car/
+!library/vendor_ref/topics/
+!library/vendor_ref/agent/
+!library/vendor_ref/other/
+library/vendor_ref/car/*
+!library/vendor_ref/car/README.md
+library/vendor_ref/topics/*
+!library/vendor_ref/topics/README.md
+library/vendor_ref/agent/*
+!library/vendor_ref/agent/README.md
+library/vendor_ref/other/*
+!library/vendor_ref/other/README.md

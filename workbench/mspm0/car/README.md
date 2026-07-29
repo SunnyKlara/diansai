@@ -1,25 +1,30 @@
-# car —— 天猛星小车起步工程（双电机 PWM + GC9A01 仪表盘）
+# car —— 天猛星小车固件（差速底盘 · 速度/位置双环 · 陀螺航向 · 车级导航）
 
-MSPM0G3507（天猛星主板）小车底盘起步固件：上电后初始化 GC9A01 圆屏当仪表盘，
-用 TIMA0 四路 PWM 驱动两个 DRV8231 有刷电机，循环演示 **前进 / 停 / 转弯 / 后退**，
-屏上实时显示当前动作与两电机占空比，板载 PB22 LED 心跳闪烁。
+MSPM0G3507（天猛星主板）两驱差速小车固件。**上电进 `IDLE` 不动**，串口按 115200 持续吐遥测
+（`[ctl] <模式> ... | I: | V: | PWM: | C: | D: | Y: W:`），LCD 默认停在**水平仪页**，PB22 心跳闪。
+`car.c` 现约 1450 行，**11 个模式 `m0..m10`**（IDLE / 电流 / 速度 / 位置 / 开环 / DUAL 直驱 /
+开环差速 / 闭环差速 / 走 N mm / 转 N 度 / 视觉伺服），全部靠串口命令在线切换与调参。
+
+> 🔴 **2026-07-28 更正**：本文原先写的是最早那版"循环演示 前进/停/转弯/后退"的起步固件
+> （`car.c` 里的 `steps[]` 动作表 + 屏显 `CAR DEMO`）。**那套东西早已不存在**（实测 `steps[]` / `CAR DEMO` 命中 **0**）。
+> 固件命令集/已标定参数/引脚一律以 [`工程事实SSOT.md`](../../../.kiro/steering/工程事实SSOT.md) 为准。
 
 > 🔴 **代码位置铁律**：本工程放在仓库内**全 ASCII 路径** `workbench/mspm0/car/`。
 > GCC 工具链不认中文路径（`device.opt ... not found`）——**不要把工程移到中文目录**。
 > `C:\ti` 只放工具（SDK / 编译器 / OpenOCD / SysConfig）。
 
-## 引脚分配
+## 引脚分配 → **不在本文**
 
-| 功能 | 信号 | 引脚 | 说明 |
-| --- | --- | --- | --- |
-| 电机 M1 | IN1 / IN2 | PA8 / PA9 | TIMA0_C0 / TIMA0_C1 |
-| 电机 M2 | IN1 / IN2 | PB12 / PB13 | TIMA0_C2 / TIMA0_C3 |
-| 显示 | SCL / SDA | PB9 / PB8 | SPI1_SCK / SPI1_MOSI @8MHz |
-| 显示 | RES / DC / CS / BLK | PB10 / PB11 / PB14 / PB26 | GPIO 手控 |
-| 状态灯 | STATUS_LED | PB22 | 板载蓝 LED，心跳 |
-| 下载 | SWCLK / SWDIO | PA20 / PA19 | 外置 CMSIS-DAP SWD |
+原先这里有一张 6 行的引脚表。**2026-07-28 删掉，改成指针**——它只覆盖了电机/屏/灯/SWD，
+**缺编码器、IMU、电流采样、无线 ESP、电磁铁**，而"看起来完整的不完整表"比没有表更危险
+（本仓库已因多处复述引脚/参数被真机打脸过：电流通道映射与 syscfg 原假设相反、`ENC_CPR` 两次被推翻）。
 
-PWM：TIMA0，周期计数 `MOTOR_PWM_PERIOD=1600`（约 20kHz，静音）。
+| 要什么 | 去哪 |
+|---|---|
+| **引脚（唯一真值源）** | 载板 [`00_载板接线设计_天猛星平台.md`](../../天猛星主板平台/00_载板接线设计_天猛星平台.md) **§10.1**，摘要见 SSOT **§B** |
+| **控制参数**（PID / 时基 / 限幅 / 标定值） | 本目录 [`config.h`](config.h)（每个值标了出处：`[实测]`/`[标定]`/`[保护]`/`[估计]`） |
+| 电流通道映射与定标 | `motor.c` 顶部注释（**按真机实测映射，非 syscfg 假设**） |
+| 编码器解码方式/符号 | `encoder.c` 顶部注释（⚠️ `encoder.h` 头注释已知过时，见 SSOT §E） |
 
 ## 接线（DRV8231 模块 + 电机）
 
@@ -27,10 +32,11 @@ PWM：TIMA0，周期计数 `MOTOR_PWM_PERIOD=1600`（约 20kHz，静音）。
 
 - **H1（输入侧）**：`+12V`（电机电源） / `IN1` / `+3.3V`（逻辑，接天猛星 3V3） / `IN2`
   - M1：IN1←PA8，IN2←PA9；M2：IN1←PB12，IN2←PB13
-- **H2（输出侧）**：`GND` / `ADC`（电流采样，本工程暂不用） / `OUT1` / `OUT2` → 接电机两端
+- **H2（输出侧）**：`GND` / `ADC`（IPROPI 电流采样，**现在在用**，遥测 `I:` 那两个数就是它） / `OUT1` / `OUT2` → 接电机两端
 - **共地**：DRV8231 的 GND 必须与天猛星 GND 相连。
 
-> ⚠ 没接电机时，屏上照样会切换动作（PWM 在发，只是没负载看不到转动），可用来先验证显示与固件在跑。
+> ⚠ **不接电机也能验固件在跑**：串口有 `[ctl]` 遥测 + LCD 有画面即可；但**转速/电流/里程全部是 0**，
+> 这些必须上电机、且**必须落地**才算数（"台架 ≠ 能跑的车"是本仓库反复踩到的一条）。
 
 ## 双向控制约定（motor.c）
 
@@ -41,49 +47,63 @@ motor_set(MOTOR_M1, 0);    // 0：滑行  两路都 0
 motor_stop_all();          // 两电机滑行停
 ```
 
-`duty` 范围 `-100..100`。演示动作表在 `car.c` 的 `steps[]`，可自行改。
+`duty` 范围 `-100..100`。⚠️ 7.4V 电机跑 12V 母线 ⇒ **PWM 上限封 60%**（值见 `config.h`）。
+上层不要直接调 `motor_set()`：走 `m7` 闭环差速或 `m8/m9` 导航层，理由是左右电机机械不对称
+（开环实测 1.2 倍，闭环压到 1.0）+ 低速静摩擦死区左右不同。
 
-## 编译
+## 工具脚本 → 索引在 [`TOOLS.md`](TOOLS.md)
 
-在 `workbench\mspm0\car\gcc\` 下（PATH 需含 `...\mingw64\bin` 与 arm-none-eabi-gcc）：
-
-```powershell
-mingw32-make
-```
-
-产物 `car.out`（当前 text≈12.8KB）。改了 `car.syscfg` 后 make 会先跑 SysConfig 重生成
-`ti_msp_dl_config.c/.h`（较慢，属正常）。也可 VS Code 打开本目录 `Ctrl+Shift+B`。
-
-## 烧录（外置 CMSIS-DAP，只接 SWD：DIO/CLK/GND）
-
-节奏铁律：**烧一次 → 按板载 RST → 看现象**，别连续快烧（会把 MCU 怼进 lockup）。
+**2026-07-28 重排**：本目录根只留 **11 个工程入口**（下面这一节用到的编译/烧录/救砖/自检），
+**其余 34 个诊断/整定/验收/bring-up 脚本在 [`tools/`](tools/)**。切法与实测判据见 `TOOLS.md §3`。
 
 ```powershell
-openocd -s C:/ti/xpack-openocd-0.12.0-7/openocd/scripts `
-  -f interface/cmsis-dap.cfg -c "adapter speed 500" `
-  -f target/ti_mspm0.cfg `
-  -c "program car.out reset exit"
+# 一律从 car/ 跑（tools\ 是路径的一部分，别 cd 进去）
+.\tools\uart_send.ps1 -Cmd "?"                    # 发命令看状态
+.\tools\run_log.ps1   -Port COM4 -Seconds 10      # 跑一趟出成绩单
+.\tools\nav_test.ps1  -Turn 90 -Port COM4         # 导航层验收(三态)
 ```
 
-看到 `** Programming Finished **` + `Resetting Target` 即成功；屏显 `CAR DEMO` 开始循环。
+[`TOOLS.md`](TOOLS.md) 把 46 个按角色分组，每个带**一句话作用 + 证据等级(✅真机/🟡PC/⬜零验证/💤休眠) + 生命周期**，
+并给出"赛场只需这 6 个"。**别翻目录找脚本。**
 
-> ⚠️ 用 **500kHz + 不带 verify**。@1000kHz 的 `verify` 偶发 `timed out while waiting for target halted`
-> （CRC 校验要 halt CPU 跑校验程序，SWD 时序抖动超时）→ Verify Failed 且不复位；但 flash **已写入成功**。
-> 开发期写完直接 `reset` 跑，看屏/看串口 log 就知道对不对，不必每次 CRC 校验。
+## 编译 / 烧录 / 救砖（一律走脚本，别再手敲 openocd）
 
-### 万一烧不进 / 报 `Could not find MEM-AP`（救砖）
-
-连续快烧后 MCU 可能进 double-fault lockup。用工厂复位一条龙，**执行时手点一下 RST**：
+> 🔴 **本节 2026-07-28 重写。** 原文这里贴的是写死 `C:\ti\xpack-openocd-0.12.0-7` 的 openocd 命令行
+> 与"只接 SWD：DIO/CLK/GND"的说法，**两条都已被实测推翻**：路径是机器相关的（两台开发机布局完全不同，
+> 全仓 25 处硬编码已收敛进 `_tools.ps1`）；`nRESET` **其实是接着的**，只是 openocd 默认 `srst_open_drain`
+> 拉不低它 ⇒ 曾被误读成"软复位起不来、冷启动只认物理 RST"。改 `srst_push_pull` 后烧录/救砖全自动、不用按 RST。
+> 脚本里已经带上了这些结论，手敲命令行等于把踩过的坑再踩一遍。
 
 ```powershell
-openocd -s C:/ti/xpack-openocd-0.12.0-7/openocd/scripts `
-  -f interface/cmsis-dap.cfg -c "adapter speed 1000" `
-  -f target/ti_mspm0.cfg `
-  -c "init; mspm0_factory_reset; flash write_image erase car.out; verify_image car.out; reset run; shutdown"
+.\env_check.ps1        # 换机/到场第 0 步：工具链 PASS/FAIL + car.out 的 text+data(烧录对账值)
+.\build.ps1            # 只编译不烧录；-Touch 强制重编。改了 config.h 必须看到 "Building car.obj"
+.\flash.ps1            # 烧录(单会话全自动)。判据 = wrote N + verified N，且 N == 上面那个 text+data
 ```
 
-## 预期现象
+节奏铁律：**烧一次 → 看现象 → 改 → 再烧**。**绝不连续快烧、绝不反复 halt、绝不打断 program** ——
+那正是把本板怼进 double-fault lockup 的原因。同理**绝不 `make clean`**（会删掉 SDK 共享 startup 源文件）。
 
-上电/复位后：背光亮 → 屏顶 `CAR DEMO`（绿）→ 中间大字显示动作
-（`FORWARD`→`STOP`→`TURN`→`STOP`→`REVERSE`→`STOP` 循环）→ 下方 `M1:+40 M2:-40` 占空行；
-PB22 蓝灯按 150ms 心跳闪。接了电机则同步正转 / 原地转 / 后退。
+- `verify` 报 `diff` 时 **先别重烧**：跑 `.\verify_addr.ps1 -Addresses 0x4,0x7510` 只读复核。
+  该"假失败"（host 侧比对读到擦除前的陈旧数据）已第 5 次复现，重烧只是白烧 87s + 多担一次砖化风险。
+- 报 `Could not find MEM-AP` = 真砖了：`.\unbrick_flash.ps1`（解锁 + 烧录必须**同一 openocd 会话**，
+  因为 factory_reset 会擦空 flash、空 flash 会重新上锁）。判据 `Factory reset success!` → `wrote N` → `verified N`。
+- ⚠️ **每次 openocd `init` 都会复位芯片**（官方 cfg 把写 `SYSRST` 的 proc 挂在 `examine-start`）⇒
+  想用 SWD 写 RAM 改运行时变量不可行，运行时状态只能走串口命令。
+
+改了 `car.syscfg` 先 `.\syscfg_check.ps1`（静态体检 + 临时目录试生成）；加外设前先 `.\sdk_find.ps1 <模块>`
+查官方例程怎么配，别凭记忆猜 DriverLib API。
+
+## 预期现象（上电/复位后）
+
+| 看哪 | 应该看到 | 看不到说明 |
+|---|---|---|
+| 串口（115200） | `[ctl] IDLE tgt=0 \| I:0,0 \| V:0,0 \| PWM:0,0 \| C:..,.. \| D:0,0 \| Y:.. W:..` 持续刷 | 固件没在跑 / 串口被别的窗口独占 |
+| LCD | **水平仪页**（重锤小球 + 容差环；小球滚向下沉那侧） | 屏或 SPI 链路问题 |
+| PB22 | 蓝灯心跳闪 | 固件卡在启动早期 |
+| 电机 | **不动**（上电必在 `IDLE`，这是有意的安全设计） | 若上电就动 = 出大问题，立刻断电 |
+
+> ⚠️ **别为"把水平仪小球调到正中"费劲**：偏航用的是"把角速度投影到 `k` 标定时的天顶方向"，
+> **不要求车放平/小球居中**；居中只影响 pitch/roll（车题用不上）。这页是诊断页，不是定轴前置。
+>
+> **每次上电第一件事：发 `k` 做陀螺零偏标定**（车按行驶姿态放稳、松手）。
+> 实测差别 24 倍：不标 −9.6°/min、标完 +0.4°/min。这比调任何参数都重要。

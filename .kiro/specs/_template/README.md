@@ -59,7 +59,7 @@ xcopy /E /I ".kiro\specs\_template" ".kiro\specs\2025-A-能量回馈变流器"
 
 - **流程详解**：`skills/01_审题破局/最高标准刷题工作流.md`（步骤 + 8 维评分 + commit 节奏）
 - **目录强制约定**：`.kiro/steering/电赛备赛仓库规范.md`
-- **AI 协作工作流**：`library/通用能力/AI协作工作流.md`（6 阶段 + 反模式）
+- **AI 协作总纲**：`skills/00_AI协作备赛操作系统.md`（⓿ 先读）+ `.kiro/steering/AI协作调试方法论.md`（always 注入）
 
 ## 已有标杆参考
 

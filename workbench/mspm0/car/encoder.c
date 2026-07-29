@@ -18,9 +18,12 @@ static volatile int32_t g_cnt[2] = {0, 0};
 static uint8_t g_state[2] = {0, 0};   /* 上次 (A<<1)|B 状态, 2 bit */
 
 /* 4x 正交解码增量表: 下标 = (旧状态<<2)|新状态; 合法单步跳变 ->+1/-1, 非法(跳2格/无变化)->0
- * 符号约定: 已翻转, 使【正 PWM(电机正转) => 计数/转速为正】。
- * (2026-07-24 真机: 原符号下 正PWM 读到负速度 -> 速度环正反馈发散到饱和; 翻转 QDEC 各项修正。
- *  两路电机在本测试同 PWM 同向、编码器都读反, 故统一翻转即可; 若日后差速需左右异号, 在 car_drive 层处理。) */
+ *
+ * ⚠ 本表只定义"某个固定朝向", **不承载板级线束朝向** —— 那个由 config.h §2.1 的
+ *   CFG_ENC_SIGN_L / CFG_ENC_SIGN_R 决定, 在下面 encoder_poll() 里乘上去。
+ *   历史: 2026-07-24 曾直接把本表整体取反来迁就当时那块飞线板, 注释还写着"已翻转, 使正PWM=>计数为正";
+ *   2026-07-28 换新打板载板后那句话成了假话(左路正PWM前进却数负), 而且**左右还不同构**(右路是电机反),
+ *   一个全局表根本表达不了。⇒ 别再改本表, 要改朝向请改 config.h。 */
 static const int8_t QDEC[16] = {
      0, +1, -1,  0,
     -1,  0,  0, +1,
@@ -54,12 +57,15 @@ void encoder_init(void)
 /* 采一次 A/B、按正交状态机累加计数。须以固定速率周期性调用(主循环每 tick 调用即可)。 */
 void encoder_poll(void)
 {
+    /* 板级线束朝向在此乘入(见 config.h §2.1): 让"物理前进 => 计数为正"对两侧同时成立。
+     * 乘在**源头**而不是各消费者处 —— 速度环/里程/nav 全部读 encoder_count(), 只有在这里
+     * 统一符号才能保证它们看到的是同一套约定。 */
     uint8_t s1 = read_state(ENC_1);
-    g_cnt[ENC_1] += QDEC[(g_state[ENC_1] << 2) | s1];
+    g_cnt[ENC_1] += (int32_t)CFG_ENC_SIGN_L * QDEC[(g_state[ENC_1] << 2) | s1];
     g_state[ENC_1] = s1;
 
     uint8_t s2 = read_state(ENC_2);
-    g_cnt[ENC_2] += QDEC[(g_state[ENC_2] << 2) | s2];
+    g_cnt[ENC_2] += (int32_t)CFG_ENC_SIGN_R * QDEC[(g_state[ENC_2] << 2) | s2];
     g_state[ENC_2] = s2;
 }
 

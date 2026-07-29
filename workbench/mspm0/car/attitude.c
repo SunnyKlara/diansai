@@ -89,6 +89,11 @@ float attitude_wrap180(float deg)
     return deg;
 }
 
+float attitude_yaw_rate(const float gyro_dps[3], const float up[3])
+{
+    return gyro_dps[0]*up[0] + gyro_dps[1]*up[1] + gyro_dps[2]*up[2];
+}
+
 void attitude_axis_map(int yaw_axis, const float in[3], float out[3])
 {
     /* 先整体取值再写回 => 支持 out==in 的原地置换(否则 out[0]=in[2] 会先毁掉 in[0]) */

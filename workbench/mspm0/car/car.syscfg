@@ -27,8 +27,11 @@ const SPI    = scripting.addModule("/ti/driverlib/SPI", {}, false);
 const SPI1   = SPI.addInstance();
 const PWM    = scripting.addModule("/ti/driverlib/PWM", {}, false);
 const PWM1   = PWM.addInstance();
+const PWM2   = PWM.addInstance();   /* 电磁铁(第三颗 DRV8231), 见文末 PWM_MAG */
+const PWM3   = PWM.addInstance();   /* 转向舵机 50Hz, 见文末 PWM_SERVO */
 const UART   = scripting.addModule("/ti/driverlib/UART", {}, false);
 const UART1  = UART.addInstance();
+const UART2  = UART.addInstance();
 const ADC12  = scripting.addModule("/ti/driverlib/ADC12", {}, false);
 const ADC121 = ADC12.addInstance();
 const SYSCTL = scripting.addModule("/ti/driverlib/SYSCTL");
@@ -125,6 +128,60 @@ PWM1.PWM_CHANNEL_2.dutyCycle     = 0;
 PWM1.PWM_CHANNEL_3.$name         = "PWM_M2_IN2";
 PWM1.PWM_CHANNEL_3.dutyCycle     = 0;
 
+/* ---- 电磁铁 PWM: TIMA1_C0 = PB0, ~20kHz (板载第三颗 DRV8231) ----
+ * 硬件事实(SSOT §B / 载板 §5.8): IN1=PB0, **IN2 在板上直接接 GND ⇒ 只能单向**, 12V 直供,
+ *   电流采样 IPROPI = PA24(ADC0 通道 3, 见下面 ADC_CUR 的 MEM2)。
+ * ⚠ 单向的两个后果(硬件决定, 固件改不了):
+ *   ① 没有反向励磁 ⇒ 断电靠线圈自然退磁 + 铁芯剩磁, 想"主动推开"做不到;
+ *   ② DRV8231 真值表里 IN2=0 时只剩 coast(00) 与 forward(10) 两态 ⇒ PWM 关断期是 **fast decay**
+ *      (电流经体二极管回灌电源), 纹波比 slow decay(11 制动态) 大。这条按真值表推断, `待实测`。
+ * 频率取与电机同样的 ~20kHz: 电感对高频斩波的平滑更好, 且在听觉之外。 */
+PWM2.$name                      = "PWM_MAG";
+PWM2.clockPrescale              = 1;
+PWM2.timerCount                 = 1600;      /* 32MHz/1/1600 ≈ 20kHz */
+PWM2.ccIndex                    = [0];
+PWM2.peripheral.$assign         = "TIMA1";
+PWM2.peripheral.ccp0Pin.$assign = "PB0";     /* 电磁铁 IN1 = TIMA1_C0 */
+PWM2.PWM_CHANNEL_0.$name        = "PWM_MAG_IN1";
+PWM2.PWM_CHANNEL_0.dutyCycle    = 0;         /* 上电必须是 0: 电磁铁通电即发热, 不许默认吸合 */
+
+/* ---- 转向舵机 PWM: TIMG12_C1 = PA31, 50Hz (阿克曼底盘前轮转向) ----
+ * 引脚三重闸(真值源 = 载板 §10.1):
+ *   功能: SDK 例程 timg_32bit_timer_mode_pwm_edge_sleep 自己把 TIMG12.ccp1Pin 分配给 PA31;
+ *   引出: 载板 §10.12 A 组 J2-3L 空闲(原"名义预留第2片IMU");
+ *   空闲: TIMA0=电机 / TIMA1=电磁铁 / TIMG8=编码器QEI 之外, TIMG12 全局未用。
+ * ⚠ 为什么不挂 TIMA1(已有空通道 C1): 同一定时器共用计数器 ⇒ 周期只有一个,
+ *   电磁铁要 20kHz、舵机要 50Hz, 不可兼得。故舵机必须独占一个定时器。
+ * 频率: 32MHz / 1 / 640000 = 50.000Hz(周期 20ms), 1 count = 31.25ns
+ *   ⇒ 舵机脉宽 500~2500us 对应 16000~80000 counts, 分辨率远超舵机自身死区(~5us)。
+ * ⚠ clockPrescale 只能是 1: TIMG12 是 32 位定时器, 无预分频器。
+ *   (SysConfig 原话: "Prescaler is not available for 32-bit Timers. Select a prescale
+ *    value of 1, or a different peripheral" —— 2026-07-27 实测报错, 别再改回去。)
+ *   32 位计数器装得下 640000, 所以不需要预分频; 16 位定时器才需要靠 prescale 凑 20ms。
+ * dutyCycle=0 的用意: 上电不发脉冲 ⇒ 舵机 limp(无保持力矩)。
+ *   中位值尚未真机标定, 若上电就输出"猜的中位"可能把拉杆顶到机械限位并堵转烧机;
+ *   故由固件在标定确认后显式给中位。 */
+PWM3.$name                      = "PWM_SERVO";
+PWM3.clockPrescale              = 1;         /* 32 位定时器不支持预分频, 只能是 1 */
+PWM3.timerCount                 = 640000;    /* 32MHz/1/640000 = 50.000Hz (32bit 计数器装得下) */
+/* ⚠⚠ ccIndex 必须包含 0 —— 2026-07-27 真机(示波器)踩出来的坑, 别改回 [1]:
+ *   只写 ccIndex=[1] 时, SysConfig 会按它自己的注释 "Set Counter control to the smallest
+ *   CC index being used" 把计数器的 zero/advance/load 条件全绑到 CC1:
+ *       setCounterControl(..., CZC_CCCTL1_ZCOND, CAC_CCCTL1_ACOND, CLC_CCCTL1_LCOND)
+ *   而真机验证过的 PWM_MOTOR 用的是 CCCTL0_*。CC1 被挪去当计数器控制条件后, 往 CC1 写占空
+ *   **不再产生 PWM** —— 实测现象 = PA31 恒定高电平(示波器), 舵机纹丝不动, 且写 CC=0 时
+ *   反而更高(占空语义与 motor.c 继承的假设相反)。
+ *   ⇒ 启用 [0,1] 让 CC0 去承担计数控制, CC1 专职输出, 与 MOTOR 同构。
+ *   CC0 只启用、**不分配任何物理引脚**(它的候选脚 PB13 已被电机 M2 占用, 也不需要引出)。 */
+PWM3.ccIndex                    = [0, 1];
+PWM3.peripheral.$assign         = "TIMG12";
+PWM3.peripheral.ccp1Pin.$assign = "PA31";    /* 舵机信号线 = TIMG12_C1 */
+/* CC0 = 仅用于承担计数器控制条件, 不引出引脚、不接任何东西(见上面 ccIndex 的说明) */
+PWM3.PWM_CHANNEL_0.$name        = "PWM_SERVO_UNUSED";
+PWM3.PWM_CHANNEL_0.dutyCycle    = 0;
+PWM3.PWM_CHANNEL_1.$name        = "PWM_SERVO_SIG";
+PWM3.PWM_CHANNEL_1.dutyCycle    = 0;         /* 上电无脉冲 = 舵机 limp, 见上方说明 */
+
 /* ---- 调试串口 UART0: TX=PA10 RX=PA11, 115200-8N1 (接 DAP VCOM 看 log) ---- */
 UART1.$name                    = "DBG_UART";
 UART1.enableFIFO               = true;
@@ -133,8 +190,29 @@ UART1.peripheral.$assign       = "UART0";
 UART1.peripheral.rxPin.$assign = "PA11";
 UART1.peripheral.txPin.$assign = "PA10";
 
-/* ---- 电流采样 ADC0: 序列采 2 路 DRV8231 IPROPI(H2.ADC 脚) ---- */
-/*   MEM0=CHAN_0=PA27(M1电流)  MEM1=CHAN_1=PA26(M2电流), 参考=VDDA 3.3V */
+/* ---- 无线遥测串口 UART3: TX=PB2 RX=PB3, 115200-8N1 (接车载 ESP-01S, 交叉) ----
+ * 引脚真值源 = 天猛星主板平台/00_载板接线设计_天猛星平台.md §10.1 定版主表
+ *   B2(PB2) = UART3_TX -> ESP.RXD   |   B3(PB3) = UART3_RX <- ESP.TXD
+ * 复用号已按手册 ZHCSSC4A p12/p13 核对: PB2=UART3_TX[2] / PB3=UART3_RX[2]。
+ * ⚠️ 为什么不复用调试口 PA10/PA11: 那会与板载 DAP 的 VCOM TX 抢 PA11(两个输出打架),
+ *    而载板本来就给 ESP 留了独立 UART -> 调试口保持空闲, 有线 COM 与无线桥可同时在线。
+ * ⚠️ ESP 若还插着 USB-TTL, 必须拔掉 USB-TTL 的 TX 线 —— 否则 ESP.RXD 被两个输出驱动。
+ * 波特率必须与 ESP 出厂 AT 固件一致(115200-8N1), 见 无线遥测_ESP01S链路.md §2。 */
+UART2.$name                    = "ESP_UART";
+UART2.enableFIFO               = true;
+UART2.targetBaudRate           = 115200;
+UART2.peripheral.$assign       = "UART3";
+UART2.peripheral.rxPin.$assign = "PB3";
+UART2.peripheral.txPin.$assign = "PB2";
+
+/* ---- 电流采样 ADC0: 序列采 3 路 DRV8231 IPROPI ---- */
+/*   MEM0=CHAN_0=PA27  MEM1=CHAN_1=PA26  MEM2=CHAN_3=PA24(电磁铁), 参考=VDDA 3.3V
+ * ⚠ M1/M2 的通道映射**按真机实测**是与本注释原假设相反的(M1=PA26=MEM1, M2=PA27=MEM0),
+ *   真值在 motor.c 顶部, 别照这里的脚序推。
+ * ⚠ MEM 下标与通道号**不必相同**(SDK 例程 adc12_sequence_conversion 就是 MEM0<-CHAN_2),
+ *   这里 MEM2 取 CHAN_3 是因为 PA24 就是 ADC0 的 A0_3(同例程 adcPin3.$assign="PA24" 可证)。
+ * ⚠ **序列从 2 路变 3 路 ⇒ 一次转换耗时变长**: motor.c 里等转换完成的 delay 必须同步加长,
+ *   否则读到的是上一轮的陈旧值(那种错误不报警、只是数据慢半拍)。见 motor.c ADC_SEQ_N。 */
 ADC121.$name                      = "ADC_CUR";
 ADC121.sampClkSrc                 = "DL_ADC12_CLOCK_ULPCLK";
 ADC121.sampClkDiv                 = "DL_ADC12_CLOCK_DIVIDE_8";
@@ -142,11 +220,13 @@ ADC121.powerDownMode              = "DL_ADC12_POWER_DOWN_MODE_MANUAL";
 ADC121.samplingOperationMode      = "sequence";
 ADC121.adcMem0chansel             = "DL_ADC12_INPUT_CHAN_0";
 ADC121.adcMem1chansel             = "DL_ADC12_INPUT_CHAN_1";
-ADC121.endAdd                     = 1;
+ADC121.adcMem2chansel             = "DL_ADC12_INPUT_CHAN_3";
+ADC121.endAdd                     = 2;
 ADC121.sampleTime0                = "40 us";
 ADC121.peripheral.$assign         = "ADC0";
 ADC121.peripheral.adcPin0.$assign = "PA27";
 ADC121.peripheral.adcPin1.$assign = "PA26";
+ADC121.peripheral.adcPin3.$assign = "PA24";
 
 SYSCTL.forceDefaultClkConfig = true;
 SYSCTL.clockTreeEn  = true;

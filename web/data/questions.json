@@ -655,7 +655,7 @@
     "answer": [true],
     "explanation": "M0+ 没有 FPU，浮点用软件模拟，单条 fmul 约 30~50 个时钟。\n实战做法：\n1. 定点化 Q15/Q31\n2. 用 CMSIS-DSP 定点函数\n3. 算法层换 Goertzel（少量乘法）\n2024H 用 MSPM0 时所有控制环用 Q15 定点。",
     "tags": ["MSPM0", "FPU"],
-    "ref": "library/物资准备/"
+    "ref": ".kiro/steering/knowledge/跨题坑库.md#跨平台搬代码习惯要先看有没有-fpu"
   },
   {
     "id": "q-com-003",

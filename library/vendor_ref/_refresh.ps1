@@ -166,12 +166,20 @@ foreach ($r in $repos) {
         $action, $sha, $date, $lic, $files, $mb)
 }
 
-$csv = Join-Path $root "_refresh_result.csv"
-if ($results.Count -gt 0) {
+# Result file guards (two separate holes, both hit for real):
+#   1) a filtered run that matched NOTHING must not blank out a good result file
+#      (2026-07-27: `-Only zzz_none` used as a syntax self-check wiped all 30 rows);
+#   2) a filtered run that matched SOME must not overwrite the full-set result either
+#      -> partial runs get their own file, so _refresh_result.csv always means "all 30".
+if ($results.Count -eq 0) {
+    Write-Host "no repo matched -Only '$Only' -> result csv left untouched" -ForegroundColor Yellow
+} elseif ($Only -ne "") {
+    $csv = Join-Path $root "_refresh_result_partial.csv"
     $results | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+    Write-Host "filtered run -> _refresh_result_partial.csv (full-set csv untouched)" -ForegroundColor DarkGray
 } else {
-    # Guard: a filtered run that matched nothing must not blank out a good result file.
-    Write-Host "no repo matched -Only '$Only' -> _refresh_result.csv left untouched" -ForegroundColor Yellow
+    $csv = Join-Path $root "_refresh_result.csv"
+    $results | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
 }
 Write-Host ""
 Write-Host ("DONE  ok={0}  failed={1}  total={2}MB" -f `
@@ -179,6 +187,9 @@ Write-Host ("DONE  ok={0}  failed={1}  total={2}MB" -f `
     ($results | Where-Object { $_.action -eq "FAILED" }).Count, `
     [math]::Round((($results | Measure-Object -Property size_MB -Sum).Sum), 1)) -ForegroundColor Green
 $results | Where-Object { $_.action -eq "FAILED" } | ForEach-Object { Write-Host ("  FAILED: " + $_.path) -ForegroundColor Red }
+if ($results.Count -ne 30 -and $Only -eq "") {
+    Write-Host ("WARN: expected 30 repos in the table, saw {0} -- did an entry get dropped?" -f $results.Count) -ForegroundColor Yellow
+}
 
 # Path budget guard -- warn loudly if a future rename pushes us toward MAX_PATH.
 $maxLen = (Get-ChildItem $root -Recurse -File -Force -ErrorAction SilentlyContinue |
@@ -186,4 +197,8 @@ $maxLen = (Get-ChildItem $root -Recurse -File -Force -ErrorAction SilentlyContin
 $flag = if ($maxLen -ge 250) { "WARN" } else { "ok" }
 Write-Host ("max full path = {0} chars (MAX_PATH 260) [{1}]" -f $maxLen, $flag) `
     -ForegroundColor $(if ($maxLen -ge 250) { "Yellow" } else { "DarkGray" })
-Write-Host "result -> _refresh_result.csv"
+# Report the file actually written -- never a hardcoded name (a filtered run writes a
+# different file, and printing the wrong one is exactly the kind of reassuring-but-false
+# closing line we banned in the pitfall log).
+if ($results.Count -eq 0) { Write-Host "result -> (none written)" }
+else { Write-Host ("result -> " + (Split-Path $csv -Leaf)) }

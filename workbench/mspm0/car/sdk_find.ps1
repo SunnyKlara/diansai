@@ -25,10 +25,18 @@ param(
     [switch]$AllBoards,
     [string]$Grep = '',
     [int]$Limit = 60,
-    [string]$SdkRoot = 'C:\ti\mspm0-sdk'
+    [string]$SdkRoot = ''
 )
 Set-Location $PSScriptRoot
 $env:PYTHONIOENCODING = 'utf-8'
+
+# SDK root resolved in ONE place (_tools.ps1); -SdkRoot still overrides for one-off use.
+# It used to be hardcoded to C:\ti\mspm0-sdk, which made this script useless on the other
+# dev machine (its SDK lives elsewhere). See _tools.ps1.
+if (-not $SdkRoot) {
+    . "$PSScriptRoot\_tools.ps1"
+    $SdkRoot = Find-SdkRoot
+}
 
 $script  = Join-Path (Resolve-Path "$PSScriptRoot\..\..\..") '.kiro\skills\mspm0-ccs\scripts\index_syscfg_examples.py'
 $outFile = Join-Path $PSScriptRoot 'sdk_find_out.txt'

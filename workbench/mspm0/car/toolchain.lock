@@ -1,0 +1,33 @@
+# toolchain.lock - pinned toolchain versions for the MSPM0 car firmware.
+#
+# WHY: 2026-07-27 we found the two development machines carry DIFFERENT versions:
+#        machine A (this repo's reference / flashing machine)  SDK 2.11.00.07  SysConfig 1.28.0
+#        machine B (teammate zhy-ss, per his notes)            SDK 2.09.00.00  SysConfig 1.23.1.4034
+#      SysConfig is a CODE GENERATOR and the SDK carries driverlib source, so the SAME commit
+#      can compile to a DIFFERENT binary on the two machines. That breaks two things:
+#        1. the flash judgement "wrote N bytes must equal arm-none-eabi-size" becomes per-machine
+#        2. if both machines ever flash the board, a behaviour difference is un-diagnosable
+#
+# HOW THIS FILE IS USED
+#   env_check.ps1 compares the values below against what it resolves and reports:
+#       MATCH -> exit 0 (PASS)
+#       SKEW  -> exit 2 (all tools present, versions differ)
+#   It reports, it does NOT block. Blocking two days before the contest would just lock a
+#   teammate out of building at all; visibility is what we actually need.
+#
+# THE RULE WHILE SKEW EXISTS  (process fix, chosen deliberately over a technical one)
+#   *** The binary that gets flashed to the board is produced by ONE machine only. ***
+#   That machine is whichever one goes to the contest venue. The other machine writes code,
+#   runs PC unit tests (pc_test/) and reviews - it does not produce the image to flash.
+#   Industry equivalent: release builds only come from a designated build machine / CI.
+#
+# HOW TO CHANGE THE PIN
+#   Only after a real build+flash+verify on the new versions. Update the value, note the date,
+#   and record the resulting text+data size in the debug log so the next flash has a reference.
+#
+# Values verified on machine A, 2026-07-27, by env_check.ps1 (Get-SdkVersion /
+# Get-SysConfigVersion / Get-ArmGccVersion). Reference image: text+data = 32320 bytes.
+
+SDK       = 2.11.00.07
+SYSCONFIG = 1.28.0
+GCC       = 12.2.1
