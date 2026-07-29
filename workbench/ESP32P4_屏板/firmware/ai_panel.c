@@ -1,4 +1,9 @@
 // -*- coding: utf-8 -*-
+// 2026-07-28 真机验证：RX/SHOW/drop 统计完成 180 s 长跑；屏幕观感人眼 PASS（含固定中线已修）。
+// ⚠️ 待定因：画面区轻微闪烁。已确认的几何事实——canvas 在 (640,0)、640x480 占右半屏，而
+//    s_bar_beat 宽 1180（每 100ms 改值）、s_lbl_imu/sd/video 未设宽度且文本很长，**都跨过 x=640
+//    伸进画面区**且被 canvas 盖住 ⇒ 每 100ms 会连带重绘画面区一条细横带。这是候选①，未定因；
+//    若人眼确认"闪的是固定高度细横带"，单变量修法 = 条宽收到 ≤590 + 三个长标签设宽度/裁剪。
 // 自绘验证面板（ESP32-P4 + 6.2寸 AXS15260 长条屏，逻辑分辨率 1280x452）。
 //
 // 目的不是好看，是「可判读」：
@@ -193,20 +198,25 @@ static void tick_cb(lv_timer_t *t)
         video_stream_get_stats(&v);
         if (v.stream_up) {
             lv_label_set_text_fmt(s_lbl_video,
-                                  "WIRELESS VIDEO  %s <- %s   %lu.%lu fps  %lu.%02lu Mbps  "
-                                  "jpeg %lu B  hw decode %lu us   frames %lu  bad %lu  dec_fail %lu",
+                                  "WIRELESS VIDEO  %s <- %s   RX %lu.%lu fps  SHOW %lu.%lu fps  "
+                                  "%lu.%02lu Mbps  jpeg %lu B  hw %lu us   "
+                                  "rx %lu  shown %lu  drop %lu  bad %lu  dec_fail %lu",
                                   v.ip, v.gw,
                                   (unsigned long)(v.fps_x10 / 10), (unsigned long)(v.fps_x10 % 10),
+                                  (unsigned long)(v.show_fps_x10 / 10),
+                                  (unsigned long)(v.show_fps_x10 % 10),
                                   (unsigned long)(v.mbps_x100 / 100), (unsigned long)(v.mbps_x100 % 100),
                                   (unsigned long)v.last_len, (unsigned long)v.dec_us,
-                                  (unsigned long)v.frames, (unsigned long)v.bad,
+                                  (unsigned long)v.frames, (unsigned long)v.shown,
+                                  (unsigned long)v.dropped, (unsigned long)v.bad,
                                   (unsigned long)v.decode_fail);
             lv_obj_set_style_text_color(s_lbl_video, lv_color_hex(0x00ffc8), 0);
         } else {
             lv_label_set_text_fmt(s_lbl_video,
-                                  "WIRELESS VIDEO  %s   (link %s, frames %lu, redials %lu)",
+                                  "WIRELESS VIDEO  %s   (link %s, rx %lu, shown %lu, drop %lu, redials %lu)",
                                   v.note, v.link_up ? "UP" : "down",
-                                  (unsigned long)v.frames, (unsigned long)v.reconnects);
+                                  (unsigned long)v.frames, (unsigned long)v.shown,
+                                  (unsigned long)v.dropped, (unsigned long)v.reconnects);
             lv_obj_set_style_text_color(s_lbl_video, lv_color_hex(0xffd166), 0);
         }
     }

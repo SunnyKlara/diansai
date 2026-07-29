@@ -1,5 +1,7 @@
 // -*- coding: utf-8 -*-
-// 见 video_stream.h：无线收帧 + 硬件解码 + 上屏，一个任务串起来。
+// 2026-07-28 真机验证：latest-frame 流水线 180 s 收 10193 帧、零坏帧/解码失败；屏幕观感人眼 PASS
+// （实时/颜色/方向正常；曾有的固定中线与跨线重叠已由 buffer_px 扩为整屏修掉并复验）。
+// 剩一个独立症状 待定因：画面区轻微闪烁（候选=下层控件跨进画面区 / 无 VSYNC / 上屏仅约 14~17 FPS）。
 // 注释里的数字凡标 MEASURED 的都是本板真机实测，其余标 待验证。
 
 #include "video_stream.h"
@@ -10,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "freertos/queue.h"
 
 #include "driver/jpeg_decode.h"
 #include "esp_event.h"
@@ -36,8 +39,11 @@ static const char *TAG = "video";
 #define VIDEO_RX_TIMEO_S  10
 
 // MEASURED：K230 640x480 硬件 JPEG 单帧 6608~7239B，但见过 58315B 的峰值帧
-// （画面剧烈变化时）。96KB 一次性预留，收帧直接 recv 进这块 DMA 缓冲，省一次拷贝。
+// （画面剧烈变化时）。每个槽预留 96KB，直接 recv 进 DMA 缓冲，省一次拷贝。
+// 三槽分别允许「接收中 / 等待显示的 latest / 正在解码」同时存在；两槽会在
+// 消费者持一槽、latest 队列占一槽时迫使接收端停下来，无法真正解除 TCP 反压。
 #define FRAME_MAX_BYTES   (96 * 1024)
+#define RX_SLOT_COUNT     3
 
 // 解码输出按 640x480 RGB565 预留两块（双缓冲）。K230 侧就是这个分辨率；
 // 若 JPEG 头部报出更大的尺寸，本文件选择「丢帧并报错」而不是越界写。
@@ -57,11 +63,22 @@ static int                s_retry;
 static video_stats_t s_st;
 static lv_obj_t     *s_canvas;
 
+// 接收与显示解耦：生产者从 s_free_slots 取槽，收完后投递到容量为 1 的
+// s_latest_frame；若已有未消费帧，先回收旧槽并计 dropped，再放最新帧。
+// 消费者拿走槽后独占到解码结束，最后归还 free 队列，绝不发生并发覆写。
+typedef struct {
+    uint8_t *data;
+    size_t   alloc;
+    uint32_t len;
+} rx_slot_t;
+
+static rx_slot_t   s_rx[RX_SLOT_COUNT];
+static QueueHandle_t s_free_slots;
+static QueueHandle_t s_latest_frame;
+
 // 解码资源：建一次复用。jpeg_view.c 那版是一次性的（建引擎→解一帧→删引擎），
 // 每帧重建引擎在 50fps 下纯属浪费。
 static jpeg_decoder_handle_t s_dec;
-static uint8_t *s_in;                 // DMA 输入：直接 recv 进来
-static size_t   s_in_alloc;
 static uint8_t *s_out[2];             // 双缓冲输出，LVGL 显示一块、解码写另一块
 static size_t   s_out_alloc;
 static int      s_wr;                 // 下一帧写哪块
@@ -244,26 +261,48 @@ static bool decoder_setup(void)
     jpeg_decode_memory_alloc_cfg_t in_cfg  = { .buffer_direction = JPEG_DEC_ALLOC_INPUT_BUFFER };
     jpeg_decode_memory_alloc_cfg_t out_cfg = { .buffer_direction = JPEG_DEC_ALLOC_OUTPUT_BUFFER };
 
-    s_in = jpeg_alloc_decoder_mem(FRAME_MAX_BYTES, &in_cfg, &s_in_alloc);
+    bool input_ok = true;
+    for (int i = 0; i < RX_SLOT_COUNT; i++) {
+        s_rx[i].data = jpeg_alloc_decoder_mem(FRAME_MAX_BYTES, &in_cfg, &s_rx[i].alloc);
+        input_ok = input_ok && (s_rx[i].data != NULL);
+    }
     for (int i = 0; i < 2; i++) {
         s_out[i] = jpeg_alloc_decoder_mem(DEC_OUT_BYTES, &out_cfg, &s_out_alloc);
     }
-    if (!s_in || !s_out[0] || !s_out[1]) {
-        ESP_LOGE(TAG, "jpeg buffers: in=%u out=%u (need %u + 2x%u)",
-                 (unsigned)s_in_alloc, (unsigned)s_out_alloc,
+    if (!input_ok || !s_out[0] || !s_out[1]) {
+        ESP_LOGE(TAG, "jpeg buffers: rx=%u/%u/%u out=%u (need 3x%u + 2x%u)",
+                 (unsigned)s_rx[0].alloc, (unsigned)s_rx[1].alloc,
+                 (unsigned)s_rx[2].alloc, (unsigned)s_out_alloc,
                  (unsigned)FRAME_MAX_BYTES, (unsigned)DEC_OUT_BYTES);
         set_note("jpeg buffer alloc FAILED");
         return false;
     }
-    ESP_LOGI(TAG, "decoder ready: in %u B, out 2 x %u B", (unsigned)s_in_alloc, (unsigned)s_out_alloc);
+
+    s_free_slots = xQueueCreate(RX_SLOT_COUNT, sizeof(uint8_t));
+    s_latest_frame = xQueueCreate(1, sizeof(uint8_t));
+    if (!s_free_slots || !s_latest_frame) {
+        ESP_LOGE(TAG, "frame queue alloc failed");
+        set_note("frame queue alloc FAILED");
+        return false;
+    }
+    for (uint8_t i = 0; i < RX_SLOT_COUNT; i++) {
+        if (xQueueSend(s_free_slots, &i, 0) != pdTRUE) {
+            ESP_LOGE(TAG, "failed to seed free slot %u", (unsigned)i);
+            set_note("frame queue seed FAILED");
+            return false;
+        }
+    }
+
+    ESP_LOGI(TAG, "decoder ready: rx 3 x %u B, out 2 x %u B, latest depth 1",
+             (unsigned)s_rx[0].alloc, (unsigned)s_out_alloc);
     return true;
 }
 
 // 解一帧到 s_out[idx]，成功则把该缓冲挂上 canvas。
-static bool decode_and_show(uint32_t len)
+static bool decode_and_show(const uint8_t *jpeg, uint32_t len)
 {
     jpeg_decode_picture_info_t info = { 0 };
-    esp_err_t err = jpeg_decoder_get_info(s_in, len, &info);
+    esp_err_t err = jpeg_decoder_get_info(jpeg, len, &info);
     if (err != ESP_OK) {
         s_st.decode_fail++;
         return false;
@@ -285,7 +324,7 @@ static bool decode_and_show(uint32_t len)
     };
     uint32_t out_len = 0;
     const int64_t t0 = esp_timer_get_time();
-    err = jpeg_decoder_process(s_dec, &cfg, s_in, len, s_out[idx],
+    err = jpeg_decoder_process(s_dec, &cfg, jpeg, len, s_out[idx],
                                (uint32_t)s_out_alloc, &out_len);
     s_st.dec_us = (uint32_t)(esp_timer_get_time() - t0);
     if (err != ESP_OK) {
@@ -305,15 +344,53 @@ static bool decode_and_show(uint32_t len)
             lv_canvas_set_buffer(s_canvas, s_out[idx], (int32_t)info.width,
                                  (int32_t)info.height, LV_COLOR_FORMAT_RGB565);
             lvgl_port_unlock();
-            s_wr ^= 1;                    // 换手：下一帧写另一块
         } else {
             // 拿不到锁就别换手，宁可这一帧不上屏（也别去动 LVGL 正在读的缓冲）
             ESP_LOGW(TAG, "lvgl lock timeout, frame not displayed");
+            return false;
         }
-    } else {
-        s_wr ^= 1;
     }
+
+    // 换手只发生在成功挂屏（或无 canvas 对照模式）之后：下一次解码写旧显示缓冲，
+    // 当前 canvas 所指缓冲在解码期间保持只读。
+    s_wr ^= 1;
+    s_st.shown++;
     return true;
+}
+
+static void display_task(void *arg)
+{
+    (void)arg;
+    uint32_t win_shown = 0;
+    int64_t t_win = esp_timer_get_time();
+
+    while (1) {
+        uint8_t slot_idx;
+        const BaseType_t got = xQueueReceive(s_latest_frame, &slot_idx, pdMS_TO_TICKS(1000));
+        if (got == pdTRUE) {
+            rx_slot_t *slot = &s_rx[slot_idx];
+            if (decode_and_show(slot->data, slot->len)) {
+                win_shown++;
+            }
+            // 解码完成后才归还；生产者不可能覆写正在被硬解码器读取的输入。
+            if (xQueueSend(s_free_slots, &slot_idx, portMAX_DELAY) != pdTRUE) {
+                ESP_LOGE(TAG, "free-slot queue invariant broken for slot %u", (unsigned)slot_idx);
+            }
+        }
+
+        const int64_t now = esp_timer_get_time();
+        if (now - t_win >= 1000000) {
+            const uint32_t ms = (uint32_t)((now - t_win) / 1000);
+            s_st.show_fps_x10 = win_shown * 10000UL / ms;
+            ESP_LOGI(TAG, "SHOW %lu.%lu fps | shown %lu drop %lu | decode %lu us fail %lu",
+                     (unsigned long)(s_st.show_fps_x10 / 10),
+                     (unsigned long)(s_st.show_fps_x10 % 10),
+                     (unsigned long)s_st.shown, (unsigned long)s_st.dropped,
+                     (unsigned long)s_st.dec_us, (unsigned long)s_st.decode_fail);
+            win_shown = 0;
+            t_win = now;
+        }
+    }
 }
 
 // ============================ TCP 拉流 ======================================
@@ -359,9 +436,9 @@ static void pull_frames_forever(void)
         setsockopt(cs, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
         struct timeval rtv = { .tv_sec = VIDEO_RX_TIMEO_S, .tv_usec = 0 };
         setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, &rtv, sizeof(rtv));
-        ESP_LOGI(TAG, "connected -- pulling frames");
+        ESP_LOGI(TAG, "connected -- RX producer running");
         s_st.stream_up = true;
-        set_note("streaming");
+        set_note("streaming (latest-frame)");
 
         uint32_t win_frames = 0;
         uint64_t win_bytes = 0;
@@ -375,32 +452,57 @@ static void pull_frames_forever(void)
             }
             if (hdr[0] != 'J' || hdr[1] != 'F') {
                 if (++s_st.bad < 5) {
-                    ESP_LOGW(TAG, "bad magic %02x %02x", hdr[0], hdr[1]);
+                    ESP_LOGW(TAG, "bad magic %02x %02x -- reconnecting to resync", hdr[0], hdr[1]);
                 }
-                continue;
+                // magic 已错就不知道下一个帧边界在哪；继续按 6 字节切只会永久错位。
+                break;
             }
             const uint32_t len = (uint32_t)hdr[2] | ((uint32_t)hdr[3] << 8) |
                                  ((uint32_t)hdr[4] << 16) | ((uint32_t)hdr[5] << 24);
-            if (len == 0 || len > s_in_alloc) {
-                ESP_LOGE(TAG, "frame length %lu exceeds buffer %u -- raise FRAME_MAX_BYTES",
-                         (unsigned long)len, (unsigned)s_in_alloc);
-                s_st.bad++;
-                break;                    // 长度不可信 => 流已错位，重连比硬啃安全
-            }
-            if (!rx_exact(cs, s_in, len)) {
+
+            uint8_t slot_idx;
+            if (xQueueReceive(s_free_slots, &slot_idx, portMAX_DELAY) != pdTRUE) {
+                ESP_LOGE(TAG, "free-slot queue unavailable");
                 break;
             }
-            const bool markers_ok = (s_in[0] == 0xFF && s_in[1] == 0xD8 &&
-                                     s_in[len - 2] == 0xFF && s_in[len - 1] == 0xD9);
+            rx_slot_t *slot = &s_rx[slot_idx];
+            if (len < 4 || len > slot->alloc) {
+                ESP_LOGE(TAG, "invalid frame length %lu for slot %u B -- reconnecting",
+                         (unsigned long)len, (unsigned)slot->alloc);
+                s_st.bad++;
+                xQueueSend(s_free_slots, &slot_idx, portMAX_DELAY);
+                break;                    // 长度不可信 => 流已错位，重连比硬啃安全
+            }
+            if (!rx_exact(cs, slot->data, len)) {
+                xQueueSend(s_free_slots, &slot_idx, portMAX_DELAY);
+                break;
+            }
+            const bool markers_ok = (slot->data[0] == 0xFF && slot->data[1] == 0xD8 &&
+                                     slot->data[len - 2] == 0xFF && slot->data[len - 1] == 0xD9);
             if (!markers_ok) {
                 s_st.bad++;
+                xQueueSend(s_free_slots, &slot_idx, portMAX_DELAY);
                 continue;
             }
+            slot->len = len;
             if (link_frames == 0) {
                 ESP_LOGI(TAG, "first frame %lu B, markers OK", (unsigned long)len);
             }
+
+            // 容量 1 的 latest 队列：未消费旧帧没有显示价值，回收它并只保留最新帧。
+            uint8_t old_idx;
+            if (xQueueReceive(s_latest_frame, &old_idx, 0) == pdTRUE) {
+                s_st.dropped++;
+                xQueueSend(s_free_slots, &old_idx, portMAX_DELAY);
+            }
+            if (xQueueSend(s_latest_frame, &slot_idx, 0) != pdTRUE) {
+                // 单生产者下理论上不应发生；仍然回收当前槽，避免所有权泄漏。
+                s_st.dropped++;
+                xQueueSend(s_free_slots, &slot_idx, portMAX_DELAY);
+                ESP_LOGE(TAG, "latest queue invariant broken, frame dropped");
+            }
+
             s_st.last_len = len;
-            decode_and_show(len);
             s_st.frames++;
             link_frames++;
             win_frames++;
@@ -415,18 +517,22 @@ static void pull_frames_forever(void)
                 // 同一个量必须有两个独立测量。
                 s_st.fps_x10   = win_frames * 10000UL / ms;
                 s_st.mbps_x100 = (uint32_t)((win_bytes * 8ULL) / (10ULL * ms));
-                ESP_LOGI(TAG, "%lu.%lu fps | %lu.%02lu Mbps | frame %lu B | decode %lu us | total %lu bad %lu",
+                ESP_LOGI(TAG, "RX %lu.%lu fps | %lu.%02lu Mbps | frame %lu B | "
+                              "rx %lu shown %lu drop %lu bad %lu",
                          (unsigned long)(s_st.fps_x10 / 10), (unsigned long)(s_st.fps_x10 % 10),
                          (unsigned long)(s_st.mbps_x100 / 100), (unsigned long)(s_st.mbps_x100 % 100),
-                         (unsigned long)s_st.last_len, (unsigned long)s_st.dec_us,
-                         (unsigned long)s_st.frames, (unsigned long)s_st.bad);
+                         (unsigned long)s_st.last_len, (unsigned long)s_st.frames,
+                         (unsigned long)s_st.shown, (unsigned long)s_st.dropped,
+                         (unsigned long)s_st.bad);
                 win_frames = 0;
                 win_bytes = 0;
                 t_win = now;
             }
         }
-        ESP_LOGW(TAG, "link closed after %lu frames (total %lu, bad %lu)",
-                 (unsigned long)link_frames, (unsigned long)s_st.frames, (unsigned long)s_st.bad);
+        ESP_LOGW(TAG, "link closed after %lu RX frames (total %lu, shown %lu, drop %lu, bad %lu)",
+                 (unsigned long)link_frames, (unsigned long)s_st.frames,
+                 (unsigned long)s_st.shown, (unsigned long)s_st.dropped,
+                 (unsigned long)s_st.bad);
         s_st.stream_up = false;
         s_st.fps_x10 = 0;
         s_st.mbps_x100 = 0;
@@ -440,6 +546,7 @@ static void pull_frames_forever(void)
 // ============================ 任务 ==========================================
 static void video_task(void *arg)
 {
+    (void)arg;
     set_note("nvs init");
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -461,6 +568,13 @@ static void video_task(void *arg)
 #if CONFIG_P4V_PING_ON_BOOT
     ping_gw();
 #endif
+    // 消费者必须先于生产者启动；否则第一帧能入 latest 队列，但无人归还槽。
+    if (xTaskCreate(display_task, "video_show", 6144, NULL, 4, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "failed to create display task");
+        set_note("display task FAILED");
+        vTaskDelete(NULL);
+        return;
+    }
     pull_frames_forever();
 }
 

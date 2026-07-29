@@ -61,6 +61,13 @@ powershell -File ..\..\tools\hosted_bringup.ps1 -Project p4_sta_host
 所以这里多存一组 `p4_lcd.*` 前缀的文件。**基线**：屏工程原始的 6 个原创源码在 `../`
 （`ai_panel.{c,h}` / `imu_qmi8658.{c,h}` / `sdcard.{c,h}`），上游差异在 `../upstream_local.patch`。
 
+> **`../upstream_local.patch` 已于 2026-07-28 重新生成**（原版停在 flash16MB/IMU/SD/video 之前、早已落后于工程）。
+> 现版覆盖 10 个上游文件、含**完整 `sdkconfig`**（这是刻意的：本工程**绝不能跑 `idf.py set-target`**，
+> 否则按 defaults 重生成 sdkconfig 会静默丢掉 P4 rev-min、PSRAM HEX 200MHz+XIP、TASK_WDT off、LVGL PPA 旋转这些关键项）。
+> **已验**：在 `git worktree add --detach <tmp> HEAD` 出来的干净树上 `git apply --check` 退出码 **0**，且主工作树全程未被触碰。
+> ⚠️ **patch 里的 `CONFIG_P4V_WIFI_PASSWORD` 是 `<PLACEHOLDER>`**（真值只在 `workbench/天猛星主板平台/无线遥测_ESP01S链路.md` 一处登记）——
+> apply 之后必须手填自己的 PSK 才能连上 K230 的 AP，否则表现为「关联不上/一直重连」。抹除做过正反双向自检 + 全仓 188 个已跟踪文件反扫，0 命中。
+
 ```powershell
 # 放回顺序：先按 ../../README.md §六 把屏工程重建出来，再覆盖下面这些
 copy p4_lcd.sdkconfig.defaults       ..\..\..\esp32p4\p4_lcd\sdkconfig.defaults

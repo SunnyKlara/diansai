@@ -1,0 +1,68 @@
+方案 D latest-frame 解耦流水线端到端真机证据（2026-07-28）
+
+验证边界
+- 机器可观测链路：PASS（K230 摄像头→硬件 JPEG→WiFi→ESP32-C5→SDIO→ESP32-P4 latest queue→硬件 JPEG 解码→LVGL canvas）。
+- 屏幕基础观感：PASS（右半边持续实时变化、颜色正常、方向正确）。动态画质：待修复/待复验（屏幕中间有固定线，运动的手跨线时出现一定前后帧重叠）。
+- P4 使用独立 USB 供电；K230=COM3，P4=COM7。
+- 本文件不含 WiFi PSK。
+- 旧同步基线 3042/3042、16.90 FPS 不作为本次结果；本文件只记录 latest-frame 新流水线。
+
+[整板冷断电至少 5 秒后，P4 -NoReset 启动/运行日志原始行]
+I (1511) video: decoder ready: rx 3 x 98304 B, out 2 x 614400 B, latest depth 1
+I (2648) eh_init_evt: slave chip id: 0x17 (esp32c5)
+I (2649) eh_init_evt: esp-hosted fw versions: host=3.0.5 coprocessor=2.12.9
+I (3938) video: got ip:192.168.169.2 gw:192.168.169.1
+I (6938) video: PING SUMMARY tx=3 rx=3 loss=0% duration=9 ms -> PING_OK
+
+判读
+- 冷断电后 C5 init-event、IP 和 ping 全部恢复；30 秒窗口无 TRANSPORT_FAILURE 或重启环。
+- 这只证明本次故障可由完整冷启动清除，不泛化为所有 C5/SDIO 故障的通用修复。
+
+[K230 180 秒发送端原始行]
+VIEW accepted from ('192.168.169.2', 61504)
+VIEW camera+encoder running, streaming 180000 ms -- LOOK AT THE PANEL NOW
+VIEW t=179s  57.0 fps  3.34 Mbps  frame 7324B  sent 10159
+VIEW sent 10193 frames 91163085 bytes in 180016 ms -> 56.62 fps  4.05 Mbps
+VIEW RESULT: PASS
+
+[P4 latest-frame 接收/显示原始行]
+I (217446) video: connected -- RX producer running
+I (219655) video: first frame 6170 B, markers OK
+I (221677) video: RX 57.5 fps | 3.50 Mbps | frame 7938 B | rx 90 shown 33 drop 55 bad 0
+I (222064) video: SHOW 16.9 fps | shown 40 drop 70 | decode 4319 us fail 0
+I (398686) video: RX 56.9 fps | 3.33 Mbps | frame 7329 B | rx 10144 shown 2965 drop 7177 bad 0
+I (398892) video: SHOW 16.9 fps | shown 2969 drop 7185 | decode 4088 us fail 0
+W (400436) video: link closed after 10193 RX frames (total 10193, shown 2981, drop 7212, bad 0)
+I (400609) video: SHOW 6.9 fps | shown 2981 drop 7212 | decode 3834 us fail 0
+
+定量对账
+- 发送 = 接收：10193 / 10193。
+- 接收帧去向：shown 2981 + drop 7212 = rx 10193，零失账。
+- bad=0，decode_fail=0。
+- K230 全程平均 56.62 FPS / 4.05 Mbps；P4 RX 稳态约 57 FPS，SHOW 稳态约 16～17 FPS。
+- 7212 是容量 1 latest queue 主动淘汰的旧帧，不是网络丢包；它证明显示慢时接收端不再被 TCP 反压锁到约 17 FPS。
+- 未注入发送端时间戳，绝对端到端延迟未测量。
+
+锚定异常核查（完整 P4 采集窗口）
+- LVGL lock timeout：未见。
+- panic / assert / brownout：未见。
+- TRANSPORT_FAILURE / 异常重启：未见。
+- K230 send error / VIEW FAIL：未见。
+- link closed：1 次，发生在 K230 正常结束 180 秒发送后，属于预期关流；P4 随后继续重连。
+- K230 服务启动前的 connect failed errno=104 属设计内重试，不计长跑故障。
+
+本轮结论
+- latest-frame 接收/显示解耦、主动丢旧帧、输入槽回收和计数账本：机器侧 PASS。
+- 人眼基础三项：持续实时变化 PASS、颜色 PASS、方向 PASS。
+- 动态画质缺陷：屏幕中间固定线 + 运动物体跨线时前后帧重叠；整体观感不标 PASS。
+
+后续单变量实验（2026-07-28，待动态视频复验）
+- 源码配置证据：AXS15260 使用 RGB888 双局部绘制缓冲，每块整屏 1/4，90° PPA 旋转，`avoid_tearing=false`；现象首先指向分块刷新时间撕裂，尚未靠真机裁决根因。
+- 仅把 `buffer_px` 从整屏 1/4 扩到整屏；JPEG、网络、双缓冲、旋转与 `avoid_tearing` 均不改。
+- ESP-IDF v5.5.4 编译成功；COM7 烧录成功且每段 `Hash of data verified`；烧录后静态 LVGL 日志 61.5～63 FPS，无崩溃。
+- **未验证**：实时视频下中线和跨线重叠是否消失。下一步整板断电至少 5 秒后重插，`-NoReset` 确认 C5/IP/ping，再开约 45 秒推流做同一手部跨线实验。
+
+本机原始采集（.tmp_pdf，非入库真值）
+- d:\diansai\.tmp_pdf\esp32p4\boot_log.txt
+- d:\diansai\.tmp_pdf\esp32p4\latest_frame_k230_180s.txt
+- d:\diansai\.tmp_pdf\esp32p4\latest_frame_p4_180s.txt
