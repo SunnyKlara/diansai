@@ -93,6 +93,28 @@ static beep_t   g_beep;             /* 蜂鸣器非阻塞状态机 */
 static uint32_t g_lost_seg  = 0;    /* 本趟丢线**段数**(不是毫秒): 屏上 L<n>, 一眼看出这趟干净不干净 */
 static int      g_was_lost  = 0;    /* 上一拍是否在丢线(用来数"段") */
 static float    g_line_err  = 0.0f; /* 最近一次横向偏差 mm(遥测/排障) */
+/* 启停线判据的运行态（判据本身与三层防误触的理由写在 config.h §7.8 的"启停线判据"块）。
+ * 为什么这三个量必须进遥测: MIN_ON 是几何算出来的 4, 但**实际能不能达到 4 取决于探头离地高度
+ * 与胶带宽度** ⇒ 跑完看 `on=cur/max` 就知道该不该改门限, 不用靠猜、也不用重烧去试。 */
+static int      g_cross_on  = 0;    /* 去毛刺后的"正压在启停线上"标志(喂给 task 层) */
+static int      g_cross_run = 0;    /* 已连续成立几拍 */
+static int      g_cross_cur = 0;    /* 本拍在线通道数 */
+static int      g_cross_max = 0;    /* 本趟见过的最大在线通道数 */
+/* 本趟"判到启停线"的**上升沿次数**。为什么要单独记而不看瞬时 g_cross_on:
+ * ① 台架验收时只能靠 `?` 抽样, 抽中那 2~5 拍的概率极低, 但计数会一直留着;
+ * ② 真机跑完能区分两种完全不同的失败 —— xcnt=0 是"判据没触发(探头/门限问题)",
+ *    xcnt>=1 而没停是"触发了但被 task 层 ARM_BLIND_MM/LAP_MIN_MM 挡掉(门限问题)"。
+ *    没这个数就只能重烧去猜是哪一种。 */
+static uint32_t g_cross_cnt = 0;
+static float    g_w_lp      = 0.0f; /* |w| 低通 —— 分段速度的曲率代理(为什么不用 |err| 见 config.h) */
+static int      g_vseg_now  = 0;    /* 本拍分段速度给出的巡航 RPM(遥测/排障) */
+/* 分段速度三个旋钮的**运行时副本**(开机取 config.h 默认, 命令 A/B/L 在线改)。
+ * 理由同 g_line.kp/kd: 整定要"跑一趟→看数→改一个值→再跑一趟"迭代好几轮,
+ * 每轮重烧 140s 不但慢, 还直撞 SSOT §D2 禁忌 2(连续快烧把本芯片怼进 lockup 过一次)。
+ * ⚠ 只活在 RAM, 断电即失 ⇒ **整定出来的值必须回填 config.h 并 commit**("达标即锁死")。 */
+static float    g_vs_lo     = CFG_LINE_VSEG_W_LO;
+static float    g_vs_hi     = CFG_LINE_VSEG_W_HI;
+static int      g_vs_slow   = CFG_LINE_VSEG_V_SLOW;
 static int      g_line_st   = 0;    /* 最近一次 line_state_t */
 static uint32_t g_task_run0 = 0;    /* 起跑那一拍的 SysTick(打成绩单用) */
 static int      g_task_v    = 0;    /* 任务层要的速度档(0STOP/1CRUISE/2SLOW) */
@@ -267,6 +289,39 @@ static int nav_gain_cmd(char c, int v)
 #endif
     return 0;
 }
+
+#if CFG_LINE_UART_EN
+/* 分段速度三个值的回显。W_LO/W_HI 打 ×10 的整数(uart_dbg 没有浮点格式化, 全仓统一这么打)。 */
+static void print_vseg(void)
+{
+    uart_dbg_puts("[vseg] en=");   uart_dbg_put_int(CFG_LINE_VSEG_EN);
+    uart_dbg_puts(" lo(x10)=");    uart_dbg_put_int((int)(g_vs_lo * 10.0f));
+    uart_dbg_puts(" hi(x10)=");    uart_dbg_put_int((int)(g_vs_hi * 10.0f));
+    uart_dbg_puts(" slow(RPM)=");  uart_dbg_put_int(g_vs_slow);
+    uart_dbg_puts("\n");
+}
+
+/* 分段速度的在线旋钮(**大写 A/B/L**, 小写全被占了 —— a=定竖直轴 b=AT桥接 l=遥测去向)。
+ *   A<x10>  |w_lp| 的"直线阈" W_LO ×10   (A120 => 12.0)
+ *   B<x10>  |w_lp| 的"弯道阈" W_HI ×10   (B400 => 40.0)
+ *   L<rpm>  弯道速度 V_SLOW              (L55)
+ * 三条都 **参数 0 = 回 config.h 默认**(同 t0/c0 的既有约定, 少记一套规则)。
+ * 把 L 设成等于当前巡航速度就等价于关掉分段(下游有 v_curve=min(V_SLOW,v_fast) 的 clamp)
+ * ⇒ 不必再给 EN 开关一条在线命令。 */
+static int vseg_cmd(char c, int v)
+{
+    if      (c == 'A') { g_vs_lo   = (v > 0) ? (float)v / 10.0f : CFG_LINE_VSEG_W_LO; }
+    else if (c == 'B') { g_vs_hi   = (v > 0) ? (float)v / 10.0f : CFG_LINE_VSEG_W_HI; }
+    else if (c == 'L') { g_vs_slow = (v > 0) ? v                : CFG_LINE_VSEG_V_SLOW; }
+    else return 0;
+    /* HI 必须严格大于 LO, 否则下游插值分母为 0 / 负 ⇒ 直接除爆或算出反向速度。
+     * 在**入口就夹死**而不是在控制回路里判: 回路每拍都跑, 把校验放那儿等于每拍付一次代价,
+     * 而且真出错时车已经在跑了。这里顶多让用户看到一个被修正过的回显。 */
+    if (g_vs_hi <= g_vs_lo + 1.0f) g_vs_hi = g_vs_lo + 1.0f;
+    print_vseg();
+    return 1;
+}
+#endif
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
 /* ==== 串口命令 ==== */
@@ -428,9 +483,22 @@ static void print_task(void)
     uart_dbg_put_int((int)(g_line_err * 10.0f));
     uart_dbg_puts(" cal=");   uart_dbg_puts(line_calibrated(&g_line) ? "YES" : "NO");
     uart_dbg_puts(" lostSeg="); uart_dbg_put_int((int)g_lost_seg);
+    /* on=本拍在线路数/本趟最大 —— 启停线门限(CFG_LINE_CROSS_MIN_ON)该不该改就看 max:
+     * max 从未到过门限 ⇒ 探头离地太高或胶带太窄, 调高度或降门限; max 轻易超门限 ⇒ 有误触风险。 */
+    uart_dbg_puts(" on=");    uart_dbg_put_int(g_cross_cur);
+    uart_dbg_puts("/");       uart_dbg_put_int(g_cross_max);
+    uart_dbg_puts(" xrun=");  uart_dbg_put_int(g_cross_run);
+    /* xcnt = 本趟压到启停线的次数(上升沿)。**验收时先看它**:
+     * 0 ⇒ 判据没触发, 去查 on=max 够不够门限; >=1 却没自停 ⇒ 是 task 层门限挡的, 别去动探头。 */
+    uart_dbg_puts(" xcnt=");  uart_dbg_put_int((int)g_cross_cnt);
+    /* wlp=曲率代理, vseg=分段速度本拍给的 RPM ⇒ 一眼看出"弯道有没有真的降速、降到多少"。
+     * 没有这两个数就只能靠猜分段速度是否在工作(遥测里的 V 是实测转速、含速度环滞后)。 */
+    uart_dbg_puts(" wlp=");   uart_dbg_put_int((int)g_w_lp);
+    uart_dbg_puts(" vseg=");  uart_dbg_put_int(g_vseg_now);
     uart_dbg_puts(" D="); uart_dbg_put_int((int)g_lf.n_dig);
     uart_dbg_puts(" bad="); uart_dbg_put_int((int)g_lf.n_bad);
     uart_dbg_puts("\n");
+    print_vseg();   /* 跟着打分段速度三个值 —— 整定时"我现在设的是多少"必须能一眼回读 */
 }
 #endif
 
@@ -517,6 +585,12 @@ static void run_cmd(const char *s, int n)
     int v = parse_int(s + 1, n - 1), li;
     g_cmd_at = g_st;                 /* 任何命令都刷新静默超时(为什么是"任何"见 config.h §7 取舍) */
     int mode_before = g_mode;
+#if CFG_LINE_UART_EN
+    /* A/B/L 三条分段速度旋钮先拦一手。放在 switch 前面而不是加三个 case:
+     * 它们**不分模式都该能改**(整定时常在 m11 外先设好再起跑), 而 switch 里
+     * 已有的模式相关分支容易把这层语义搞乱。 */
+    if (c == 'A' || c == 'B' || c == 'L') { if (vseg_cmd(c, v)) return; }
+#endif
     switch (c) {
         case 'm': if (v >= 0 && v < MODE_N) { g_mode = v; g_target = 0; g_m1duty = 0; g_m2duty = 0; g_dv = 0; g_dw = 0; reset_all_pid(); } break;
         /* t<v>: 速度环目标。**在 m11 下改的是循迹巡航速度**(见 g_line_v_cruise) ——
@@ -1434,7 +1508,10 @@ int main(void)
 #endif
             if (g_btn_virt_until && (int32_t)(ms - g_btn_virt_until) < 0) ti.btn = 1;
             ti.line_lost = (g_line_st == LINE_LOST) ? 1 : 0;
-            ti.line_cross= (g_line_st == LINE_CROSS) ? 1 : 0;
+            /* ⚠ **不要写回 `g_line_st == LINE_CROSS`** —— 那要求 8 路全在线, 而启停线只有 50mm
+             * 宽、阵列 96mm ⇒ 永不成立(2026-07-29 真机: 跑 7120mm 一次没触发, 最后以 40s
+             * TIMEOUT 收场)。判据与三层防误触见 config.h §7.8 的"启停线判据"块。 */
+            ti.line_cross= g_cross_on;
             ti.dist_mm   = dist_mm;
             /* "停住了"= 两轮速度都接近 0。用速度环已经算好的 rpm, 不再另起一套判据。 */
             ti.stopped   = (speed_rpm[0] > -3.0f && speed_rpm[0] < 3.0f &&
@@ -1444,6 +1521,10 @@ int main(void)
             /* 起跑: 自动进 m11 + 切 RUN 页 + 清本趟统计。**按键就是启动**(说明 5), 不用再发命令。 */
             if (to.beep == TASK_BEEP_START) {
                 g_lost_seg = 0; g_was_lost = 0; g_task_run0 = now;
+                g_cross_run = 0; g_cross_on = 0; g_cross_max = 0; g_cross_cnt = 0;  /* 本趟统计清零 */
+                /* `g_w_lp` 也必须清 —— 上一趟结束时它可能停在弯道值(40+), 不清则新一趟
+                 * 起步头 3~4 拍被判成弯道、按 V_SLOW 起步。起步永远是直线, 从 0 起算才对。 */
+                g_w_lp = 0.0f;
                 g_mode = MODE_LINE; g_mode_at = now; g_cmd_at = now;
                 g_dv = 0; g_dw = 0; reset_all_pid();
                 g_disp = 2; g_disp_dirty = 1;
@@ -1631,14 +1712,67 @@ int main(void)
                     g_line_err = err;
                     if (g_line_st == LINE_NOCAL) w = 0;   /* 没标定就不许转向(line.c 已保证, 这里再兜一层) */
                 }
+                /* ==== 启停线判据（在线通道数达门限 + 连续 N 拍）====
+                 * 在这里算而不是在 task 输入处算: task 那段每个主循环都跑一次(不按拍),
+                 * 在那里数"连续几拍"会数成主循环迭代数 —— 而主循环会被 LCD/UART 拖成变周期,
+                 * 门限就失去时间含义了。这里是固定 50ms 的速度窗, 拍数=时间。
+                 * `on_mask` 在 line_step 里对 OK/CROSS/LOST/NOCAL 四种返回都已正确填好
+                 * (LOST/NOCAL 时为 0) ⇒ 直接数它的置位数即可, 不必分状态。 */
+                {
+                    int m = g_line.on_mask, n_on = 0;
+                    while (m) { n_on += (m & 1); m >>= 1; }
+                    g_cross_cur = n_on;
+                    if (n_on > g_cross_max) g_cross_max = n_on;
+                    if (n_on >= CFG_LINE_CROSS_MIN_ON) {
+                        if (g_cross_run < 1000) g_cross_run++;
+                    } else {
+                        g_cross_run = 0;
+                    }
+                    {   /* 只在**上升沿**计数(不是每拍累加) ⇒ xcnt 直接读作"压到几次启停线" */
+                        int on = (g_cross_run >= CFG_LINE_CROSS_TICKS) ? 1 : 0;
+                        if (on && !g_cross_on) g_cross_cnt++;
+                        g_cross_on = on;
+                    }
+                }
                 /* 数丢线**段数**: 用于屏上 L<n> 与成绩单 —— "这趟干净不干净"比"丢了多少毫秒"更好读 */
                 if (g_line_st == LINE_LOST) { if (!g_was_lost) { g_lost_seg++; g_was_lost = 1; } }
                 else                          g_was_lost = 0;
 
                 g_dw = w;
-                g_dv = (g_task_v == 2) ? CFG_TASK_V_SLOW
-                     : (g_task_v == 1) ? (g_line_v_cruise > 0 ? g_line_v_cruise
-                                                              : CFG_TASK_V_CRUISE) : 0;
+                /* ==== 分段速度: 直线快 / 弯道慢 ====
+                 * 只改"巡航那一档给多少 v", **不碰速度环本身**(它是达标锁死的)。
+                 * 曲率代理 = |w| 的低通(理由与"为什么不用 |err|"写在 config.h §7.8)。
+                 * 注意顺序: 用的是**本拍刚算出来的 w**, 所以降速与转向同拍生效、不滞后一拍。
+                 * 任务层的 SLOW 档(接近终点预降速)优先级更高 —— 它是为刹车距离服务的, 不该被覆盖。 */
+                {
+                    float wa = (float)((w < 0) ? -w : w);
+                    g_w_lp += CFG_LINE_W_LP_A * (wa - g_w_lp);
+                }
+                if (g_task_v == 2) {
+                    g_dv = CFG_TASK_V_SLOW;                 /* 终点预降速优先, 不参与分段 */
+                } else if (g_task_v == 1) {
+                    int v_fast = (g_line_v_cruise > 0) ? g_line_v_cruise : CFG_TASK_V_CRUISE;
+#if CFG_LINE_VSEG_EN
+                    /* 用 g_vs_* 运行时副本(命令 A/B/L 可在线改), 不直读 CFG_ —— 否则整定要重烧 */
+                    int v_curve = g_vs_slow;
+                    if (v_curve > v_fast) v_curve = v_fast;  /* 弯道档不该比直线档还快 */
+                    if (g_w_lp <= g_vs_lo) {
+                        g_dv = v_fast;
+                    } else if (g_w_lp >= g_vs_hi) {
+                        g_dv = v_curve;
+                    } else {
+                        /* 线性插值, **不跳档** —— 跳档会在过渡区反复切换, 把速度环激成方波。
+                         * 分母 (hi-lo) 由 vseg_cmd 入口保证 >=1.0, 这里不必再判 0。 */
+                        float t = (g_w_lp - g_vs_lo) / (g_vs_hi - g_vs_lo);
+                        g_dv = v_fast - (int)(t * (float)(v_fast - v_curve));
+                    }
+#else
+                    g_dv = v_fast;
+#endif
+                } else {
+                    g_dv = 0;
+                }
+                g_vseg_now = g_dv;
                 if (g_dv != 0) drive_closed_loop(g_dv, g_dw, speed_rpm, pwm_out);
                 else           { pwm_out[0] = pwm_out[1] = 0; }
             }
