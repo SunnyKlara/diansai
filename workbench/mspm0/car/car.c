@@ -96,6 +96,8 @@ static float    g_line_err  = 0.0f; /* 最近一次横向偏差 mm(遥测/排障
 static int      g_line_st   = 0;    /* 最近一次 line_state_t */
 static uint32_t g_task_run0 = 0;    /* 起跑那一拍的 SysTick(打成绩单用) */
 static int      g_task_v    = 0;    /* 任务层要的速度档(0STOP/1CRUISE/2SLOW) */
+static int      g_line_v_cruise = 0; /* m11 巡航速度在线覆盖 RPM; 0 = 用 CFG_TASK_V_CRUISE。
+                                      * 只活在 RAM ⇒ 整定出达标值必须回填 config.h 再 commit。 */
 static int      g_task_disp = 0;    /* 任务层说"该刷屏了" */
 static int      g_beep_lv   = 0;    /* 蜂鸣器当前电平(没接线时也算, 便于遥测看见) */
 static uint32_t g_btn_virt_until = 0;  /* 虚拟按键按下到期时刻 ms(命令 K); 0 = 没在按 */
@@ -205,6 +207,20 @@ static uint32_t run_limit_ms(int mode)
         default:            return 0;
     }
 }
+/* 硬上限 —— **按模式取值**。为什么要分模式（2026-07-29 真机逼出来的）：
+ *   循迹一圈 6141.6mm，在整定出的 188mm/s 下要 **约 33s**，而全局硬上限是 15s
+ *   ⇒ 不分模式就永远跑不完一圈、整圈验收无从做起。
+ *   但硬上限是最后一道安全墙（`m4 OPEN` 全开环、`m6` 开环差速这些一旦跑飞 45s 会撞坏东西）
+ *   ⇒ **只给 MODE_LINE 放大**，其余模式一律保持 15s 不动。
+ * ⚠ 它仍然"不可绕过"：`h<ms>` 只改静默超时，改不了这里。 */
+static uint32_t hardcap_ms(void)
+{
+#if CFG_LINE_UART_EN
+    if (g_mode == MODE_LINE) return (uint32_t)CFG_RUN_MS_HARDCAP_LINE;
+#endif
+    return (uint32_t)CFG_RUN_MS_HARDCAP;
+}
+
 static int loop_index(void)   /* 当前模式对应的增益索引; 无环返回 -1 */
 {
     if (g_mode == MODE_CURRENT)  return 0;
@@ -232,6 +248,23 @@ static int nav_gain_cmd(char c, int v)
         else if (c == 'i') uart_dbg_puts("[nav] 转角是纯 PD, 无 I\n");
         return 1;
     }
+#if CFG_LINE_UART_EN
+    /* m11 循迹的增益**住在 g_line 里**(同 nav 的理由: 一个参数两处副本必漏)。
+     * 不接这一条的后果很实际: 每调一次 Kp/Kd 就要重烧一次 140s 的固件, 与本仓库
+     * "单变量 + 定量裁决 + 快速迭代"的整定方法论直接冲突(2026-07-29 落地前发现并补上)。
+     * ⚠ `i` 被**复用**成转向限幅 w_max(RPM, 直接取 v 不除 1000) —— 循迹是纯 PD 没有 I 项,
+     *   而 w_max 是整定时真正需要动的第三个旋钮(它决定"多大偏差就打满舵")。 */
+    if (g_mode == MODE_LINE) {
+        if      (c == 'p') { g_line.kp = f;
+                             uart_dbg_puts("[line] kp="); uart_dbg_put_int((int)(g_line.kp * 1000.0f)); }
+        else if (c == 'd') { g_line.kd = f;
+                             uart_dbg_puts("[line] kd="); uart_dbg_put_int((int)(g_line.kd * 1000.0f)); }
+        else if (c == 'i') { g_line.w_max = (float)v;      /* 注意: 不除 1000 */
+                             uart_dbg_puts("[line] w_max(RPM)="); uart_dbg_put_int((int)g_line.w_max); }
+        uart_dbg_puts(" (x1000; i=w_max 直接给 RPM)\n");
+        return 1;
+    }
+#endif
     return 0;
 }
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -486,7 +519,24 @@ static void run_cmd(const char *s, int n)
     int mode_before = g_mode;
     switch (c) {
         case 'm': if (v >= 0 && v < MODE_N) { g_mode = v; g_target = 0; g_m1duty = 0; g_m2duty = 0; g_dv = 0; g_dw = 0; reset_all_pid(); } break;
-        case 't': g_target = v; reset_all_pid(); break;
+        /* t<v>: 速度环目标。**在 m11 下改的是循迹巡航速度**(见 g_line_v_cruise) ——
+         * 语义一致(都是"目标速度"), 且 m11 下 g_target 本来无用。
+         * 为什么必须能在线改: 2026-07-29 真机证明**速度是循迹的决定性旋钮**而不是 Kp ——
+         * 控制周期 50ms @250mm/s ⇒ 两拍间走 12.5mm = 一个探头间距, 叠上速度环上升时间后
+         * 等效延迟折算约 40~60mm, 与阵列半宽 42mm 同量级 ⇒ 加 Kp 只会振荡(Kp 3.0 实测更差:
+         * err 冲到 −30mm、w 饱和、830mm 就丢线, 而 Kp 2.0 能跑 1775mm)。 */
+        case 't':
+#if CFG_LINE_UART_EN
+                  if (g_mode == MODE_LINE) {
+                      if (v > 0 && v <= 200) { g_line_v_cruise = v;
+                          uart_dbg_puts("[line] cruise(RPM)="); uart_dbg_put_int(g_line_v_cruise); }
+                      else { g_line_v_cruise = 0;
+                          uart_dbg_puts("[line] cruise 回默认 CFG_TASK_V_CRUISE="); uart_dbg_put_int(CFG_TASK_V_CRUISE); }
+                      uart_dbg_puts("\n");
+                      return;
+                  }
+#endif
+                  g_target = v; reset_all_pid(); break;
         /* p/i/d 先给导航层一次机会(m8/m9 下增益住在 g_nav), 没被吃掉才走 gkp[] 那条老路 */
         case 'p': if (nav_gain_cmd('p', v)) break;
                   li = loop_index(); if (li >= 0) { gkp[li] = v / 1000.0f; apply_gains(); } break;
@@ -623,12 +673,17 @@ static void run_cmd(const char *s, int n)
         case 'G': {
             int dig[LF_CH]; int raw[LINE_MAX_CH]; int i, fresh;
             fresh = lf_get_digital(&g_lf, g_st / ST_PER_MS, CFG_LINE_MAX_AGE_MS, dig);
-            for (i = 0; i < LF_CH; i++) raw[i] = (fresh && dig[i] == 0) ? 1000 : 0;  /* 0=在黑线上 */
             if (v == 0 || v == 1) {
                 if (!fresh) { uart_dbg_puts("[line] 拿不到新鲜帧, 标定拒绝 —— 先让模块发数据(见 L/rx)\n"); break; }
-                if (v == 0) { line_cal_white(&g_line, raw); uart_dbg_puts("[line] cal WHITE 已采\n"); }
-                else        { line_cal_black(&g_line, raw); uart_dbg_puts("[line] cal BLACK 已采\n"); }
+                /* ⚠ **喂的是合成常量, 不是当前读数** —— 理由同 line_init 处那段长注释:
+                 * 数字量下白=0/黑=1000 是定义, 而"采当前读数"会让离线的 6 路 ref_b==ref_w
+                 * ⇒ 对比度 0 ⇒ cal 永远 NO。所以 G0/G1 现在**车放哪儿都能过**,
+                 * 它退化成"确认链路活着 + 把参考置成定义值"。开机已自动置好, 这两条是冗余保险。 */
+                for (i = 0; i < LINE_MAX_CH; i++) raw[i] = (v == 1) ? 1000 : 0;
+                if (v == 0) { line_cal_white(&g_line, raw); uart_dbg_puts("[line] cal WHITE 已置(合成: 全 0)\n"); }
+                else        { line_cal_black(&g_line, raw); uart_dbg_puts("[line] cal BLACK 已置(合成: 全 1000)\n"); }
             }
+            for (i = 0; i < LINE_MAX_CH; i++) raw[i] = (i < LF_CH && fresh && dig[i] == 0) ? 1000 : 0;  /* 0=在黑线上 */
             uart_dbg_puts("[line] cal="); uart_dbg_puts(line_calibrated(&g_line) ? "YES" : "NO");
             uart_dbg_puts(" bad_ch=");    uart_dbg_put_int(line_bad_channel(&g_line));
             uart_dbg_puts(" fresh=");     uart_dbg_put_int(fresh);
@@ -1236,10 +1291,33 @@ int main(void)
     /* 循迹算法层: pos 传 NULL ⇒ 按 CFG_LINE_PITCH_MM 等间距铺开(左为正)。
      * ⚠ CFG_LINE_PITCH_MM 现在是 **[估计]12mm**, 必须拿尺量实物后回填 —— 它是横向偏差的标尺,
      *   量错等于整条循迹的增益标定错(而症状会像"PID 怎么调都蛇行")。 */
-    line_init(&g_line, LF_CH, 0);
+    /* 🔴 **X1 装在车的右侧、X8 在左侧**（2026-07-29 用户按实物确认）。
+     * 而 `line.c` 的默认 `pos[]` 假设 `raw[0]`(=X1) 是**最左**那个探头(`pos[0]=+42mm`, 左为正)
+     * ⇒ 直接吃默认值会让横向偏差**整体反相**, 循迹朝反方向跑飞。
+     * ⇒ 显式传入取反后的 pos[]: X1 在右 = 负、X8 在左 = 正; 8 路 ±42/±30/±18/±6 mm。
+     * **为什么不去重插那 8 根线**: 改一行数据可验证、可回溯; 动 8 根杜邦线会引入新的错位风险
+     * (本轮已因选脚/接线折腾一整晚)。⚠ 若将来把模块前后翻转安装, 这里要跟着改回来。 */
+    static const float LINE_POS[LF_CH] = {
+        -3.5f * (float)CFG_LINE_PITCH_MM, -2.5f * (float)CFG_LINE_PITCH_MM,
+        -1.5f * (float)CFG_LINE_PITCH_MM, -0.5f * (float)CFG_LINE_PITCH_MM,
+        +0.5f * (float)CFG_LINE_PITCH_MM, +1.5f * (float)CFG_LINE_PITCH_MM,
+        +2.5f * (float)CFG_LINE_PITCH_MM, +3.5f * (float)CFG_LINE_PITCH_MM };
+    line_init(&g_line, LF_CH, LINE_POS);
     g_line.kp = CFG_KP_LINE;  g_line.kd = CFG_KD_LINE;
     g_line.w_max = CFG_LINE_W_MAX;  g_line.search_w = CFG_LINE_SEARCH_W;
     g_line.on_thresh = CFG_LINE_ON_THRESH;  g_line.min_contrast = CFG_LINE_MIN_CONTRAST;
+    /* ⭐ **数字量输入下白/黑参考直接置好, 开机即 cal=YES** —— 不是偷懒, 是因为标定在这里
+     * **不携带任何信息**: IO 方式每通道只有 0/1, 白就是 0、黑就是 1000, 没有逐通道增益可标。
+     * (该标的那部分校准在**模块侧硬件**做: 模块有 KEY 键 + 厂家文档的校准步骤。)
+     * 而 `line.c` 的标定是为**模拟量**设计的, 若照它原本的仪式做, 会踩这个坑(2026-07-29 离线查出,
+     * 省下大量台架时间): 车压线上时只有 1~2 路读黑, 其余 6 路 `ref_b==ref_w==0` ⇒ 对比度 0
+     * < `MIN_CONTRAST` ⇒ `line_bad_channel` 报坏 ⇒ **cal 永远 NO、`line_step` 恒返回 NOCAL
+     * 拒绝转向**, 而现象看起来像"循迹不工作"。
+     * ⇒ 数字量下真正有效的反馈健康门是另外两个, 都还在: ① 帧新鲜度 `fresh`(链路断=当丢线处理)
+     *   ② `LINE_LOST`(没有任何通道在线)。**将来若改用模拟量(`$0,1,0#`), 必须删掉这两行并走
+     *   G0/G1 真实标定。** */
+    for (int i = 0; i < LF_CH; i++) { g_line.ref_w[i] = 0; g_line.ref_b[i] = 1000; }
+    g_line.have_w = 1;  g_line.have_b = 1;
     task_init(&g_task);        /* 第2项任务层(按键/计时/到达/安全停) */
     beep_init(&g_beep);
 #endif
@@ -1278,7 +1356,7 @@ int main(void)
     uart_dbg_puts(" (模块TX->B05,共地) | L=dump  B<baud>=换速率\n");
 #endif
     uart_dbg_puts("[ctl] SAFETY: 运动超时自停 = 静默(按模式, h<ms>可临时改) + 硬上限 ");
-    uart_dbg_put_int(CFG_RUN_MS_HARDCAP);
+    uart_dbg_put_int((int)hardcap_ms());
     uart_dbg_puts("ms(不可绕过); 触发会打 'RUN TIMEOUT'\n");
 #if CFG_ESP_UART_EN
     /* 这一行是"板上跑的这版到底有没有无线口"的开机指纹 —— 旧固件不会打它。
@@ -1405,7 +1483,7 @@ int main(void)
             uint32_t quiet = (uint32_t)(now - g_cmd_at);    /* 静默了多久 */
             uint32_t held  = (uint32_t)(now - g_mode_at);   /* 在本模式待了多久 */
             const char *why = 0; uint32_t age = 0;
-            if (held >= (uint32_t)CFG_RUN_MS_HARDCAP * ST_PER_MS)  { why = "HARDCAP"; age = held;  }
+            if (held >= hardcap_ms() * ST_PER_MS)                  { why = "HARDCAP"; age = held;  }
             else if (lim && quiet >= lim * ST_PER_MS)              { why = "SILENCE"; age = quiet; }
             if (why) {
                 /* 不静默停机: 打清楚是哪道闸门、在哪个模式、跑了多久 —— 事后归因全靠这一行 */
@@ -1559,7 +1637,8 @@ int main(void)
 
                 g_dw = w;
                 g_dv = (g_task_v == 2) ? CFG_TASK_V_SLOW
-                     : (g_task_v == 1) ? CFG_TASK_V_CRUISE : 0;
+                     : (g_task_v == 1) ? (g_line_v_cruise > 0 ? g_line_v_cruise
+                                                              : CFG_TASK_V_CRUISE) : 0;
                 if (g_dv != 0) drive_closed_loop(g_dv, g_dw, speed_rpm, pwm_out);
                 else           { pwm_out[0] = pwm_out[1] = 0; }
             }
