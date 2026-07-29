@@ -115,6 +115,10 @@ static int      g_vseg_now  = 0;    /* 本拍分段速度给出的巡航 RPM(遥
 static float    g_vs_lo     = CFG_LINE_VSEG_W_LO;
 static float    g_vs_hi     = CFG_LINE_VSEG_W_HI;
 static int      g_vs_slow   = CFG_LINE_VSEG_V_SLOW;
+/* 启停线门限的运行时副本(命令 N)。为什么它也必须能在线改: 门限 4 是**几何算出来的**,
+ * 但实际能盖到几路取决于探头离地高度与胶带宽度 —— 而这两样只能在真板上量。
+ * 若只能改 config.h, 台架上一发现"on_max 只到 3"就得重烧 142s 再试, 一轮试错半小时。 */
+static int      g_cross_min = CFG_LINE_CROSS_MIN_ON;
 static int      g_line_st   = 0;    /* 最近一次 line_state_t */
 static uint32_t g_task_run0 = 0;    /* 起跑那一拍的 SysTick(打成绩单用) */
 static int      g_task_v    = 0;    /* 任务层要的速度档(0STOP/1CRUISE/2SLOW) */
@@ -290,6 +294,8 @@ static int nav_gain_cmd(char c, int v)
     return 0;
 }
 
+static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
 #if CFG_LINE_UART_EN
 /* 分段速度三个值的回显。W_LO/W_HI 打 ×10 的整数(uart_dbg 没有浮点格式化, 全仓统一这么打)。 */
 static void print_vseg(void)
@@ -298,14 +304,16 @@ static void print_vseg(void)
     uart_dbg_puts(" lo(x10)=");    uart_dbg_put_int((int)(g_vs_lo * 10.0f));
     uart_dbg_puts(" hi(x10)=");    uart_dbg_put_int((int)(g_vs_hi * 10.0f));
     uart_dbg_puts(" slow(RPM)=");  uart_dbg_put_int(g_vs_slow);
+    uart_dbg_puts(" xmin=");       uart_dbg_put_int(g_cross_min);   /* 启停线门限(命令 N) */
     uart_dbg_puts("\n");
 }
 
-/* 分段速度的在线旋钮(**大写 A/B/L**, 小写全被占了 —— a=定竖直轴 b=AT桥接 l=遥测去向)。
+/* 循迹的在线旋钮(**大写 A/B/L/N**, 小写全被占了 —— a=定竖直轴 b=AT桥接 l=遥测去向 n=走直)。
  *   A<x10>  |w_lp| 的"直线阈" W_LO ×10   (A120 => 12.0)
  *   B<x10>  |w_lp| 的"弯道阈" W_HI ×10   (B400 => 40.0)
  *   L<rpm>  弯道速度 V_SLOW              (L55)
- * 三条都 **参数 0 = 回 config.h 默认**(同 t0/c0 的既有约定, 少记一套规则)。
+ *   N<n>    启停线门限 = 至少几路在线     (N3 / N4)
+ * 四条都 **参数 0 = 回 config.h 默认**(同 t0/c0 的既有约定, 少记一套规则)。
  * 把 L 设成等于当前巡航速度就等价于关掉分段(下游有 v_curve=min(V_SLOW,v_fast) 的 clamp)
  * ⇒ 不必再给 EN 开关一条在线命令。 */
 static int vseg_cmd(char c, int v)
@@ -313,6 +321,9 @@ static int vseg_cmd(char c, int v)
     if      (c == 'A') { g_vs_lo   = (v > 0) ? (float)v / 10.0f : CFG_LINE_VSEG_W_LO; }
     else if (c == 'B') { g_vs_hi   = (v > 0) ? (float)v / 10.0f : CFG_LINE_VSEG_W_HI; }
     else if (c == 'L') { g_vs_slow = (v > 0) ? v                : CFG_LINE_VSEG_V_SLOW; }
+    /* 夹到 1..8: 0 会让判据恒成立(每拍都"压在启停线上"), >8 则永不成立 —— 两头都是静默失效,
+     * 现场很难看出来, 所以在入口就夹死而不是信任手输。 */
+    else if (c == 'N') { g_cross_min = (v > 0) ? clampi(v, 1, 8) : CFG_LINE_CROSS_MIN_ON; }
     else return 0;
     /* HI 必须严格大于 LO, 否则下游插值分母为 0 / 负 ⇒ 直接除爆或算出反向速度。
      * 在**入口就夹死**而不是在控制回路里判: 回路每拍都跑, 把校验放那儿等于每拍付一次代价,
@@ -322,7 +333,6 @@ static int vseg_cmd(char c, int v)
     return 1;
 }
 #endif
-static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
 /* ==== 串口命令 ==== */
 /* 命令行缓冲: **每个来源一个**。有线口与无线口会同时来字节, 共用一个缓冲会把两边的
@@ -589,7 +599,7 @@ static void run_cmd(const char *s, int n)
     /* A/B/L 三条分段速度旋钮先拦一手。放在 switch 前面而不是加三个 case:
      * 它们**不分模式都该能改**(整定时常在 m11 外先设好再起跑), 而 switch 里
      * 已有的模式相关分支容易把这层语义搞乱。 */
-    if (c == 'A' || c == 'B' || c == 'L') { if (vseg_cmd(c, v)) return; }
+    if (c == 'A' || c == 'B' || c == 'L' || c == 'N') { if (vseg_cmd(c, v)) return; }
 #endif
     switch (c) {
         case 'm': if (v >= 0 && v < MODE_N) { g_mode = v; g_target = 0; g_m1duty = 0; g_m2duty = 0; g_dv = 0; g_dw = 0; reset_all_pid(); } break;
@@ -1723,7 +1733,7 @@ int main(void)
                     while (m) { n_on += (m & 1); m >>= 1; }
                     g_cross_cur = n_on;
                     if (n_on > g_cross_max) g_cross_max = n_on;
-                    if (n_on >= CFG_LINE_CROSS_MIN_ON) {
+                    if (n_on >= g_cross_min) {      /* 门限走运行时副本(命令 N), 不直读 CFG_ */
                         if (g_cross_run < 1000) g_cross_run++;
                     } else {
                         g_cross_run = 0;
