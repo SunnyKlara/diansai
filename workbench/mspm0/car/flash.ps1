@@ -48,6 +48,15 @@
 Set-Location $PSScriptRoot
 # Toolchain paths come from ONE place (_tools.ps1). Hardcoding them here used to make this
 # script fail outright on the other development machine - see _tools.ps1 header.
+param(
+    # SWD 时钟(kHz)。500 是 2026-07-27"写一半挂掉"之后定的保守值。
+    # 实测代价：53KB 镜像 @500kHz 要 **140s（0.370 KiB/s）** —— 瓶颈不是 SWD 带宽
+    # （53KB 在 500kHz 下理论只需几秒），而是**每个字一次完整 SWD 往返握手**，
+    # 所以提时钟基本线性缩短。`verify_image` + verify_addr.ps1 是兜底 ⇒ 可以试高再退。
+    # 用法：.\flash.ps1 -Speed 2000
+    [int]$Speed = 500
+)
+
 . "$PSScriptRoot\_tools.ps1"
 # NOTE: Find-Openocd returns @{Exe;Scripts} (API defined at the top of _tools.ps1).
 $oo  = (Find-Openocd).Exe
@@ -81,7 +90,7 @@ Write-Host "writing + verifying (one session, SRST push-pull, ~75s - DO NOT INTE
 #   => Correct split:  halt/erase/write/verify with the target default (sysresetreq),
 #                     then switch to SRST push-pull only for the final `reset run` (true POR).
 $log = & $oo -s $scr -f interface/cmsis-dap.cfg `
-    -c "adapter speed 500" `
+    -c "adapter speed $Speed" `
     -f target/ti_mspm0.cfg `
     -c "init" `
     -c "reset halt" `
@@ -94,6 +103,21 @@ $log = & $oo -s $scr -f interface/cmsis-dap.cfg `
     -c "shutdown" 2>&1
 $log | ForEach-Object { Write-Host $_ }
 $txt = $log -join "`n"
+
+# ⚠⚠ 2026-07-29 真机踩到，代价是白查了几个小时 ⇒ 这段不许删：
+#   **openocd 遇到失败的命令会中止后面所有 `-c`**。而 `verify_image` 在本板有已知假失败
+#   （host-side 字节比对读到擦除前的陈旧数据，见下方大段说明）⇒ 那条假失败会把最后的
+#   `reset run` 一起吃掉 ⇒ 芯片**停在 `reset halt` 的状态**，串口一个字节都不发。
+#   症状极具误导性：DAP 在、COM 口在、openocd 能连，就是"固件不说话" ——
+#   看起来完全像固件跑飞或板子挂了，而实际上二进制完全正确、只是芯片被按停了。
+#   （同一签名也会由"末尾漏 resume 的 SWD 采样脚本"造成。）
+# ⇒ 不管上面结果如何，都另开一个短会话把芯片放跑。幂等、约 3s、绝不比不做更差。
+Write-Host "ensuring target is RUNNING (separate session - openocd aborts the -c chain on error)..." -ForegroundColor Cyan
+& $oo -s $scr -f interface/cmsis-dap.cfg -c "adapter speed $Speed" -f target/ti_mspm0.cfg `
+    -c "init" `
+    -c "reset_config srst_only srst_push_pull connect_deassert_srst" `
+    -c "reset run" `
+    -c "shutdown" 2>&1 | Out-Null
 
 $mW = [regex]::Match($txt, 'wrote (\d+) bytes')
 $mV = [regex]::Match($txt, 'verified (\d+) bytes')

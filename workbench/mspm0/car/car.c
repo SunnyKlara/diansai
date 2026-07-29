@@ -28,6 +28,12 @@
 #include "vservo.h"     /* 反应式视觉伺服控制律 (static inline 纯逻辑, 已 PC 单测) */
 #include "cmd_gate.h"   /* 串口命令格式门 (纯逻辑, 挡 ESP boot 日志误触发命令; 已 PC 单测) */
 #include "servo.h"      /* 转向舵机(TIMG12_C1=PA31, 50Hz) —— 阿克曼前轮转向 // 待真机验证 */
+#include "linesens.h"   /* 循迹模块串口链路(UART1=PB4/PB5) —— 现阶段只嗅探不解析 // 真机零验证 */
+#include "lineframe.h"  /* 八路巡线 $D/$A 帧解析 (纯算法层, 已 PC 单测) */
+#include "line.h"       /* 循迹算法层: 归一化/标定/PD -> 横向偏差+转向 (纯算法层, 已 PC 单测) */
+#include "task.h"       /* 第2项任务层: 按键/计时/到达判定/安全停 (纯算法层, PC 单测 47/47) */
+#include "beep.h"       /* 蜂鸣器非阻塞状态机 (纯算法层, PC 单测 24/24) */
+#include "disp_run.h"   /* LCD RUN 页纯排版: 出6行文本+变化位掩码 (纯算法层, PC 单测 31/31) */
 #include <math.h>       /* 水平仪页用 sqrtf/fabsf/atan2f (软浮点, 仅 IDLE 下的显示页调用) */
 
 /* ★所有可调参数(时基/周期/PWM上限/ENC_CPR/PID增益/死区/容差/调试开关)已集中到 config.h。
@@ -37,11 +43,21 @@
 
 static void delay_ms(uint32_t ms) { while (ms--) delay_cycles(CPUCLK_HZ / 1000UL); }
 
+#if CFG_LINE_UART_EN
+/* 前向声明: 这三个循迹嗅探辅助函数定义在 poll_uart 之前(它们要用 g_st),
+ * 而命令分发在更早的位置就要调它们。 */
+static void line_wait_ms(uint32_t ms);
+static void line_selftest(void);
+static void line_sweep_query(void);
+#endif
+
 /* ==== 模式 ==== */
 enum { MODE_IDLE = 0, MODE_CURRENT, MODE_SPEED, MODE_POSITION, MODE_OPEN, MODE_DUAL,
-       MODE_DRIVE, MODE_DRIVE_CL, MODE_NAV_S, MODE_NAV_T, MODE_VSERVO, MODE_N };
+       MODE_DRIVE, MODE_DRIVE_CL, MODE_NAV_S, MODE_NAV_T, MODE_VSERVO,
+       MODE_LINE,                 /* m11: H题第2项 —— 按键启动 + 循迹跑一圈 + 检到启停线停车 */
+       MODE_N };
 static const char *mode_name[MODE_N] = { "IDLE", "CURR", "SPD", "POS", "OPEN", "DUAL", "DRV", "DRVC",
-                                        "NAVS", "NAVT", "VSRV" };
+                                        "NAVS", "NAVT", "VSRV", "LINE" };
 
 /* ==== 运行时(串口可改) ==== */
 static volatile int g_mode   = MODE_IDLE;
@@ -64,6 +80,27 @@ static int g_dv = 0, g_dw = 0;
  * 已真机达标的闭环差速路径** —— 不另开一条驱动通路, 所以 `z`/超时自停/PWM 限幅全部照旧生效,
  * 遥测的 D: 字段也直接就是"导航此刻在要多少速度", 不用新增字段就能看出它在干什么。 */
 static nav_t g_nav;
+
+/* ==== m11 循迹任务（H题第2项）==== */
+#if CFG_LINE_UART_EN
+/* `g_lf` 定义在 linesens.c 里且**刻意非 static**（那边注释写着"car.c 要读它出横向偏差"）。
+ * extern 声明暂时放这儿而不是 linesens.h —— 那个文件正被另一条线改，避免撞车；
+ * ⬜ 赛后把这一行搬进 linesens.h。 */
+extern lf_t g_lf;
+static line_t   g_line;             /* 循迹算法层状态(含现场白/黑标定) */
+static task_t   g_task;             /* 任务状态机(按键/计时/到达/安全停) */
+static beep_t   g_beep;             /* 蜂鸣器非阻塞状态机 */
+static uint32_t g_lost_seg  = 0;    /* 本趟丢线**段数**(不是毫秒): 屏上 L<n>, 一眼看出这趟干净不干净 */
+static int      g_was_lost  = 0;    /* 上一拍是否在丢线(用来数"段") */
+static float    g_line_err  = 0.0f; /* 最近一次横向偏差 mm(遥测/排障) */
+static int      g_line_st   = 0;    /* 最近一次 line_state_t */
+static uint32_t g_task_run0 = 0;    /* 起跑那一拍的 SysTick(打成绩单用) */
+static int      g_task_v    = 0;    /* 任务层要的速度档(0STOP/1CRUISE/2SLOW) */
+static int      g_task_disp = 0;    /* 任务层说"该刷屏了" */
+static int      g_beep_lv   = 0;    /* 蜂鸣器当前电平(没接线时也算, 便于遥测看见) */
+static uint32_t g_btn_virt_until = 0;  /* 虚拟按键按下到期时刻 ms(命令 K); 0 = 没在按 */
+static float    g_ball_mm   = DISP_RUN_NO_BALL;  /* 球位 mm; 第4/5/6项接上相机后填, 现在恒无效 */
+#endif
 /* ==== 视觉链（m10 VSRV）====
  * g_uf = 帧解析器(喂字节, 出目标+新鲜度)  g_vs = 伺服控制律参数(来自 config.h §7.7)
  * ★ 帧从**现有两个串口**进来(见 poll_uart 里的 '$' 分流) ⇒ 不用第三路 UART、不用相机就能测:
@@ -133,6 +170,13 @@ static void stop_all(void)
     g_mode = MODE_IDLE; g_target = 0;
     g_dv = 0; g_dw = 0; g_m1duty = 0; g_m2duty = 0;
     nav_abort(&g_nav);      /* 导航任务也必须忘掉 —— 否则 `z` 之后再进 m8 会接着走剩下的距离 */
+#if CFG_LINE_UART_EN
+    /* m11 任务也必须一起收尾(同一条急停路径, 不复制第二份逻辑 —— 见上面那条 2026-07-27 的坑)。
+     * ⚠ 只在 RUN/BRAKE 时才 abort: task_abort 对 DONE 态的语义是"复位回 IDLE",
+     *   那会把刚跑完那趟的**冻结走时抹掉** —— 而那正是我们要念给评委/记进日志的数。 */
+    if (g_task.state == TASK_RUN || g_task.state == TASK_BRAKE)
+        task_abort(&g_task, g_st / ST_PER_MS, TASK_FAIL_MANUAL);
+#endif
     reset_all_pid();
     /* ⚠ **有意不动电磁铁**(不在这里 magnet_off())。理由: `z` 的语义是"停止运动", 而松开电磁铁
      * 是一个**有后果的动作** —— 车正夹着钢球时急停就把球掉在半路, 比停在原地更糟(还得重新找球)。
@@ -155,6 +199,9 @@ static uint32_t run_limit_ms(int mode)
         /* 视觉伺服: 目标帧本身就在持续到达, 但**帧不是命令**(不刷新静默时钟) ⇒ 这道闸门仍然有效,
          * 它挡的是"相机在发、车在追、但没人管了"。追一个目标给 8s。 */
         case MODE_VSERVO:   return CFG_RUN_MS_VSERVO;
+        /* m11: 按键一按就没人再发命令了(说明 4 禁止人为干涉) ⇒ 这道闸门要宽到装得下一整圈。
+         * ⚠ 真正的墙是 CFG_RUN_MS_HARDCAP, 见 config.h §7.11 那条警告。 */
+        case MODE_LINE:     return CFG_RUN_MS_LINE;
         default:            return 0;
     }
 }
@@ -323,6 +370,37 @@ static void print_servo(void)
 /* 导航任务结束时的"成绩单" —— 一行讲完这趟到底干成什么样。
  * 为什么必须自动打、而不是等人来问: 脱缆落地时串口线不在车上, 无线是 UDP 会丢, 人也不在电脑前;
  * 这一行是这趟唯一的定量记录。字段全部整数(无 printf): deg 与 mm 各自的倍率写在字段名里。 */
+#if CFG_LINE_UART_EN
+/* 任务层成绩单/状态回读。
+ * ⭐ 这一行是**第 2 项的自查依据**：走时(内部) + 里程 + 丢线段数 + 到底为什么停。
+ * ⚠ Q47 明确"屏显信息仅为参考、以评委秒表为准" ⇒ 这个走时只用于我们自查与整定,
+ *   别拿它去跟评委争成绩。 */
+static void print_task(void)
+{
+    static const char *ST[] = { "IDLE", "RUN", "BRAKE", "DONE", "ABORT" };
+    static const char *FL[] = { "-", "TIMEOUT", "LOST", "MANUAL" };
+    int st = (g_task.state >= 0 && g_task.state <= 4) ? g_task.state : 0;
+    int fl = (g_task.fail  >= 0 && g_task.fail  <= 3) ? g_task.fail  : 0;
+    char tb[12];
+    task_fmt_time(g_task.state == TASK_IDLE ? 0u
+                  : (g_task.state == TASK_DONE || g_task.state == TASK_ABORT)
+                        ? (g_task.t_stop - g_task.t_start)
+                        : (g_st / ST_PER_MS - g_task.t_start), tb, sizeof tb);
+    uart_dbg_puts("[task] "); uart_dbg_puts(ST[st]);
+    uart_dbg_puts(" t=");     uart_dbg_puts(tb);
+    uart_dbg_puts("s run#");  uart_dbg_put_int((int)g_task.n_runs);
+    uart_dbg_puts(" fail=");  uart_dbg_puts(FL[fl]);
+    uart_dbg_puts(" | line st=");  uart_dbg_put_int(g_line_st);
+    uart_dbg_puts("(0OK/1LOST/2CROSS/3NOCAL) err0.1mm=");
+    uart_dbg_put_int((int)(g_line_err * 10.0f));
+    uart_dbg_puts(" cal=");   uart_dbg_puts(line_calibrated(&g_line) ? "YES" : "NO");
+    uart_dbg_puts(" lostSeg="); uart_dbg_put_int((int)g_lost_seg);
+    uart_dbg_puts(" D="); uart_dbg_put_int((int)g_lf.n_dig);
+    uart_dbg_puts(" bad="); uart_dbg_put_int((int)g_lf.n_bad);
+    uart_dbg_puts("\n");
+}
+#endif
+
 static void nav_report(void)
 {
     uart_dbg_puts("\n[nav] ");
@@ -465,6 +543,31 @@ static void run_cmd(const char *s, int n)
                   return;
         /* V = 视觉链健康度(帧计数 + 最近一帧 + 新鲜度)。排障先看它再怀疑控制。 */
         case 'V': print_vision(); return;
+        /* ---- 循迹模块串口(UART1=PB4/PB5) 的两个嗅探命令。协议未知, 先看字节再谈解析。 ----
+         * L        = dump 统计 + HEX/ASCII 双视图('|' 标帧间隙 ⇒ 帧边界直接可见)
+         * B<baud>  = 运行时换波特率并清缓冲。**一次烧录扫完所有候选**, 不必为试速率重烧
+         *            (禁忌 2: 反复快烧会把 MCU 怼进 lockup, 已发生过一次)。
+         * 定出真值后回填 config.h 的 CFG_LINE_UART_BAUD 再 commit（"达标即锁死"）。 */
+        case 'L': linesens_dump(); return;
+        case 'B': if (v >= 1200 && v <= 460800) { linesens_set_baud((uint32_t)v); linesens_dump(); }
+                  else uart_dbg_puts("[line] B<baud> 超范围(1200..460800); 常见候选 9600/19200/38400/57600/115200\n");
+                  return;
+        /* T = UART1 内部回环自测。回答那个最要紧的分岔口:
+         *   "收不到"是**我们的接收链路坏了**, 还是**对方根本没发**? 见 linesens.h 里的说明。*/
+        case 'T': line_selftest(); return;
+        /* X<0..255> = 往模块发一个字节(十进制)。协议未知时用来试查询帧。 */
+        case 'X': if (v >= 0 && v <= 255) { linesens_clear(); linesens_tx((uint8_t)v);
+                      line_wait_ms(60);
+                      uart_dbg_puts("[line] sent 0x"); uart_dbg_put_int(v);
+                      uart_dbg_puts(" -> rx="); uart_dbg_put_int((int)linesens_rx_total());
+                      uart_dbg_puts("\n"); linesens_dump(); }
+                  else uart_dbg_puts("[line] X<0..255>\n");
+                  return;
+        /* Q = **查询字节全扫**(0..255 逐个发, 看哪个能把模块问出话来)。
+         * 这是"没有任何文档也能推进"的手段: 若模块是问答式, 命中的那个字节就是查询帧的第一字节。
+         * ⚠ 有代价: 盲发可能撞上模块的配置/学习命令, 把出厂阈值改掉。该模块有实体按键可重新学习,
+         *   所以后果可恢复 —— 但**这属于会改对方状态的操作, 必须用户明确同意后才跑**。 */
+        case 'Q': line_sweep_query(); return;
         /* 急停 = "忘掉一切"(与超时自停共用 stop_all, 见其注释里那个真机踩过的坑) */
         case 'z': stop_all(); break;
         /* h<ms>: 临时放宽/收紧静默超时(0=恢复 config.h 按模式默认)。
@@ -499,11 +602,41 @@ static void run_cmd(const char *s, int n)
          * 测出来的 => 一改这两个值旧零偏就失效, 必须清掉并提示重标, 否则会拿错轴的零偏去积分。 */
         case 'a': if (v >= 0 && v <= 2) { g_yaw_axis = v; yaw_frame_changed("axis"); } break;
         case 's': g_yaw_sign = (v >= 0) ? 1 : -1; yaw_frame_changed("sign"); break;
-        /* u0 = 编码器计数页(默认) / u1 = 水平仪页(定轴时边挪车边看)。切页时重画静态层。 */
-        case 'u': if (v >= 0 && v <= 1) { g_disp = v; g_lv_static = 0; g_disp_dirty = 1;
-                      uart_dbg_puts(v ? "[lcd] page=LEVEL (u0 回计数页; 挪车让小球进绿环)\n"
-                                      : "[lcd] page=COUNT\n"); }
+        /* u0 = 编码器计数页(默认) / u1 = 水平仪页(定轴时边挪车边看) / u2 = RUN 页(走时+状态+里程+球位)。
+         * 切页时重画静态层。u2 也是"跑完念数"的那一页 —— 进 m11 会自动切到它。 */
+        case 'u': if (v >= 0 && v <= 2) { g_disp = v; g_lv_static = 0; g_disp_dirty = 1;
+                      uart_dbg_puts(v == 2 ? "[lcd] page=RUN (走时/状态/里程/球位)\n"
+                                  : v == 1 ? "[lcd] page=LEVEL (u0 回计数页; 挪车让小球进绿环)\n"
+                                           : "[lcd] page=COUNT\n"); }
                   break;
+#if CFG_LINE_UART_EN
+        /* K: 虚拟按键 —— 等价于"人按了一下启动键"。按键没接线时靠它把整条任务链验完
+         * (IDLE->RUN->计时->到达->BRAKE->DONE), 也可在 RUN 中再发一次当急停。
+         * 60ms > 消抖窗 20ms ⇒ 一条命令 = 一次干净按压, 不会连触发。 */
+        case 'K': g_btn_virt_until = g_st / ST_PER_MS + 60u;
+                  uart_dbg_puts("[task] 虚拟按键 K (60ms)\n");
+                  return;
+        /* G<0|1|2>: 循迹**现场标定** —— 这是循迹能不能用的命门, 不是可选项。
+         *   G0 = 车放**白底**上采一次(全部离线)   G1 = 车放**线上**采一次   G2 = 回读标定状态
+         * 为什么必须现场标: 地面反射率/环境光/探头离地高度一变, 写死的阈值就瞎(line.h 文件头有账)。
+         * ⚠ 顺序无所谓, 但两次都要采; 采完 G2 看 cal=YES 且 bad=-1 才算好。 */
+        case 'G': {
+            int dig[LF_CH]; int raw[LINE_MAX_CH]; int i, fresh;
+            fresh = lf_get_digital(&g_lf, g_st / ST_PER_MS, CFG_LINE_MAX_AGE_MS, dig);
+            for (i = 0; i < LF_CH; i++) raw[i] = (fresh && dig[i] == 0) ? 1000 : 0;  /* 0=在黑线上 */
+            if (v == 0 || v == 1) {
+                if (!fresh) { uart_dbg_puts("[line] 拿不到新鲜帧, 标定拒绝 —— 先让模块发数据(见 L/rx)\n"); break; }
+                if (v == 0) { line_cal_white(&g_line, raw); uart_dbg_puts("[line] cal WHITE 已采\n"); }
+                else        { line_cal_black(&g_line, raw); uart_dbg_puts("[line] cal BLACK 已采\n"); }
+            }
+            uart_dbg_puts("[line] cal="); uart_dbg_puts(line_calibrated(&g_line) ? "YES" : "NO");
+            uart_dbg_puts(" bad_ch=");    uart_dbg_put_int(line_bad_channel(&g_line));
+            uart_dbg_puts(" fresh=");     uart_dbg_put_int(fresh);
+            uart_dbg_puts(" dig:");
+            for (i = 0; i < LF_CH; i++) { uart_dbg_putc(' '); uart_dbg_put_int(dig[i]); }
+            uart_dbg_puts("\n");
+            return; }
+#endif
 #if CFG_ESP_UART_EN
         /* b<秒>: 进 AT 桥接(本口 <-> 车载 ESP 原样对接), 到期自动退出。范围 5~300s, 缺省 30。
          * 用途: 车载 ESP 只连 MCU、PC 碰不到它 ⇒ 靠这条给它发 AT 配置。详见 bridge_pump() 注释。 */
@@ -531,6 +664,9 @@ static void run_cmd(const char *s, int n)
     }
     if (g_mode != mode_before) g_mode_at = g_st;   /* 换了模式 -> 硬上限重新起算 */
     print_status();
+#if CFG_LINE_UART_EN
+    if (s[0] == '?') print_task();   /* `?` 顺带回读任务层 —— 现场问"它到底在哪一步"就靠这行 */
+#endif
 }
 /* ==== 命令格式门(只在编了无线口时才需要) ====
  * 只接受 `<字母>[-][数字...]` 这一种形状, 可选 `#` 前缀。多一个空格、多一个字母 => 拒。
@@ -584,9 +720,58 @@ static int vision_grab(uint8_t ch)
     return 0;
 }
 
+#if CFG_LINE_UART_EN
+/* 等 ms 毫秒, **期间持续轮询** UART1 —— 不这么写的话对方的回应会烂在 FIFO 里(FIFO 只有几字节深,
+ * 溢出就永远看不到了), 于是"其实回了但我们没接"会被误判成"没回"。 */
+static void line_wait_ms(uint32_t ms)
+{
+    uint32_t t0 = g_st;
+    while ((uint32_t)(g_st - t0) < ms * ST_PER_MS)
+        linesens_poll(g_st / ST_PER_MS);
+}
+static void line_selftest(void)
+{
+    int n = linesens_selftest_loopback();
+    uart_dbg_puts("\n[line] loopback selftest: sent 5 got "); uart_dbg_put_int(n);
+    if (n == 5) {
+        uart_dbg_puts("  => PASS: UART1外设+波特率+轮询/缓冲**整条接收链路都好**。\n"
+                      "[line]    ⇒ 之前的 rx=0 不是固件问题: 要么模块不主动发(试 Q/X), 要么 PB5 外部走线/焊点/电平有问题。\n");
+    } else {
+        uart_dbg_puts("  => FAIL: 连内部回环都收不到 ⇒ **别再查接线了**, 是固件/外设配置问题。\n");
+    }
+    linesens_dump();
+}
+/* 扫查询字节: 每个值发一次, 看有没有回应。命中就打出来。 */
+static void line_sweep_query(void)
+{
+    int hits = 0;
+    uart_dbg_puts("\n[line] sweep 0..255 @baud="); uart_dbg_put_int((int)linesens_get_baud());
+    uart_dbg_puts(" (每个值等 25ms)\n");
+    for (int b = 0; b <= 255; b++) {
+        linesens_clear();
+        linesens_tx((uint8_t)b);
+        line_wait_ms(25);
+        uint32_t got = linesens_rx_total();
+        if (got > 0) {
+            hits++;
+            uart_dbg_puts("[line]  HIT tx="); uart_dbg_put_int(b);
+            uart_dbg_puts(" -> rx=");         uart_dbg_put_int((int)got);
+            uart_dbg_puts("\n");
+        }
+    }
+    uart_dbg_puts("[line] sweep done, hits="); uart_dbg_put_int(hits);
+    if (hits == 0)
+        uart_dbg_puts(" => 256 个值全无回应: 该波特率下模块不应答。换 B<baud> 再扫, 或它本就该主动发(则查走线/电平)。\n");
+    else
+        uart_dbg_puts(" => 命中的值就是查询帧候选; 用 X<值> 复现一次再看 L 的字节。\n");
+}
+#endif
 static void poll_uart(void)
 {
     uint8_t ch;
+    /* 循迹模块的字节走独立缓冲, **绝不进命令流** —— 传感器数据里出现 'z' 之类会误触发急停。
+     * 时基用与视觉帧同一个 g_st/ST_PER_MS, 好让帧间隙判定与遥测时间戳对得上。 */
+    linesens_poll(g_st / ST_PER_MS);
 #if CFG_ESP_UART_EN
     while (DL_UART_receiveDataCheck(DBG_UART_INST, &ch))
         if (!vision_grab(ch)) feed_cmd_stream(ch, cbuf, &clen, 1);
@@ -1023,19 +1208,41 @@ int main(void)
 #if ENC_PROBE
     enc_probe_run();   /* 临时: 编码器分层探针, 永不返回(排查完把 ENC_PROBE 改回 0) */
 #endif
+    /* ⚠ 临时启动进度打印(2026-07-29): 加了 linesens 之后固件"哑掉"——有线 COM30 与无线 UART3
+     * 同时无输出, 而 SWD/烧录一直正常。改中断/改非阻塞发送都没治好, 说明我在瞎猜。
+     * 这几行让固件自己报走到哪一步就没声了: 最后出现的 boot 标记 = 卡点的前一步。
+     * 排查完删掉(它们只在启动跑一次, 不影响时序)。 */
+    uart_dbg_puts("\nboot1 syscfg+delay ok\n");
     GC9A01_Backlight(1);
     GC9A01_Init();
+    uart_dbg_puts("boot2 lcd ok\n");
     motor_init();
     magnet_init();                       /* 电磁铁: 占空先归 0 再启动定时器(上电绝不许默认吸合) */
     servo_init();                        /* 转向舵机: 同理先写 0(不出脉冲=limp), 中位未标定前不许输出 */
+    uart_dbg_puts("boot3 motor+mag+servo ok\n");
+    linesens_init();                     /* 循迹模块串口: 只设波特率+清缓冲, 不发任何东西(纯监听) */
+    uart_dbg_puts("boot4 linesens ok\n");
     encoder_init();
+    uart_dbg_puts("boot5 encoder ok\n");
     SysTick_Config(CPUCLK_HZ / ST_HZ);   /* 控制主时基中断(频率见 config.h ST_HZ; 见 SysTick_Handler) */
     int imu_id = imu_init();   /* ICM42688 初始化(2026-07-27 真机验活: WHOAMI=0x47/|a|=0.995g)。读不到则不阻塞主程序 */
+    uart_dbg_puts("boot6 systick+imu ok\n");
     g_imu_ok = (imu_id == ICM42688_WHOAMI_VAL);
     /* dt 传 CFG_IMU_MS 只是初值, 每拍会用 SysTick 真实经过时间覆盖 g_att.dt */
     attitude_init(&g_att, (float)CFG_IMU_MS / 1000.0f, CFG_ATT_ALPHA);
     nav_init(&g_nav);          /* 车级导航层: 参数取 config.h §7.5, 含(现为 0 的)里程/转角标定值 */
     uf_init(&g_uf);            /* 视觉帧解析器 */
+#if CFG_LINE_UART_EN
+    /* 循迹算法层: pos 传 NULL ⇒ 按 CFG_LINE_PITCH_MM 等间距铺开(左为正)。
+     * ⚠ CFG_LINE_PITCH_MM 现在是 **[估计]12mm**, 必须拿尺量实物后回填 —— 它是横向偏差的标尺,
+     *   量错等于整条循迹的增益标定错(而症状会像"PID 怎么调都蛇行")。 */
+    line_init(&g_line, LF_CH, 0);
+    g_line.kp = CFG_KP_LINE;  g_line.kd = CFG_KD_LINE;
+    g_line.w_max = CFG_LINE_W_MAX;  g_line.search_w = CFG_LINE_SEARCH_W;
+    g_line.on_thresh = CFG_LINE_ON_THRESH;  g_line.min_contrast = CFG_LINE_MIN_CONTRAST;
+    task_init(&g_task);        /* 第2项任务层(按键/计时/到达/安全停) */
+    beep_init(&g_beep);
+#endif
     g_vs.center_x  = CFG_VS_CENTER_X;   g_vs.tol_px = CFG_VS_TOL_PX;
     g_vs.kp_w      = CFG_KP_VS_W;       g_vs.w_max  = CFG_VS_W_MAX;
     g_vs.area_stop = CFG_VS_AREA_STOP;  g_vs.kp_v   = CFG_KP_VS_V;
@@ -1063,6 +1270,13 @@ int main(void)
     uart_dbg_puts("[ctl]      不用相机也能测: 往本口发一行 $V,... 再发 m10 (以 $ 开头的行不进命令通道)\n");
     uart_dbg_puts("[ctl] IMU: g dump | k bias-cal(静止2s) | o yaw=0 | a<0|1|2>定轴 s<1|-1>定符号 ; telemetry Y=yaw(0.1deg) W=wz(0.01dps)\n");
     uart_dbg_puts("[ctl] LCD: u0 计数页 / u1 水平仪页(定轴放平用: 挪车让小球进绿环=<=2deg, 黄=<=5, 橙=<=14底线)\n");
+#if CFG_LINE_UART_EN
+    /* 开机指纹: 有这一行就说明片上是带循迹串口链路的版本(旧固件打不出来)。
+     * 嗅探期的用法: 先 `L` 看 rx 有没有在涨(判物理层), 再 `B<baud>` 扫波特率, 最后看 '|' 定帧边界。*/
+    uart_dbg_puts("[line] sniff: UART1 TX=PB4 RX=PB5 @");
+    uart_dbg_put_int((int)linesens_get_baud());
+    uart_dbg_puts(" (模块TX->B05,共地) | L=dump  B<baud>=换速率\n");
+#endif
     uart_dbg_puts("[ctl] SAFETY: 运动超时自停 = 静默(按模式, h<ms>可临时改) + 硬上限 ");
     uart_dbg_put_int(CFG_RUN_MS_HARDCAP);
     uart_dbg_puts("ms(不可绕过); 触发会打 'RUN TIMEOUT'\n");
@@ -1118,6 +1332,67 @@ int main(void)
 
         int32_t c0 = encoder_count(ENC_1);
         int32_t c1 = encoder_count(ENC_2);
+
+#if CFG_LINE_UART_EN
+        /* ==== 任务层节拍(H题第2项) ====
+         * 刻意放在 switch(g_mode) **之前、且不受 g_mode 限制**, 理由三条:
+         *   ① 按键要能在 IDLE 下被按到(它就是"启动");
+         *   ② 被 RUN TIMEOUT 踢回 IDLE 时任务层也要能自己收尾, 而不是冻在 RUN 上;
+         *   ③ 蜂鸣器/走时与运动模式无关(车停了也要显示总时间)。
+         * ⚠ 按键低有效: 内部上拉 + 按键接地 ⇒ 读 0 = 按下 ⇒ 这里取反。 */
+        {
+            uint32_t ms = now / ST_PER_MS;
+            task_in_t ti; task_out_t to;
+            float dist_mm = ((float)(c0 + c1) * 0.5f) / ENC_COUNTS_PER_MM;
+            ti.now_ms    = ms;
+            /* 按键有两条来源, 或起来:
+             *   ① 真实按键(低有效: 内部上拉 + 按键接地 ⇒ 读 0 = 按下) —— 接线后把 CFG_TASK_HW_EN 改 1
+             *   ② **串口虚拟按键 `K`** —— 按键还没接线时用它把整条任务链验完
+             *      (同 vision_test.ps1"用 PC 假装相机"那一招: 缺一个器件不该挡住上层验证)
+             * 虚拟按下持续 60ms > 消抖窗 20ms, 然后自动松开 ⇒ 一条命令 = 一次干净的按压。 */
+            ti.btn = 0;
+#if CFG_TASK_HW_EN
+            if (!rd(GPIO_TASK_PORT, GPIO_TASK_BTN_PIN)) ti.btn = 1;
+#endif
+            if (g_btn_virt_until && (int32_t)(ms - g_btn_virt_until) < 0) ti.btn = 1;
+            ti.line_lost = (g_line_st == LINE_LOST) ? 1 : 0;
+            ti.line_cross= (g_line_st == LINE_CROSS) ? 1 : 0;
+            ti.dist_mm   = dist_mm;
+            /* "停住了"= 两轮速度都接近 0。用速度环已经算好的 rpm, 不再另起一套判据。 */
+            ti.stopped   = (speed_rpm[0] > -3.0f && speed_rpm[0] < 3.0f &&
+                            speed_rpm[1] > -3.0f && speed_rpm[1] < 3.0f) ? 1 : 0;
+            task_step(&g_task, &ti, &to);
+
+            /* 起跑: 自动进 m11 + 切 RUN 页 + 清本趟统计。**按键就是启动**(说明 5), 不用再发命令。 */
+            if (to.beep == TASK_BEEP_START) {
+                g_lost_seg = 0; g_was_lost = 0; g_task_run0 = now;
+                g_mode = MODE_LINE; g_mode_at = now; g_cmd_at = now;
+                g_dv = 0; g_dw = 0; reset_all_pid();
+                g_disp = 2; g_disp_dirty = 1;
+                uart_dbg_puts("\n[task] START -> m11 (循迹一圈; z 或再按一次可急停)\n");
+            }
+            /* 收尾: 打成绩单 + 回 IDLE。**不调 stop_all()** —— 它会把冻结的走时抹掉(见 stop_all 注释)。 */
+            if (to.state == TASK_DONE || to.state == TASK_ABORT) {
+                if (g_mode == MODE_LINE) {
+                    g_mode = MODE_IDLE; g_dv = 0; g_dw = 0; g_target = 0;
+                    reset_all_pid();
+                    print_task();
+                }
+            }
+            if (to.beep != TASK_BEEP_NONE) {
+                beep_req(&g_beep, (beep_pat_t)to.beep, ms);   /* 两个枚举同序, 见 beep.h 注释 */
+                /* 蜂鸣器没接线时这一行就是它的替身: 至少能证明"该响的时候确实请求了" */
+                uart_dbg_puts("[beep] pat="); uart_dbg_put_int((int)to.beep); uart_dbg_puts("\n");
+            }
+            g_beep_lv = beep_step(&g_beep, ms);
+#if CFG_TASK_HW_EN
+            if (g_beep_lv) DL_GPIO_setPins(GPIO_TASK_PORT, GPIO_TASK_BUZZER_PIN);
+            else           DL_GPIO_clearPins(GPIO_TASK_PORT, GPIO_TASK_BUZZER_PIN);
+#endif
+            g_task_v    = (int)to.v_mode;
+            g_task_disp = to.disp_dirty;
+        }
+#endif
 
         /* 进位置模式: 捕获当前计数为零点 -> 目标是"相对入模点位移"(入模=保持当前位, 不驱回boot零点; 大计数也安全) */
         if (g_mode == MODE_POSITION && prev_mode != MODE_POSITION) { pos_ref[0] = c0; pos_ref[1] = c1; }
@@ -1252,6 +1527,44 @@ int main(void)
         case MODE_DRIVE_CL:             /* m7: 闭环差速. v/r 单位=RPM, 左右各喂一个已达标的速度环(走直线用这个) */
             if (spd_tick) drive_closed_loop(g_dv, g_dw, speed_rpm, pwm_out);
             break;
+
+#if CFG_LINE_UART_EN
+        /* m11: H题第2项 —— 循迹跑一圈。结构上同样"只是 m7 前面加了一个产生 (v,w) 的东西":
+         *   八路红外 $D 帧 -> line.c 出横向偏差与转向 w -> 仍旧走两个已达标的速度环。
+         *   前进速度 v 由 task.c 的档位决定(line.c 有意不出 v, 见 line.h 注释)。
+         * ⇒ 不新增任何驱动路径, PWM 限幅/急停/超时自停全部照旧生效。 */
+        case MODE_LINE: {
+            if (spd_tick) {
+                int dig[LF_CH], raw[LINE_MAX_CH], i, fresh, w = 0;
+                float err = 0.0f;
+                fresh = lf_get_digital(&g_lf, now / ST_PER_MS, CFG_LINE_MAX_AGE_MS, dig);
+                /* 数字位 0 = 在黑线上(协议真值, 见 config.h §7.10) ⇒ 映射成 line.c 的
+                 * "黑=1000 / 白=0"。只有两个值也照样能过它的归一化, 只是失去了模拟档的插值精度。 */
+                for (i = 0; i < LINE_MAX_CH; i++)
+                    raw[i] = (i < LF_CH && fresh && dig[i] == 0) ? 1000 : 0;
+
+                if (!fresh) {
+                    /* 拿不到新鲜帧 = **链路断**, 不是"车偏了"。当丢线处理 ⇒ 走 task 的 LOST 闸门
+                     * 最终安全停; 绝不拿过期数据继续开(uart_frame.h 立的规矩)。 */
+                    g_line_st = LINE_LOST;
+                    w = 0;
+                } else {
+                    g_line_st = (int)line_step(&g_line, raw, dt_spd_s, &err, &w);
+                    g_line_err = err;
+                    if (g_line_st == LINE_NOCAL) w = 0;   /* 没标定就不许转向(line.c 已保证, 这里再兜一层) */
+                }
+                /* 数丢线**段数**: 用于屏上 L<n> 与成绩单 —— "这趟干净不干净"比"丢了多少毫秒"更好读 */
+                if (g_line_st == LINE_LOST) { if (!g_was_lost) { g_lost_seg++; g_was_lost = 1; } }
+                else                          g_was_lost = 0;
+
+                g_dw = w;
+                g_dv = (g_task_v == 2) ? CFG_TASK_V_SLOW
+                     : (g_task_v == 1) ? CFG_TASK_V_CRUISE : 0;
+                if (g_dv != 0) drive_closed_loop(g_dv, g_dw, speed_rpm, pwm_out);
+                else           { pwm_out[0] = pwm_out[1] = 0; }
+            }
+            break; }
+#endif
 
         /* m8 走 N mm(带航向保持) / m9 原地转 N 度 —— 车级导航(阶梯 2.5/3/4)。
          * 结构上它只是"m7 前面加了一个产生 (v,w) 的东西": 导航层出车级指令 -> 仍旧走左右两个
@@ -1407,7 +1720,14 @@ int main(void)
 
         /* LCD 计数刷新: 仅在计数变化时重绘对应行(静止零刷=不闪烁),
          * 固定宽度右对齐 + 不透明黑底 => 覆盖式绘制, 免 FillRect 清屏、无残影、位置不漂。 */
-        if ((uint32_t)(now - last_dsp) >= DISP_MS * ST_PER_MS) {
+        /* 刷新周期按页分: RUN 页要实时走时(说明 5)所以快; 计数页很贵(逐字符 set_window)所以慢。
+         * 本工程吃过"LCD 拖慢主循环 ⇒ RPM 虚高 5x"的亏(`4bbaae5`), 这一行就是那笔账的落地。 */
+#if CFG_LINE_UART_EN
+        uint32_t dsp_period = (g_disp == 2) ? (uint32_t)CFG_DISP_RUN_MS : (uint32_t)DISP_MS;
+#else
+        uint32_t dsp_period = (uint32_t)DISP_MS;
+#endif
+        if ((uint32_t)(now - last_dsp) >= dsp_period * ST_PER_MS) {
             last_dsp = now;
             /* 水平仪页只在 IDLE 允许(它比计数页重得多) —— 一进运动模式自动切回,
              * 免得"为了看屏"把控制环的时基又拖歪(本工程为此吃过 RPM 虚高 5x 的亏)。 */
@@ -1415,6 +1735,39 @@ int main(void)
                 g_disp = 0; g_disp_dirty = 1;
                 uart_dbg_puts("[lcd] 进运动模式 -> 自动切回计数页(水平仪页仅 IDLE 可用)\n");
             }
+#if CFG_LINE_UART_EN
+            /* RUN 页: 走时/状态/失败原因/里程/球位/跑次+丢线段数。
+             * **跑完不自动切走** —— 那一屏就是"停车后显示总时间"(说明 5), 也是脱缆跑完把车捡回来
+             * 念数/拍照的唯一通道(Q62 测试期间只许图传工作 ⇒ 那时没有遥测)。要切回按 u0。 */
+            if (g_disp == 2) {
+                disp_run_in_t di; disp_run_txt_t cur; uint32_t dm; int li;
+                static disp_run_txt_t s_prev; static int s_first = 1;
+                static const int16_t RY[DISP_RUN_LINES] = { 96, 40, 66, 140, 166, 202 };
+                if (g_disp_dirty) { g_disp_dirty = 0; s_first = 1;
+                                    GC9A01_FillScreen(LCD_BLACK);
+                                    GC9A01_DrawStringCentered(14, "LAP RUN", LCD_GRAY, LCD_BLACK, 2); }
+                di.state      = g_task.state;
+                di.fail       = g_task.fail;
+                di.elapsed_ms = (g_task.state == TASK_IDLE) ? 0u
+                              : (g_task.state == TASK_DONE || g_task.state == TASK_ABORT)
+                                    ? (g_task.t_stop - g_task.t_start)
+                                    : (now / ST_PER_MS - g_task.t_start);
+                di.dist_mm    = ((float)(c0 + c1) * 0.5f) / ENC_COUNTS_PER_MM;
+                di.ball_mm    = g_ball_mm;
+                di.n_runs     = g_task.n_runs;
+                di.n_lost     = g_lost_seg;
+                disp_run_build(&di, &cur);
+                dm = disp_run_diff(s_first ? 0 : &s_prev, &cur);
+                for (li = 0; li < DISP_RUN_LINES; li++) {
+                    if (!(dm & (1u << li))) continue;
+                    GC9A01_DrawStringCentered(RY[li], cur.line[li],
+                        (li == 0) ? LCD_GREEN : (li == 2) ? LCD_RED : LCD_WHITE,
+                        LCD_BLACK, (li == 0) ? 3 : 2);
+                }
+                s_prev = cur; s_first = 0;
+                goto disp_done;
+            }
+#endif
             if (g_disp == 1) {
                 if (g_imu_ok) {
                     imu_raw_t lr; float lg[3], la[3];

@@ -83,6 +83,73 @@ GPIO2.associatedPins[3].direction        = "INPUT";
 GPIO2.associatedPins[3].internalResistor = "PULL_UP";
 GPIO2.associatedPins[3].pin.$assign      = "PB21";
 
+/* ---- 八路循迹 YB-MUX04-1.0 · **IO 方式**(X1..X8 直读电平) ----
+ *  为什么不用串口: 模块被使能后是 115200 连续流, MSPM0 的 RX FIFO 只 4 字节 ⇒ 要不丢字节得每
+ *  ~350µs 轮一次, 而主循环有 delay_ms(1)、LCD 重绘还要 ~100ms。2026-07-29 真机实测坐实:
+ *  `rx=386308 frames=1862 bad=6200 lost=0` —— 环形缓冲一个字节没追尾(lost=0)却一帧没解出来,
+ *  ASCII 里是 `x4x5:1` / `,,x2:` 这种中间被吞字节的残帧 ⇒ **丢在硬件 FIFO**, 降数据率治不了。
+ *  厂家文档明写三种协议**并列**(`直接IO电平读取` / `USART` / `I2C`), X1..X8 一直是活的数字输出
+ *  ⇒ 转 IO 后没有帧、没有 FIFO、没有波特率、没有中断时序, 轮询多慢都不丢。
+ *  顺带把 PB4/PB5 还给 K230 相机 UART1(载板 §10.1 原设计, 2026-H 正好要用)。
+ *  选脚: 全取载板 §10.12「完全空闲」清单(PA31 已归转向舵机, 故不用), 过了"引出∩空闲∩功能"三重闸。
+ *  🔴 **选脚踩过的坑（2026-07-29 真机，都不是猜的）**：
+ *    ① `PB1` / `PA28` **一接上芯片就不进应用** —— 停在 BootROM(SWD 采样 PC 恒在 `0x0100xxxx`),
+ *       表现为"有线+无线全静默而 SWD 正常、`reset run` 也救不回来", 极易误判成固件跑飞。
+ *       拔掉这两根后 app 立刻启动并读到真数据(`1 0 0 0 0 0 1 1`, 在线 5 路)。
+ *       手册线索: `PA28`=`UART0_TX[2]` 且是全芯片少数**5V 容限开漏**结构、`PB1`=`UART0_RX[2]`,
+ *       而 BootROM 的 BSL 正是走 UART0(实读 `BSLPIN_UART`=PINCM21/22=`PA10`/`PA11`)。
+ *       ⚠ `BSLPIN_INVOKE=0x000012a8` 的位域本地无 TRM 定义、**未解出** ⇒ 到底哪一根有罪没细分,
+ *       两根一起避开。**选脚三重闸要加第四条: 不是 BSL/启动功能脚。**
+ *    ② 替换脚 `PB17`/`PB18` 是照手册挑的: 「标准」IO 结构, 复用只有 `UART2/SPI0/SPI1_CS/TIMA1`,
+ *       **不带任何 `UART0`/`I2C0` 功能**(BSL 只用这两个外设), 且在 J1 第 8 行左右相邻好接线。
+ *       否掉的: `PA15`/`PB25`/`PB26` 带 `UART0_RTS/CTS`; `PB24` 的 `TIMG12_C1` 与舵机撞;
+ *       `PA12`/`PA13` 是 CAN 预留(板上若焊了收发器会反向驱动)。
+ *    ③ `PA25`(X4) 的 `TIMG12_C1[4]` 与转向舵机 `PA31` 是**同一定时器通道**, 两者不可同时上;
+ *       现在 `PA25` 只做 GPIO 输入、不占 TIMG12, 故不冲突。
+ *  ⚠ **PA2 / PA14 虽在 §10.12 的"完全空闲"表里, 实际不可用** —— SysConfig 把它们喂给了两个我们
+ *    根本用不上的子引脚: `PA2` = LCD_SPI 的 `cs0Pin`(屏 CS 其实是手动 GPIO PB14)、
+ *    `PA14` = PWM_SERVO 的 `ccp0Pin`(TIMG12_C0, 舵机只用 C1=PA31)。硬占它们会让 SysConfig
+ *    直接报 `Resource conflict`(2026-07-29 实测)。故 X1/X2 改用 PB1 / PB27。
+ *  上拉: **两种输出形态都安全** —— 若模块是推挽, 弱上拉被它直接盖过、无副作用; 若是开集,
+ *  上拉是必需的。本板在编码器上吃过"开集没上拉/加对地电阻把信号钳死"的亏(见 encoder.h)。
+ *  电平: X 输出为 3.3V —— 判据是厂家给了**树莓派** IO 例程, 而 Pi 的 GPIO 严格 3.3V、灌 5V 即损
+ *  ⇒ 厂家敢直连就说明是 3.3V。⚠ 真机第一次上电前仍建议万用表点一下 X1 的高电平。 */
+const GPIO4 = GPIO.addInstance();
+GPIO4.$name = "GPIO_LINE";
+GPIO4.associatedPins.create(8);
+GPIO4.associatedPins[0].$name            = "X1";
+GPIO4.associatedPins[0].direction        = "INPUT";
+GPIO4.associatedPins[0].internalResistor = "PULL_UP";
+GPIO4.associatedPins[0].pin.$assign      = "PB17";
+GPIO4.associatedPins[1].$name            = "X2";
+GPIO4.associatedPins[1].direction        = "INPUT";
+GPIO4.associatedPins[1].internalResistor = "PULL_UP";
+GPIO4.associatedPins[1].pin.$assign      = "PB27";
+GPIO4.associatedPins[2].$name            = "X3";
+GPIO4.associatedPins[2].direction        = "INPUT";
+GPIO4.associatedPins[2].internalResistor = "PULL_UP";
+GPIO4.associatedPins[2].pin.$assign      = "PA17";
+GPIO4.associatedPins[3].$name            = "X4";
+GPIO4.associatedPins[3].direction        = "INPUT";
+GPIO4.associatedPins[3].internalResistor = "PULL_UP";
+GPIO4.associatedPins[3].pin.$assign      = "PA25";
+GPIO4.associatedPins[4].$name            = "X5";
+GPIO4.associatedPins[4].direction        = "INPUT";
+GPIO4.associatedPins[4].internalResistor = "PULL_UP";
+GPIO4.associatedPins[4].pin.$assign      = "PA21";
+GPIO4.associatedPins[5].$name            = "X6";
+GPIO4.associatedPins[5].direction        = "INPUT";
+GPIO4.associatedPins[5].internalResistor = "PULL_UP";
+GPIO4.associatedPins[5].pin.$assign      = "PA23";
+GPIO4.associatedPins[6].$name            = "X7";
+GPIO4.associatedPins[6].direction        = "INPUT";
+GPIO4.associatedPins[6].internalResistor = "PULL_UP";
+GPIO4.associatedPins[6].pin.$assign      = "PB18";
+GPIO4.associatedPins[7].$name            = "X8";
+GPIO4.associatedPins[7].direction        = "INPUT";
+GPIO4.associatedPins[7].internalResistor = "PULL_UP";
+GPIO4.associatedPins[7].pin.$assign      = "PB23";
+
 /* ---- IMU(ICM42688) 软件片选 CS=PB6 (GPIO 输出, 低有效, 初始高=未选中) ----
  *  与 LCD 共用 SPI1(SCK PB9/MOSI PB8/MISO PB7)。ICM 的 INT=PA29(原理图 §12)当前驱动用
  *  轮询、暂不接入(要用中断驱动时再在此加一个 INPUT 脚 PA29)。 // 待真机验证(陀螺未到货) */
@@ -204,6 +271,34 @@ UART2.targetBaudRate           = 115200;
 UART2.peripheral.$assign       = "UART3";
 UART2.peripheral.rxPin.$assign = "PB3";
 UART2.peripheral.txPin.$assign = "PB2";
+/* ---- 循迹传感器串口 UART1: TX=PB4 RX=PB5 (亚博八路巡线模块, 串口输出) ----
+ * 引脚真值源 = 天猛星主板平台/00_载板接线设计_天猛星平台.md §10.1 定版主表:
+ *     `B4`(PB4) = UART1_TX(复用2) -> 模块 RX   |   `B5`(PB5) = UART1_RX(复用2) <- 模块 TX
+ * 这两个脚载板原本留给 K230 视觉链(§10.1 那两行写的就是 K230), K230 未接 ⇒ 借给循迹模块,
+ * 零引脚冲突; UART 实例也不冲突(UART0=调试, UART3=ESP, UART1/UART2 本来空着)。
+ * ⚠️ 必须**交叉 + 共地**: 模块 TX 接 B05 才收得到; 载板 §5 把"忘记共地导致串口全乱码"标为首坑。
+ * ⚠️ **模块 TX 若是 5V 推挽, 不能直连** —— MSPM0 的 IO 不耐 5V(编码器那里踩过同类坑)。
+ * 波特率**故意先给 9600**: 模块协议未知, 固件侧做了运行时切换(命令 `B<baud>`, 见 linesens.h),
+ *   一次烧录即可扫完 9600/19200/38400/57600/115200 —— 避开"为试参数反复烧板"那个 lockup 坑。
+ * TX 也配上了(虽然 sniff 阶段用不到): 若该模块是"主机问、模块答"的轮询式, 现成能发请求。 */
+/* ⚠️ **RX 必须走中断，不能靠主循环轮询** —— 2026-07-29 真机实测逼出来的：
+ *   模块被使能后是**连续流**(115200 ≈ 11.5 kB/s)，而 MSPM0 的 RX FIFO 只有几字节深；
+ *   主循环还要刷 LCD + 打遥测，两次轮询之间 FIFO 必溢 ⇒ 实测 rx=84193 字节里
+ *   **一帧都没解析成功**(bad=1239)，HEX 里能看到 `x3x4:1` 这种**中间少了 ":1," 的残帧**。
+ *   波特率与协议都是对的（能看到完整的 `$D,x`/`$A,`），纯粹是丢字节。
+ * ⇒ ISR 只做"把字节搬进环形缓冲"，解析留在主循环（见 linesens.c），既不丢字节也不把
+ *   解析逻辑塞进中断。 */
+const UART3 = UART.addInstance();
+UART3.$name                    = "LINE_UART";
+UART3.enableFIFO               = true;
+UART3.targetBaudRate           = 115200;
+/* ⛔ RX 中断**故意不开**（2026-07-29 撤掉）：开了会让 5V 电平持续产生的帧/噪声错误中断
+ *    把主循环吃干、固件彻底哑掉。两种 ISR 写法都试过都锁死，详见 linesens.c 顶部那段。
+ *    现走纯轮询；将来若要上中断，先彻底解决电平问题，并记得 SysConfig **不生成 NVIC_EnableIRQ**。
+ * UART3.enabledInterrupts     = ["RX"];  */
+UART3.peripheral.$assign       = "UART1";
+UART3.peripheral.rxPin.$assign = "PB5";
+UART3.peripheral.txPin.$assign = "PB4";
 
 /* ---- 电流采样 ADC0: 序列采 3 路 DRV8231 IPROPI ---- */
 /*   MEM0=CHAN_0=PA27  MEM1=CHAN_1=PA26  MEM2=CHAN_3=PA24(电磁铁), 参考=VDDA 3.3V

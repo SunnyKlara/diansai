@@ -201,6 +201,11 @@ workbench/mspm0/**/_tools.local.ps1
 workbench/天猛星主板平台/资料/ESP8266-01S/原装出厂固件库/
 workbench/天猛星主板平台/资料/ESP8266-01S/固件烧录工具/
 workbench/天猛星主板平台/资料/**/*.zip
+# 2026-07-29: MentorPi(幻尔) + 八路巡线(亚博) 厂家素材解压后共 ~75GB 落在工作树里，
+# 且第三方资料按仓库既有规矩本就不入库（版权 + 可重下，只入库要点摘录 + URL）。
+# 提取出来的硬事实已写进 调试日志.md / 工程事实SSOT.md，素材本体一律忽略。
+workbench/天猛星主板平台/资料/MentorPi智能视觉小车（2025版）/
+workbench/天猛星主板平台/资料/八路巡线红外传感器/
 **/_temp_by_dltool/
 *.bin_rep
 
