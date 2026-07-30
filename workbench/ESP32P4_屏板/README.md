@@ -1080,3 +1080,48 @@ FatFs 在 `VolToPart[].pt == 0`（自动）时只挑**第一个** FAT 分区 ⇒
   回放/暂停/拖动逻辑可直接搬（文件格式两边一致）。
 - `P4_REC_AUTOTEST_SEC=20` 是临时触发器，UI 做好后应置 0。
 - 小瑕疵：`_BENCH.BIN 0 B` 偶尔残留在卡上（测速的 `remove` 偶发没删掉），不影响功能。
+
+### 10.16 ⚠️ 端到端录像被 C5 挡住：C5 持续不发 esp-hosted init event（2026-07-30，未解决）
+
+**症状**：P4 启动后 `E video: esp_wifi_init: ESP_FAIL (C5 co-processor not answering over SDIO?)`
+→ `no link -- video not started` ⇒ 无线图传起不来 ⇒ 录像只能落到内嵌帧兜底，
+**端到端"实拍→录像"至今 `未验证`**。
+
+**已经排除的（都是真机单变量）**
+
+| 假设 | 判据 | 结论 |
+|---|---|---|
+| SDIO 硬件层坏了 | 日志有 `eh_host_port_sdio: Function 0/1 Blocksize: 512` + `eh_sdio: Card init success, TRANSPORT_RX_ACTIVE` + `SDIO Host operating in STREAMING MODE` | ❌ 排除，**硬件层通的** |
+| SD 卡挂载抢了 SDMMC 控制器 | 把 `P4_ENABLE_SDCARD` 改回 0 重烧，**3/3 仍失败** | ❌ 排除，与 SD 无关 |
+| 间歇性、多复位几次就好 | 连续 **6 次** RTS 复位，`init_evt=False` 6/6 | ❌ 排除，是**持续性**故障（我一度判成"间歇"，已作废） |
+| 是我这轮 SD/录像改动引入的 | 成功那轮(`rec_e2e2.txt`)与失败轮(`rec_e2e4.txt`)**是同一个固件**（`build Jul 30 2026 16:50:17`），且日志到 `2615ms Starting SDIO process rx task` **逐行连时间戳都一致** | ❌ 排除 |
+
+**故障点定位**：正常应在 `2615ms` 之后紧接着出现 ——
+
+```
+I (2646) eh_init_evt: slave chip id: 0x17 (esp32c5)
+I (2646) eh_init_evt: capabilities: 0x0d
+I (2648) eh_init_evt: SDIO mode: slave=streaming host=streaming
+I (2648) eh_auto_init: auto_init: initialising 'wifi' (priority 150)
+```
+
+失败时 **2615ms 之后一片空白**，直到 3505ms 的 LVGL 心跳。⇒ **SDIO 传输层能读到 C5 的 CIS，
+但 C5 的应用固件没有发出 init event** ⇒ 判断 C5 的 CPU 卡住了，而 `Reset co-processor using
+GPIO[36]` + P4 的 RTS 复位都救不回来（那两者都做了，日志里有）。
+
+**⬜ 下一步（待做）**
+1. **整板断电重插**（不是 RTS 复位）—— 针对"C5 固件卡死需冷启动"这个唯一未排除的假设。
+2. 若冷启动仍不行：C5 侧 `esp-hosted` 版本本就不匹配（日志 `E eh_init_evt: major version
+   mismatch — OTA coprocessor from host`，`host=3.0.5 / coprocessor=2.12.9`），
+   之前是 degraded 状态在跑，需要给 C5 刷匹配版本的 slave 固件。
+
+**⚠️ 顺带修掉的一个自伤（值得记）**：这一轮排查里我用 `p4_boot_read.ps1` **默认带 RTS 复位**去
+观察一个正在传输的连接，把已经建立好的 TCP 掐断了 —— README 与交接里早写过"观察运行中系统
+必加 `-NoReset`"，我自己违反了。判据：K230 侧明明打出 `STREAM accepted from ('192.168.169.2', 64939)`
++ `camera+encoder running`，而 P4 侧同时报 wifi init 失败，两边矛盾就是复位掐断的指纹。
+
+**⚠️ 另一个坑（入库脱敏的代价）**：`k230_ap_up.py` 里 `KEY = "<K230_AP_PSK>"` 是**脱敏占位符**，
+14 字符刚好满足 WPA2 ≥8 所以 `ap.config()` 不报错，但与 P4 的 `CONFIG_P4V_WIFI_PASSWORD` 不匹配
+⇒ P4 侧表现为 `StaDisconnected reason=14 (MIC_FAILURE) rssi=-18`（信号很强却连不上）。
+**复演时必须先把占位符换成真实 PSK**（本地做法：从 `p4_lcd/sdkconfig` 读出来生成
+`.tmp_pdf/` 下的临时副本，密码不入库）。

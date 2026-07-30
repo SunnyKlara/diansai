@@ -44,9 +44,10 @@ static const char *TAG = "p4_lcd";
 #define PIN_IMU_SCL   8
 
 // microSD 顺序读写测速的数据量（KB）。太小则被缓存/首次寻道淹没，2MB 够看出量级
-// 2 MB 太小：把首次簇分配开销和卡的写缓存都算进去了，测不出**持续写**速度，
-// 而录像正是持续写。8 MB 约 16 s 的录像量，足以进入稳态。
-#define SD_BENCH_KB   8192
+// 0 = 跳过测速。数据已经拿到并复现两次（8 MB 稳态：写 424 / 读 1579 KB/s，见 README §10.14），
+// 而它要占 25 s 开机时间、把录像自测推到 30 s 之后，和 K230 那侧 60 s 的推流窗口对不上。
+// 需要重测时改回 8192（2048 太小：首次簇分配和卡写缓存会把持续写速度盖住）。
+#define SD_BENCH_KB   0
 
 // 开机自动录一段的秒数（0=关）。触摸按钮做好后应置 0，改由 UI 触发。
 #ifndef P4_REC_AUTOTEST_SEC
@@ -63,8 +64,12 @@ extern const uint8_t k230_frame1_end[]   asm("_binary_k230_frame1_jpg_end");
 static void rec_autotest_task(void *arg)
 {
     (void)arg;
+    // 等 100 s。为什么这么长：C5 会**间歇性不发 esp-hosted init event**（实测同一固件
+    // 连续两次复位，一次 2646ms 就报 `eh_init_evt: slave chip id 0x17`、wifi 正常，
+    // 另一次 2615ms 之后一片空白、`esp_wifi_init` 直接 ESP_FAIL），需要人为重试复位；
+    // 加上 K230 那侧起相机也要十几秒。窗口短了就总落到内嵌帧兜底上，看不到真实录像。
     video_stats_t vs;
-    for (int i = 0; i < 60; ++i) {          // 最多等 30 s 看图传起不起来
+    for (int i = 0; i < 200; ++i) {
         vTaskDelay(pdMS_TO_TICKS(500));
         video_stream_get_stats(&vs);
         if (vs.frames > 10) {
@@ -178,8 +183,10 @@ void app_main(void)
     if (sdcard_info()->mounted) {
         sdcard_dump_mbr();        // 59GB 在哪个分区（只读）
         sdcard_list_root();       // 先看清卡上有什么（只读），再谈能不能动它
-        sdcard_bench_t b;
-        sdcard_benchmark(SD_BENCH_KB, &b);
+        if (SD_BENCH_KB > 0) {
+            sdcard_bench_t b;
+            sdcard_benchmark(SD_BENCH_KB, &b);
+        }
     }
 
     // 7. 方案 D 无线图传：K230(AP+编码+server) --WiFi--> C5 --SDIO--> P4(解码) --> 屏
