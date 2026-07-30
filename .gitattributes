@@ -23,3 +23,6 @@
 *.elf   binary
 *.o     binary
 *.obj   binary
+# K230/嘉楠 AI 模型（nncase 编出来的 .kmodel）。git 靠 NUL 字节也能自动判二进制，
+# 但别依赖自动检测 —— 换台机器的 core.autocrlf 一旦生效就会静默损坏模型文件。
+*.kmodel binary

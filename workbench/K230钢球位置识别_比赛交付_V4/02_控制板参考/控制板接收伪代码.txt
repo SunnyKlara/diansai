@@ -1,0 +1,32 @@
+初始化 UART：115200，8N1
+初始化 position_valid = false
+初始化 last_valid_ms = 0
+
+UART接收中断/DMA：
+    只把收到的字节放入环形缓冲区
+    不要在中断中运行浮点解析和PID
+
+主循环：
+    从环形缓冲区逐字节取数据
+    调用 bp_rx_push_byte()
+    如果得到完整且校验正确的数据：
+        如果 valid == 1：
+            latest_position_cm = position_cm
+            position_valid = true
+            last_valid_ms = 当前毫秒时间
+        否则：
+            position_valid = false
+
+固定周期控制中断（建议50～100Hz）：
+    如果 position_valid == true 且 当前时间-last_valid_ms <= 150ms：
+        error = 0.0 - latest_position_cm
+        运行PID
+        对积分、舵机角度和舵机变化率限幅
+    否则：
+        清理或冻结积分项
+        输出安全角度/保持策略
+
+注意：
+    valid=0绝对不能当成position=0使用。
+    串口没有新数据时，PID线程不能阻塞等待。
+    首次联调必须降低舵机幅度并确认控制方向。
