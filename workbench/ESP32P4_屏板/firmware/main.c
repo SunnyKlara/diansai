@@ -4,6 +4,7 @@
 
 #include "driver/gpio.h"
 #include "esp_lcd_types.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
@@ -118,8 +119,22 @@ static void rec_autotest_task(void *arg)
 }
 #endif
 
+// DMA 内存水位探针。为什么需要：实测 C5 的 esp-hosted 在 2642ms 报
+//   `eh_sdio: dma_alloc(278528) failed; dropping read` ⇒ **C5 的 init event 是被 P4 丢掉的**，
+// 不是 C5 不发。而 272 KB 这种大块分配可能死在"最大连续块"上而非总量，所以两个都要打。
+static void dma_watermark(const char *stage)
+{
+    ESP_LOGW(TAG, "DMAWM %-14s free=%u largest=%u (internal: free=%u largest=%u)",
+             stage,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+}
+
 void app_main(void)
 {
+    dma_watermark("app_main");
     const lcd_panel_desc_t *pd = &LCD_PANEL_ACTIVE;
     ESP_LOGI(TAG, "🚀 ESP32-P4 %s MIPI LCD + LVGL 启动", pd->name);
 
@@ -164,12 +179,14 @@ void app_main(void)
     ESP_LOGW(TAG, "ℹ️ microSD 本次编译已关闭（见 sdcard.h）");
 #endif
 
+    dma_watermark("after_sd");
     // 4. 启动 LVGL，并把已创建的触摸设备挂到输入设备
     if (lvgl_start(pd, panel, control_panel, io, &tp_pins) != ESP_OK) {
         ESP_LOGE(TAG, "❌ LVGL 启动失败");
         return;
     }
 
+    dma_watermark("after_lvgl");
     ESP_LOGI(TAG, "✅ %s + LVGL 界面已启动（%lux%lu）",
              pd->name, (unsigned long)pd->h_res, (unsigned long)pd->v_res);
 
@@ -211,6 +228,7 @@ void app_main(void)
     }
 #endif
 
+    dma_watermark("after_video");
 #if BL_BLINK_TEST
     // 等界面画出来再闪，否则黑屏闪看不出所以然
     vTaskDelay(pdMS_TO_TICKS(2500));

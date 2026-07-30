@@ -1125,3 +1125,34 @@ GPIO[36]` + P4 的 RTS 复位都救不回来（那两者都做了，日志里有
 ⇒ P4 侧表现为 `StaDisconnected reason=14 (MIC_FAILURE) rssi=-18`（信号很强却连不上）。
 **复演时必须先把占位符换成真实 PSK**（本地做法：从 `p4_lcd/sdkconfig` 读出来生成
 `.tmp_pdf/` 下的临时副本，密码不入库）。
+
+**⑥ 续查（2026-07-30 深夜）：换了四种测量，结论收敛到"C5 只在整板上电时工作"**
+
+⚠️ **先作废我自己的两个中间结论**：① "C5 固件卡死" —— 不准确，见下 ② "把 `RX_STAGING_SLOTS`
+降到 1 修好了 dma_alloc" —— **假的**，Kconfig 写着 `range 2 8`，1 被钳回 2；那轮 `dma_fail=False`
+只是因为 **C5 那次干脆没发数据、没触发分配**，不是我修好了（又一个假成功判据）。
+
+| 测量 | 做法 | 结果 |
+|---|---|---|
+| **DMA 内存水位探针** | `main.c` 加 `dma_watermark()`，打 `MALLOC_CAP_DMA` 的 free + **largest** | 🔑 `app_main` 开头 largest 就只有 **253952 B (248 KB)**，而 C5 要 **278528 B (272 KB)** ⇒ **起点就不够**。**SD 只吃 2 KB**（322843→320787）⇒ 之前怀疑"SD 挤爆内存"是错的 |
+| `RX_STAGING_SLOTS` 2→1 | 改 sdkconfig | ❌ Kconfig `range 2 8` 钳回 2。help 明写内存 = `slots × max-aggregate` |
+| `CP_BRINGUP_ON_TIMEOUT` NONE→**REATTEMPT** | 让 esp_hosted 超时后自动重试复位 C5 | ❌ **更糟**：第二次 `Reset co-processor using GPIO[36]` → `failed to read registers` → P4 自己重启 → **重启循环**（日志 11 KB→32 KB，多轮 `transport_init`，全部 `init_evt=False`）⇒ **已回退，别开这个** |
+| `SDIO_RX_OPT` STREAMING→**NONE** | 不做 RX 聚合，就不需要那对 136 KB staging buffer | ✅ 配置生效（`SDIO Host operating in **PACKET MODE**`，编译产物 `sdkconfig.h` 里 `CONFIG_ESP_HOSTED_HOST_SDIO_RX_NONE 1` 已确认）、**`dma_alloc` 失败消除**；但 `init_evt` 仍 False ⇒ **证明 C5 不发数据与 DMA 内存无关** |
+
+**⇒ 收敛结论**：**C5 只在整板断电上电后的第一次启动里正常**（`eh_init_evt: slave chip id: 0x17`
+→ `initialising 'wifi'` → `joining K230_AP`，实测一次成功）；**之后每次 RTS 复位 P4 都失败**，
+7+ 次一致。`eh_sdio` 的传输层每次都正常（`Card init success` / `PACKET MODE` / `Open data path`），
+**只有 C5 的应用层 init event 不来**。GPIO36 软复位（`CP_RESET_STRATEGY_ALWAYS` +
+`SETTLE_MS=1500`）不足以复现上电时序。⇒ **判为 C5 的上电/复位时序问题，P4 侧软件治不了。**
+
+**🔧 保留的配置改动（⚠️ `sdkconfig` 在 `workbench/esp32p4/` 下、被 gitignore，换机重建必须手动补）**
+- `CONFIG_ESP_HOSTED_HOST_SDIO_RX_NONE=y`（原 `..._RX_STREAMING_MODE=y`）—— 消除
+  `eh_sdio: dma_alloc(278528) failed; dropping read`。代价是不做 RX 聚合，而图传只需约
+  460 KB/s、SDIO 40 MHz 有约 20 MB/s 余量，**够用但吞吐上限未实测**。
+- `CONFIG_ESP_HOSTED_HOST_CP_BRINGUP_ON_TIMEOUT_NONE=y` **保持不变**（别改 REATTEMPT）。
+
+**⬜ 端到端录像的可行流程（未实测，下次照此做）**：不能复位 P4，所以利用"断电重插时 P4 自己启动"这一次机会 ——
+1. 整板断电重插（P4 启动后录像自测有 **100 s** 等待窗口）
+2. 立刻起 K230：`k230_ap_up_real.py`（约 20 s）→ 图传脚本（约 18 s 到 listening），合计约 38 s < 100 s
+3. **全程不要复位 P4**；要看日志只能 `p4_boot_read.ps1 -NoReset`
+4. P4 收到 >10 帧即自动录 20 s 实拍，判据 = 新 `REC*.MJP` 的大小 **≠ 1843974 B**（那是内嵌帧的指纹）
