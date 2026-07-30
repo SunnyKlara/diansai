@@ -1299,11 +1299,32 @@ I (6957) video: connected -- RX producer running               ← TCP 6.9 s 才
 `sent 6 frames 163906 bytes`，P4 却 `link closed after 0 RX frames`（3 秒后断，随后 errno=104）。
 ⇒ **不是内存、不是协议、不是网络，是大块数据在 P4 侧凭空消失。**
 
-**⬜ 当前正在验的假设（唯一嫌疑）**：我在那轮之前开过
-`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y`（想省那 24 KB，把 lwip/wifi 缓冲挪进 PSRAM）。
-**当时实测它对 `largest` 一个字节都没改善（253952→253952），我却留着没回退**，而 SDIO/WiFi 的
-DMA 往 PSRAM 写有额外条件 —— 这能解释"控制包/ping 正常、大块数据全丢"。已改回
-`# ... is not set`，⬜ **待烧录 + 冷启动验证**。
+**🔑 已烧录并拿到第一个强信号（2026-07-31 03:1x，`.tmp_pdf/esp32p4/after_revert.txt`）**
+
+回退 `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`（改回 `# ... is not set`，编译产物已确认无该宏）后重烧：
+
+```
+DMAWM app_main  free=322763 largest=253952
+I (2643) eh_init_evt: SDIO mode: slave=streaming host=streaming
+I (2869) video: wifi sta started, joining SSID:K230_AP
+init_evt=True  wifi_fail=False  dma_fail=False  restarts=1
+```
+
+**⛔ 这条数据直接修正了 §10.16/§10.17 的一个结论**：原先记「**C5 只在整板断电冷启动后才正常**，
+RTS 复位/烧录必失败（7+ 次一致）」—— **回退那个开关之后，烧录复位一次就正常起来了**，
+既没有 `dma_alloc` 失败、也没有重启循环。⇒ 所谓"C5 需要冷启动"很可能**本来就是那个开关的症状**，
+不是 C5 的固有毛病。
+
+**⇒ 收敛的解释（仍 `待验证`）**：`SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` 让 lwip/wifi 的缓冲落到 PSRAM，
+而 esp_hosted 的 SDIO DMA 对缓冲有位置要求 ⇒ 既让复位后的 init event 容易丢（报垃圾长度
+278230 → `dma_alloc` 失败），也让大块数据收不上来（`0 RX frames`）。**它当时对 `largest`
+一个字节都没改善（253952→253952），纯属有害无益，我却留着没回退** —— 这是本轮最大的教训：
+**试探性改动没收益就要当场回退，否则它会伪装成别的故障。**
+
+**⬜ 仍未验的最后一步**：图传数据面（`shown > 0`）。本轮没验成，卡在 **K230 侧 REPL 无响应** ——
+`k230_repl.ps1` 发完 Ctrl-C/Ctrl-D/paste 后 K230 一个字节都不回（输出只有 149 B，正常 1407 B），
+多半是之前反复软复位 + 反复初始化相机把它搞卡了。⇒ **下次先给 K230 单独断电重启**，再按
+§10.16 末尾那套顺序抢窗口。P4 侧不用再断电：现在烧录复位就能让 C5 正常。
 
 **⚠️ 操作坑（本轮第 2 次复现）**：**烧录后 P4 的 USB-Serial-JTAG 会掉枚举**（COM7 消失，
 `FLASH_EXIT=2` 或抓不到日志），需**拔插 USB** 才回来；顺带它也给 C5 做了冷启动，
