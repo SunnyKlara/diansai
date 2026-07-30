@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "fl7703_4in_lcd.c" "jd9366_10_1in_lcd.c" "jd9365_10_1in_lcd.c" "gx610_12in_lcd.c" "st7703_4in_lcd.c" "axs15260_6_2in_lcd.c" "st7701_2_76in_lcd.c" "st7701_2_1in_lcd.c" "lvgl_demo.c" "ai_panel.c" "imu_qmi8658.c" "sdcard.c" "recorder.c" "jpeg_view.c" "video_stream.c" "main.c"
+    SRCS "fl7703_4in_lcd.c" "jd9366_10_1in_lcd.c" "jd9365_10_1in_lcd.c" "gx610_12in_lcd.c" "st7703_4in_lcd.c" "axs15260_6_2in_lcd.c" "st7701_2_76in_lcd.c" "st7701_2_1in_lcd.c" "lvgl_demo.c" "ai_panel.c" "imu_qmi8658.c" "sdcard.c" "recorder.c" "player.c" "jpeg_view.c" "video_stream.c" "main.c"
     INCLUDE_DIRS "."
     # esp_hosted 走 REQUIRES(公开)：和 p4_sta_host 一致 —— 选中的各子库
     # (eh_host_core / feat_system / RPC / transport_mcu / port_host_esp_idf …)

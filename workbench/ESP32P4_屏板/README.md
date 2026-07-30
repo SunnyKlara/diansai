@@ -1156,3 +1156,65 @@ GPIO[36]` + P4 的 RTS 复位都救不回来（那两者都做了，日志里有
 2. 立刻起 K230：`k230_ap_up_real.py`（约 20 s）→ 图传脚本（约 18 s 到 listening），合计约 38 s < 100 s
 3. **全程不要复位 P4**；要看日志只能 `p4_boot_read.ps1 -NoReset`
 4. P4 收到 >10 帧即自动录 20 s 实拍，判据 = 新 `REC*.MJP` 的大小 **≠ 1843974 B**（那是内嵌帧的指纹）
+
+### 10.17 端到端图传+录像：卡点定位到「C5 要 272 KB 连续 DMA，板上只有 248 KB」（2026-07-30 深夜真机）
+
+**⚠️ 板上固件状态不确定**：最后一条"改 sdkconfig→编译→烧录"被中断。产物 `p4_mipi_lcd.bin`
+（22:19:57）里已是 `CONFIG_ESP_HOSTED_HOST_SDIO_RX_MAX_SIZE 1`，但**没拿到 `FLASH_EXIT`**
+⇒ 下次接手**先重烧一次确定基线**，别在不确定的固件上判读。
+
+**✅ 这轮确定下来的（冷启动后一次跑通到 TCP）**
+
+P4 侧链路全通：
+```
+I (2665) eh_init_evt: SDIO mode: slave=streaming host=streaming
+I (2886) video: wifi sta started, joining SSID:K230_AP
+I (3953) video: got ip:192.168.169.2 gw:192.168.169.1
+I (6957) video: connected -- RX producer running
+```
+K230 侧完全正常（`.tmp_pdf/esp32p4/k230_short.txt`）：
+```
+STREAM accepted from ('192.168.169.2', 60273)
+STREAM camera+encoder running, streaming 45000 ms
+STREAM sent 6 frames 163906 bytes in 1855 ms -> 3.23 fps  0.71 Mbps
+STREAM send error: OSError(104,)      # ECONNRESET，是 P4 断的
+```
+⇒ **相机/编码/发送都对，约 27 KB/帧**（比 §10.12 记的 8 KB/帧大得多，画面内容不同）。
+
+**🔴 卡点**：P4 报 `link closed after 0 RX frames (total 0, shown 0, drop 0, **bad 0**)`。
+`bad 0` 排除了 magic 错与长度非法 ⇒ 是 `recv` 本身拿不到数据，与
+`W eh_sdio: dma_alloc(278528) failed; dropping read` 对应：**TCP 握手包小所以连接建得起来，
+但 27 KB 的图像帧需要大 staging buffer，分配失败就被整包丢弃。**
+
+**关键量化（`dma_watermark()` 实测）**
+
+| 阶段 | DMA free | DMA **largest** |
+|---|---|---|
+| app_main 开头 | 322843 | **253952 (248 KB)** |
+| after_sd | 320787 | 253952（**SD 只吃 2 KB**） |
+| after_lvgl | 268919 | 229376 |
+| after_video | 244711 | 204800 |
+
+C5 的 STREAMING 模式要 **278528 B (272 KB)**，而**开机第一行 largest 就只有 248 KB**。
+开 `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` 后这个数**一个字节都没变** ⇒ **248 KB 是内部
+SRAM 最大连续段的上限，不是"被谁占了"，省不出来**（`MALLOC_CAP_DMA` 与 `MALLOC_CAP_INTERNAL`
+的 largest 恒等 ⇒ DMA 内存就是内部 RAM，PSRAM 不计入）。
+
+**⛔ 我在这轮制造的一次失败（不是硬件问题，别误记）**：为省内存把 host 改成
+`CONFIG_ESP_HOSTED_HOST_SDIO_RX_NONE=y`（packet 模式），而 C5 slave 侧仍是 streaming ⇒
+`SDIO mode: slave=streaming host=packet` 不匹配 ⇒ **P4 重启 13 次**（`transport_init` 13 次 /
+`init_evt` 12 次）。已回退成 `RX_STREAMING_MODE`。**结论：host 与 slave 的 RX 模式必须一致。**
+
+**⛔ 同时再确认一遍（本轮又复现 2 次）**：**每次烧录 / RTS 复位都会毁掉 C5**（`init_evt` 不来），
+**只有整板断电能恢复**。所以任何需要图传的验证，都必须"先摆好 K230 → 断电重插 → 全程不复位 P4"。
+
+**⬜ 下一步（按性价比，都不用猜）**
+1. 重烧确定基线 → 断电一次 → 试 `CONFIG_ESP_HOSTED_HOST_SDIO_RX_MAX_SIZE=y`（choice 里唯一
+   没试过的；它是"固定最大包"而非聚合，**可能不需要 272 KB**）。判据先看 `SDIO mode:` 那行两边
+   是否一致，再看有无 `dma_alloc ... failed`。
+2. 若仍不行，验这个怀疑：**§10.12 那次 180 s 图传 PASS 时，固件里没有 FATFS/SDMMC**。
+   把 `P4_ENABLE_SDCARD=0` **且**从 `main/CMakeLists.txt` 摘掉 `fatfs`/`sdmmc`/`esp_driver_sdmmc`
+   依赖，看 `largest` 是否回到 >272 KB。若是 ⇒ 根因是"链接进 SD 组件改变了内存布局"，
+   那就得在 SD 与图传之间取舍，或让 SD 改走 SPI（不拉 FATFS 的 DMA 池）。
+3. 不受影响、已经能用的：SD（58606 MB / 稳态写 424 KB/s）· 录像模块（278 帧丢 0）·
+   回放模块 `player.c/h`（编译过，**真机未验**）。

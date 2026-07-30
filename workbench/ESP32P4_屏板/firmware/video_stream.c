@@ -394,6 +394,54 @@ static void display_task(void *arg)
     }
 }
 
+// ============================ 回放支路 ======================================
+static volatile bool s_playback;
+
+void video_stream_set_playback(bool on)
+{
+    s_playback = on;
+    set_note(on ? "playback" : "streaming (latest-frame)");
+}
+
+bool video_stream_is_playback(void) { return s_playback; }
+
+uint32_t video_stream_max_frame_bytes(void) { return (uint32_t)FRAME_MAX_BYTES; }
+
+bool video_stream_inject_frame(const uint8_t *jpg, uint32_t len)
+{
+    if (jpg == NULL || len < 4 || len > (uint32_t)FRAME_MAX_BYTES) {
+        return false;
+    }
+    if (s_free_slots == NULL || s_latest_frame == NULL) {
+        return false;       // 解码器还没起来
+    }
+    uint8_t idx;
+    // 不阻塞：拿不到槽就让调用方下一拍再试，避免回放任务把显示任务饿死
+    if (xQueueReceive(s_free_slots, &idx, 0) != pdTRUE) {
+        return false;
+    }
+    rx_slot_t *slot = &s_rx[idx];
+    if (len > slot->alloc) {
+        xQueueSend(s_free_slots, &idx, portMAX_DELAY);
+        return false;
+    }
+    memcpy(slot->data, jpg, len);
+    slot->len = len;
+
+    // 与网络路径同样的"只留最新帧"语义
+    uint8_t old_idx;
+    if (xQueueReceive(s_latest_frame, &old_idx, 0) == pdTRUE) {
+        s_st.dropped++;
+        xQueueSend(s_free_slots, &old_idx, portMAX_DELAY);
+    }
+    if (xQueueSend(s_latest_frame, &idx, 0) != pdTRUE) {
+        xQueueSend(s_free_slots, &idx, portMAX_DELAY);
+        return false;
+    }
+    s_st.last_len = len;
+    return true;
+}
+
 // ============================ TCP 拉流 ======================================
 static bool rx_exact(int sock, uint8_t *dst, size_t want)
 {
@@ -546,6 +594,15 @@ static void pull_frames_forever(void)
             // 录像旁路：内部自己抽帧 + 拷贝 + 非阻塞入队，写盘在独立任务里做。
             // 放在 markers 校验之后 ⇒ 只录完整帧；不占 rx_slot ⇒ 写盘慢也不会反压网络。
             recorder_feed(slot->data, len);
+
+            // 回放中：网络帧照收（保持连接与统计），但不上屏，否则会盖掉回放画面
+            if (s_playback) {
+                s_st.dropped++;
+                xQueueSend(s_free_slots, &slot_idx, portMAX_DELAY);
+                link_frames++;
+                s_st.frames++;
+                continue;
+            }
 
             // 容量 1 的 latest 队列：未消费旧帧没有显示价值，回收它并只保留最新帧。
             uint8_t old_idx;
