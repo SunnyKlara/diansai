@@ -1261,3 +1261,50 @@ PLAYTEST 继续: 3s 后帧号=42          => PASS
 
 **⬜ 仍未验**：① 触摸坐标落点与按钮响应（要人点屏）② `REC` 现在能录但**录的是内嵌占位帧**
 （图传收不到实拍，§10.17 未解）⇒ "实拍→录像→回放"整链仍缺中间那一环。
+
+### 10.19 ⛔ 作废 §10.17 的「272 KB 内存不足」整套推理（2026-07-31）
+
+**§10.17 那个"C5 要 272 KB 连续 DMA、板上只有 248 KB"的故事是错的，连带两条结论一起作废。**
+否掉它只用了看一眼时间线，不需要新实验：
+
+```
+I (2615) eh_sdio: Starting SDIO process rx task
+W (2642) eh_sdio: dma_alloc(278528) failed; dropping read     ← 2642 ms
+E (6551) video: esp_wifi_init: ESP_FAIL
+...
+I (6957) video: connected -- RX producer running               ← TCP 6.9 s 才连上
+```
+
+- `dma_alloc` 失败在 **2642 ms**，而图传 TCP 在 **6957 ms** 才建立 ⇒ **那时 K230 一个字节都还没发**，
+  278230 不可能是图像数据聚合。
+- 那一刻要收的是 esp-hosted 的 **init event**，包只有几十字节，**不可能要 272 KB**。
+- ⇒ **278230 是 C5 复位后寄存器里的垃圾长度**，与既有事实"C5 只在整板冷启动后才正常"完全吻合。
+
+**⛔ 由此一并作废**
+1. ~~"降码率能压小那个 len"~~ —— 失败发生在图传连接之前，降 K230 或 P4 侧码率都影响不到它。
+   所以"K230 不能降帧（要做钢珠识别）"这个约束**不必被迫接受**，那条路本来就是错的。
+   （顺带记一个事实，将来若真要降：K230 的**识别走 sensor 的 YUV 路、图传走 encoder 的 JPEG 路**，
+   丢 JPEG 帧不影响识别；正确降法是取流后 `ReleaseStream` 丢弃，而**不是 sleep**——sleep 时相机
+   仍按原帧率产帧，编码器那 8 个输出缓冲照样堆满。）
+2. ~~"choice 三选一只有 STREAMING 能用，因为它要 272 KB"~~ —— 前半句仍成立但**理由不同**：
+   `RX_NONE` / `RX_MAX_SIZE` 都是 packet 模式，而 esp_hosted **主动 assert 拒绝模式不匹配**：
+   `E eh_init_evt: SDIO mode mismatch: slave is in streaming mode, but host is in packet mode. Aborting.`
+   → `assert failed: sdio_mode_check eh_host_mcu_transport_init_event.c:158`。
+   ⇒ 要用 packet 模式必须**让 C5 slave 也切过去**，而 slave 模式由 C5 固件决定
+   （日志：`CP without SDIO SW_AGGR; compatible streaming mode enabled`）。
+
+**🔴 真正未解的疑点（收窄到这一条）**：冷启动那轮（`.tmp_pdf/esp32p4/win_e2e.txt`）—— C5 正常、
+`SDIO mode: slave=streaming host=streaming`、`PING tx=3 rx=3 loss=0% PING_OK`、TCP
+`connected -- RX producer running`、**无 dma_alloc 失败**、`bad 0`，而 K230 侧明确
+`sent 6 frames 163906 bytes`，P4 却 `link closed after 0 RX frames`（3 秒后断，随后 errno=104）。
+⇒ **不是内存、不是协议、不是网络，是大块数据在 P4 侧凭空消失。**
+
+**⬜ 当前正在验的假设（唯一嫌疑）**：我在那轮之前开过
+`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y`（想省那 24 KB，把 lwip/wifi 缓冲挪进 PSRAM）。
+**当时实测它对 `largest` 一个字节都没改善（253952→253952），我却留着没回退**，而 SDIO/WiFi 的
+DMA 往 PSRAM 写有额外条件 —— 这能解释"控制包/ping 正常、大块数据全丢"。已改回
+`# ... is not set`，⬜ **待烧录 + 冷启动验证**。
+
+**⚠️ 操作坑（本轮第 2 次复现）**：**烧录后 P4 的 USB-Serial-JTAG 会掉枚举**（COM7 消失，
+`FLASH_EXIT=2` 或抓不到日志），需**拔插 USB** 才回来；顺带它也给 C5 做了冷启动，
+正好是验图传的前提。
