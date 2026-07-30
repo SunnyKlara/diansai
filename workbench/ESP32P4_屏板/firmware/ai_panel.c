@@ -20,6 +20,8 @@
 #include "lvgl.h"
 
 #include "imu_qmi8658.h"
+#include "player.h"
+#include "recorder.h"
 #include "sdcard.h"
 #include "jpeg_view.h"
 #include "video_stream.h"
@@ -148,6 +150,11 @@ static void bl_test_cb(lv_timer_t *t)
 }
 #endif  // AI_PANEL_BL_TEST
 
+#if P4_ENABLE_SDCARD
+// 前向声明：实体定义在下面和其它 UI 代码放一起（tick_cb 在文件里更靠前）
+static void rec_ui_tick(void);
+#endif
+
 // 100ms 心跳：刷新运行时长与进度条，证明 LVGL 任务持续被调度
 static void tick_cb(lv_timer_t *t)
 {
@@ -161,6 +168,10 @@ static void tick_cb(lv_timer_t *t)
     // 0..100 来回扫，纯视觉心跳
     uint32_t phase = ticks % 200;
     lv_bar_set_value(s_bar_beat, (int32_t)(phase <= 100 ? phase : 200 - phase), LV_ANIM_OFF);
+
+#if P4_ENABLE_SDCARD
+    rec_ui_tick();      // 录像/回放状态行（只读计数器，不碰 SD）
+#endif
 
     // IMU 每 200ms 读一次（13 字节 I2C，很轻；别每帧读，没必要还占总线）
     // ⚠️ 这是**全工程唯一**读 I2C 的地方：i2c_master 句柄不能被多任务并发使用，
@@ -291,6 +302,137 @@ static void touch_event_cb(lv_event_t *e)
         lv_obj_add_flag(s_dot, LV_OBJ_FLAG_HIDDEN);
     }
 }
+
+#if P4_ENABLE_SDCARD
+// ==================== 录像 / 回放 触摸控制条 ====================
+//
+// 位置：左半屏最底下那条带（状态行 y=392、按钮 y=412 高 36，屏高 452）。
+// 右半屏 x>=640 被 video canvas 占满全高，所以这是唯一还空着的地方；
+// 6 个按钮 × 步距 98 落在 x=26~614，**不压到 canvas**。
+//
+// ⚠️ 这些回调跑在 LVGL 任务里、且持 lvgl_port 锁。player_open() 会扫一遍帧索引
+//    （每帧只读 8 字节头 + fseek，1.8 MB 文件毫秒级），这点开销可以接受；
+//    但**绝不能在这里做整帧读写** —— 真正的写盘在 rec_wr 任务、读帧在 player 任务，
+//    都不在这条路上，正是为了不让 SD 的延迟拖住显示。
+static lv_obj_t *s_lbl_rec;
+
+static void btn_rec_cb(lv_event_t *e)
+{
+    (void)e;
+    if (recorder_is_recording()) {
+        return;
+    }
+    player_stop();          // 回放中按 REC：先回实时，否则录下来的是回放画面
+    (void)recorder_start();
+}
+
+static void btn_stop_cb(lv_event_t *e)
+{
+    (void)e;
+    // 一个键管两件事：录像中=停录，回放中=回实时。用户要的是"几个小按钮"，不铺两个键。
+    if (recorder_is_recording()) {
+        recorder_stop();
+    }
+    player_stop();
+}
+
+static void btn_play_cb(lv_event_t *e)
+{
+    (void)e;
+    if (recorder_is_recording()) {
+        recorder_stop();    // 边录边放没意义，也会互相抢 SD 带宽
+    }
+    (void)player_open(0);   // 0 = 最后一片，"刚录完就看"是最常用的操作
+}
+
+static void btn_pause_cb(lv_event_t *e)
+{
+    (void)e;
+    player_status_t st;
+    player_get_status(&st);
+    if (st.state == PLAYER_PLAYING) {
+        player_pause();
+    } else if (st.state == PLAYER_PAUSED) {
+        player_resume();
+    }
+}
+
+// 拖动 ±N 帧。抽帧录像下实效约 14 fps ⇒ 50 帧 ≈ 3.5 秒，按一下有明显位移感。
+static void seek_rel(int32_t delta)
+{
+    player_status_t st;
+    player_get_status(&st);
+    if (st.state == PLAYER_IDLE || st.total_frames == 0) {
+        return;
+    }
+    int64_t tgt = (int64_t)st.frame + delta;
+    if (tgt < 0) {
+        tgt = 0;
+    }
+    if (tgt > (int64_t)st.total_frames - 1) {
+        tgt = (int64_t)st.total_frames - 1;
+    }
+    (void)player_seek((uint32_t)tgt);
+}
+
+static void btn_back_cb(lv_event_t *e) { (void)e; seek_rel(-50); }
+static void btn_fwd_cb(lv_event_t *e)  { (void)e; seek_rel(+50); }
+
+static void rec_ui_create(lv_obj_t *scr)
+{
+    s_lbl_rec = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_lbl_rec, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(s_lbl_rec, lv_color_hex(0xffcc66), 0);
+    lv_obj_align(s_lbl_rec, LV_ALIGN_TOP_LEFT, 26, 392);
+    lv_label_set_text(s_lbl_rec, "REC  init...");
+
+    // 按钮文字刻意全用 ASCII（"II" 当暂停）——montserrat 字体里没有播控符号的字形，
+    // 用 ▶⏸ 这类会渲染成空白方块。
+    static const char *const txt[6] = { "REC", "STOP", "PLAY", "II", "<<", ">>" };
+    static const lv_event_cb_t cbs[6] = {
+        btn_rec_cb, btn_stop_cb, btn_play_cb, btn_pause_cb, btn_back_cb, btn_fwd_cb,
+    };
+    for (int i = 0; i < 6; ++i) {
+        lv_obj_t *b = lv_button_create(scr);
+        lv_obj_set_size(b, 92, 36);
+        lv_obj_align(b, LV_ALIGN_TOP_LEFT, 26 + i * 98, 412);
+        lv_obj_add_event_cb(b, cbs[i], LV_EVENT_CLICKED, NULL);
+        lv_obj_t *l = lv_label_create(b);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_20, 0);
+        lv_label_set_text(l, txt[i]);
+        lv_obj_center(l);
+    }
+}
+
+// 每 100 ms 由 tick_cb 调一次，把录像/回放的定量状态打在状态行上。
+static void rec_ui_tick(void)
+{
+    if (s_lbl_rec == NULL) {
+        return;
+    }
+    recorder_stats_t rs;
+    recorder_get_stats(&rs);
+    player_status_t ps;
+    player_get_status(&ps);
+
+    if (rs.recording) {
+        lv_label_set_text_fmt(s_lbl_rec, "REC %lu f  %lu KB  %lu.%lus   skip %lu  drop %lu",
+                              (unsigned long)rs.frames, (unsigned long)rs.kbytes,
+                              (unsigned long)(rs.ms / 1000), (unsigned long)((rs.ms % 1000) / 100),
+                              (unsigned long)rs.skipped, (unsigned long)rs.dropped);
+    } else if (ps.state != PLAYER_IDLE) {
+        lv_label_set_text_fmt(s_lbl_rec, "%s %s  %lu/%lu  %lu.%lus",
+                              (ps.state == PLAYER_PAUSED) ? "PAUSED" : "PLAY",
+                              ps.name, (unsigned long)ps.frame,
+                              (unsigned long)ps.total_frames,
+                              (unsigned long)(ps.ts_ms / 1000),
+                              (unsigned long)((ps.ts_ms % 1000) / 100));
+    } else {
+        lv_label_set_text_fmt(s_lbl_rec, "REC idle   free %llu MB",
+                              (unsigned long long)sdcard_info()->free_mb);
+    }
+}
+#endif  // P4_ENABLE_SDCARD
 
 void ai_panel_create(void)
 {
@@ -432,7 +574,9 @@ void ai_panel_create(void)
         s_lbl_video = lv_label_create(scr);
         lv_obj_set_style_text_font(s_lbl_video, &lv_font_montserrat_20, 0);
         lv_obj_set_style_text_color(s_lbl_video, lv_color_hex(0x8899aa), 0);
-        lv_obj_align(s_lbl_video, LV_ALIGN_TOP_LEFT, 26, 396);
+        // 396 → 366：把最底下那条带（y≈390~450）让给录像/回放的状态行 + 触摸按钮，
+        // 屏高只有 452，这是左半屏唯一还空着的地方（canvas 从 x=640 起占满右半屏全高）。
+        lv_obj_align(s_lbl_video, LV_ALIGN_TOP_LEFT, 26, 366);
         lv_label_set_text_fmt(s_lbl_video, "WIRELESS VIDEO  starting...   "
                                            "(embedded-frame decode self-test: %s %s)",
                               jpg_ok ? "PASS" : "FAIL", jpeg_view_status());
@@ -446,6 +590,10 @@ void ai_panel_create(void)
                                  LV_COLOR_FORMAT_RGB565);
         }
     }
+
+#if P4_ENABLE_SDCARD
+    rec_ui_create(scr);
+#endif
 
     lv_timer_create(tick_cb, 100, NULL);
 

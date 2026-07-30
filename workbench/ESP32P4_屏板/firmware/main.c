@@ -16,6 +16,7 @@
 #include "lcd_panel.h"
 #include "lcd_panel_select.h"
 #include "lvgl_demo.h"
+#include "player.h"
 #include "recorder.h"
 #include "sdcard.h"
 #include "video_stream.h"
@@ -50,9 +51,17 @@ static const char *TAG = "p4_lcd";
 // 需要重测时改回 8192（2048 太小：首次簇分配和卡写缓存会把持续写速度盖住）。
 #define SD_BENCH_KB   0
 
-// 开机自动录一段的秒数（0=关）。触摸按钮做好后应置 0，改由 UI 触发。
+// 开机自动录一段的秒数（0=关）。录像链路已真机验过（278 帧 / 丢 0 / 文件大小逐字节吻合，
+// README §10.15），且触摸按钮已就绪 ⇒ 关掉它，把开机时间让给回放自测。
 #ifndef P4_REC_AUTOTEST_SEC
-#define P4_REC_AUTOTEST_SEC 20
+#define P4_REC_AUTOTEST_SEC 0
+#endif
+
+// 开机自动回放一段的秒数（0=关）。为什么需要：回放只能靠点屏触发，而 AI 点不了屏，
+// 于是用它把「原速播放 / 暂停 / 拖动」三件事跑出**定量判据**（见 play_autotest_task）。
+// 触摸按钮由人验；这个自测验的是按钮背后的 player 链路。
+#ifndef P4_PLAY_AUTOTEST_SEC
+#define P4_PLAY_AUTOTEST_SEC 12
 #endif
 
 #if P4_ENABLE_SDCARD && P4_REC_AUTOTEST_SEC > 0
@@ -131,6 +140,71 @@ static void dma_watermark(const char *stage)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 }
+
+#if P4_ENABLE_SDCARD && P4_PLAY_AUTOTEST_SEC > 0
+// 回放自测：列片 → 放最后一片 → 暂停（验"真的停住"）→ 拖到 0 帧 → 继续（验"真的在推进"）。
+// 每一步都打出帧号，靠帧号变化而不是"看起来在动"来判定。
+static void play_autotest_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(5000));            // 等 LVGL/面板稳住再动
+    player_clip_t clips[PLAYER_MAX_CLIPS];
+    const int n = player_list(clips, PLAYER_MAX_CLIPS);
+    ESP_LOGW(TAG, "PLAYTEST 卡上 %d 片", n);
+    for (int i = 0; i < n && i < 4; ++i) {
+        ESP_LOGW(TAG, "PLAYTEST   clip #%lu %s %lu B",
+                 (unsigned long)clips[i].index, clips[i].name,
+                 (unsigned long)clips[i].bytes);
+    }
+    if (n == 0 || player_open(0) != ESP_OK) {
+        ESP_LOGW(TAG, "PLAYTEST 跳过（没有可放的片或打开失败）");
+        vTaskDelete(NULL);
+        return;
+    }
+    player_status_t st;
+    for (int s = 0; s < P4_PLAY_AUTOTEST_SEC; ++s) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        player_get_status(&st);
+        if (st.state == PLAYER_IDLE) {
+            ESP_LOGW(TAG, "PLAYTEST 已播完，停在第 %lu 帧", (unsigned long)st.frame);
+            break;
+        }
+        if ((s % 4) == 3) {
+            ESP_LOGW(TAG, "PLAYTEST 放中 %s %lu/%lu 帧 ts=%lu ms inject_retry=%lu",
+                     st.name, (unsigned long)st.frame, (unsigned long)st.total_frames,
+                     (unsigned long)st.ts_ms, (unsigned long)st.inject_fail);
+        }
+    }
+    // —— 暂停判据：停 3 s 后帧号必须不变 ——
+    player_pause();
+    vTaskDelay(pdMS_TO_TICKS(200));
+    player_status_t a;
+    player_get_status(&a);
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    player_status_t b;
+    player_get_status(&b);
+    ESP_LOGW(TAG, "PLAYTEST 暂停: 3s 内帧号 %lu -> %lu  => %s",
+             (unsigned long)a.frame, (unsigned long)b.frame,
+             (a.frame == b.frame) ? "PASS(真停住)" : "FAIL(还在走)");
+    // —— 拖动判据：seek(0) 后帧号必须归 0 ——
+    (void)player_seek(0);
+    vTaskDelay(pdMS_TO_TICKS(300));
+    player_status_t c;
+    player_get_status(&c);
+    ESP_LOGW(TAG, "PLAYTEST 拖动: seek(0) 后帧号=%lu => %s",
+             (unsigned long)c.frame, (c.frame == 0) ? "PASS" : "FAIL");
+    // —— 继续判据：3 s 后帧号必须推进 ——
+    player_resume();
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    player_status_t d;
+    player_get_status(&d);
+    ESP_LOGW(TAG, "PLAYTEST 继续: 3s 后帧号=%lu => %s（约 14fps 预期 40 上下）",
+             (unsigned long)d.frame, (d.frame > 0) ? "PASS" : "FAIL");
+    player_stop();
+    ESP_LOGW(TAG, "PLAYTEST 结束，已回到实时画面");
+    vTaskDelete(NULL);
+}
+#endif
 
 void app_main(void)
 {
@@ -219,6 +293,14 @@ void app_main(void)
 
 #if P4_ENABLE_SDCARD
     // 8. 录像模块（旁路：抽帧 + 拷贝 + 独立写盘任务，不反压网络接收）
+    if (sdcard_info()->mounted && player_init() != ESP_OK) {
+        ESP_LOGW(TAG, "⚠️ 回放模块初始化失败，PLAY/暂停/拖动按钮将无响应");
+    }
+#if P4_PLAY_AUTOTEST_SEC > 0
+    if (sdcard_info()->mounted) {
+        xTaskCreate(play_autotest_task, "play_test", 4096, NULL, 3, NULL);
+    }
+#endif
     if (sdcard_info()->mounted && recorder_init() == ESP_OK) {
 #if P4_REC_AUTOTEST_SEC > 0
         // 触摸按钮还没做，先用"开机自动录一段"把录像功能的真机数据拿到：

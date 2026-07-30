@@ -178,6 +178,7 @@ esp_err_t player_open(uint32_t index)
 
 void player_pause(void)
 {
+    if (s_lock == NULL) { return; }   // UI 可能在 player_init() 之前就被点到
     lock();
     if (s_state == PLAYER_PLAYING) {
         s_state = PLAYER_PAUSED;
@@ -189,6 +190,7 @@ void player_pause(void)
 
 void player_resume(void)
 {
+    if (s_lock == NULL) { return; }
     lock();
     if (s_state == PLAYER_PAUSED) {
         s_state = PLAYER_PLAYING;
@@ -200,6 +202,7 @@ void player_resume(void)
 
 esp_err_t player_seek(uint32_t frame)
 {
+    if (s_lock == NULL) { return ESP_ERR_INVALID_STATE; }
     lock();
     if (s_fp == NULL) {
         unlock();
@@ -236,6 +239,7 @@ esp_err_t player_seek(uint32_t frame)
 
 void player_stop(void)
 {
+    if (s_lock == NULL) { return; }
     lock();
     if (s_fp) {
         fclose(s_fp);
@@ -250,6 +254,15 @@ void player_stop(void)
 void player_get_status(player_status_t *out)
 {
     if (out == NULL) {
+        return;
+    }
+    // ⚠️ 这个守卫是必需的，不是防御性冗余：UI 的 100ms 定时器会一直调本函数，
+    //    而 player_init() 若还没跑（或 SD 未挂载而 init 失败），s_lock 就是 NULL，
+    //    直接 lock() 会命中 FreeRTOS 的 `assert failed: xQueueSemaphoreTake ... (pxQueue)`
+    //    并把整机拖进重启循环 —— 2026-07-31 实测踩过，19 次重启。
+    if (s_lock == NULL) {
+        memset(out, 0, sizeof(*out));
+        out->state = PLAYER_IDLE;
         return;
     }
     lock();
