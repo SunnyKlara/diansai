@@ -1218,3 +1218,114 @@ SRAM 最大连续段的上限，不是"被谁占了"，省不出来**（`MALLOC_
    那就得在 SD 与图传之间取舍，或让 SD 改走 SPI（不拉 FATFS 的 DMA 池）。
 3. 不受影响、已经能用的：SD（58606 MB / 稳态写 424 KB/s）· 录像模块（278 帧丢 0）·
    回放模块 `player.c/h`（编译过，**真机未验**）。
+
+### 10.18 ✅ 回放 + 触摸控制条：回放四项真机 PASS（2026-07-31）
+
+**回放不依赖图传** —— 它从 SD 读文件、直接注入显示流水线，所以图传那个 272 KB DMA 的坎（§10.17）
+不挡这条线。这也是先把它验完的原因。
+
+**真机结果（`.tmp_pdf/esp32p4/playtest.txt`，卡上 16 片可放）**
+
+```
+PLAYTEST 回放 REC00017.MJP：278 帧 / 19943 ms
+PLAYTEST 放中  56/278 帧  ts=4031 ms   inject_retry=0
+PLAYTEST 放中 111/278 帧  ts=7991 ms   inject_retry=0
+PLAYTEST 放中 167/278 帧  ts=12023 ms  inject_retry=0
+PLAYTEST 暂停: 3s 内帧号 168 -> 168  => PASS(真停住)
+PLAYTEST 拖动: seek(0) 后帧号=0      => PASS
+PLAYTEST 继续: 3s 后帧号=42          => PASS
+```
+
+| 判据 | 数据 | 为什么这么判 |
+|---|---|---|
+| **原速** | 4s→56 帧 / 8s→111 帧 / 12s→167 帧，`ts` 同步走到 4031/7991/12023 ms | 帧号与墙上时间**严格线性**且 ts 跟得上 ⇒ 是按文件时间戳节流，不是"尽快播完"。实效 13.9 fps，与录像抽帧 1/4 一致 |
+| **暂停** | 3 s 内帧号 168→168 | 用帧号不变判，不用"看起来停了" |
+| **拖动** | `seek(0)` 后帧号=0 | — |
+| **继续** | 3 s 后推进 42 帧 | 14 fps × 3 s ≈ 42，吻合 |
+| **显示通道无堵塞** | `inject_retry=0` | 回放帧走与网络帧**同一条** `slot → latest 队列 → 硬解码 → canvas`，没另建解码器 |
+
+**⛔ 修掉一个我自己造的重启循环（值得记，是同类问题的模板）**：漏了在 `main.c` 调
+`player_init()`，而新加的 UI 状态行每 100 ms 调一次 `player_get_status()` → 对 **NULL 信号量**
+`xSemaphoreTake` → `assert failed: xQueueSemaphoreTake queue.c:1709 ((pxQueue))` → **19 次重启**。
+两处都修了：补 `player_init()`，并给 player 的 `pause/resume/seek/stop/get_status` 全加
+`s_lock == NULL` 守卫。**UI 定时器会在模块初始化前就开始调，这个守卫是必需的而非防御性冗余。**
+判据：`restarts=1`、`assert=False`、`player_ready=True`。
+
+**触摸控制条（已编入，⬜ 触摸落点待人验）**：左半屏最底一条带 —— 状态行 y=392 +
+6 个按钮 y=412 h=36（`REC` `STOP` `PLAY` `II` `<<` `>>`，步距 98 落在 x=26~614，
+**不压到 x=640 起的 canvas**）。`STOP` 一键两用（录像中=停录 / 回放中=回实时）；
+`PLAY` 放最后一片（`player_open(0)`）；`<<`/`>>` = ±50 帧（14 fps 下约 3.5 s）。
+⚠️ 按钮文字**刻意全 ASCII**（"II" 当暂停）——montserrat 字体没有 ▶⏸ 字形，会渲染成空白方块。
+⚠️ 回调跑在 LVGL 任务且持 lvgl_port 锁，所以**只允许**放 `player_open`（毫秒级索引扫描）这类操作，
+整帧读写留在 `rec_wr` / `player` 任务里，否则会拖住显示。
+
+**⬜ 仍未验**：① 触摸坐标落点与按钮响应（要人点屏）② `REC` 现在能录但**录的是内嵌占位帧**
+（图传收不到实拍，§10.17 未解）⇒ "实拍→录像→回放"整链仍缺中间那一环。
+
+### 10.19 ⛔ 作废 §10.17 的「272 KB 内存不足」整套推理（2026-07-31）
+
+**§10.17 那个"C5 要 272 KB 连续 DMA、板上只有 248 KB"的故事是错的，连带两条结论一起作废。**
+否掉它只用了看一眼时间线，不需要新实验：
+
+```
+I (2615) eh_sdio: Starting SDIO process rx task
+W (2642) eh_sdio: dma_alloc(278528) failed; dropping read     ← 2642 ms
+E (6551) video: esp_wifi_init: ESP_FAIL
+...
+I (6957) video: connected -- RX producer running               ← TCP 6.9 s 才连上
+```
+
+- `dma_alloc` 失败在 **2642 ms**，而图传 TCP 在 **6957 ms** 才建立 ⇒ **那时 K230 一个字节都还没发**，
+  278230 不可能是图像数据聚合。
+- 那一刻要收的是 esp-hosted 的 **init event**，包只有几十字节，**不可能要 272 KB**。
+- ⇒ **278230 是 C5 复位后寄存器里的垃圾长度**，与既有事实"C5 只在整板冷启动后才正常"完全吻合。
+
+**⛔ 由此一并作废**
+1. ~~"降码率能压小那个 len"~~ —— 失败发生在图传连接之前，降 K230 或 P4 侧码率都影响不到它。
+   所以"K230 不能降帧（要做钢珠识别）"这个约束**不必被迫接受**，那条路本来就是错的。
+   （顺带记一个事实，将来若真要降：K230 的**识别走 sensor 的 YUV 路、图传走 encoder 的 JPEG 路**，
+   丢 JPEG 帧不影响识别；正确降法是取流后 `ReleaseStream` 丢弃，而**不是 sleep**——sleep 时相机
+   仍按原帧率产帧，编码器那 8 个输出缓冲照样堆满。）
+2. ~~"choice 三选一只有 STREAMING 能用，因为它要 272 KB"~~ —— 前半句仍成立但**理由不同**：
+   `RX_NONE` / `RX_MAX_SIZE` 都是 packet 模式，而 esp_hosted **主动 assert 拒绝模式不匹配**：
+   `E eh_init_evt: SDIO mode mismatch: slave is in streaming mode, but host is in packet mode. Aborting.`
+   → `assert failed: sdio_mode_check eh_host_mcu_transport_init_event.c:158`。
+   ⇒ 要用 packet 模式必须**让 C5 slave 也切过去**，而 slave 模式由 C5 固件决定
+   （日志：`CP without SDIO SW_AGGR; compatible streaming mode enabled`）。
+
+**🔴 真正未解的疑点（收窄到这一条）**：冷启动那轮（`.tmp_pdf/esp32p4/win_e2e.txt`）—— C5 正常、
+`SDIO mode: slave=streaming host=streaming`、`PING tx=3 rx=3 loss=0% PING_OK`、TCP
+`connected -- RX producer running`、**无 dma_alloc 失败**、`bad 0`，而 K230 侧明确
+`sent 6 frames 163906 bytes`，P4 却 `link closed after 0 RX frames`（3 秒后断，随后 errno=104）。
+⇒ **不是内存、不是协议、不是网络，是大块数据在 P4 侧凭空消失。**
+
+**🔑 已烧录并拿到第一个强信号（2026-07-31 03:1x，`.tmp_pdf/esp32p4/after_revert.txt`）**
+
+回退 `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`（改回 `# ... is not set`，编译产物已确认无该宏）后重烧：
+
+```
+DMAWM app_main  free=322763 largest=253952
+I (2643) eh_init_evt: SDIO mode: slave=streaming host=streaming
+I (2869) video: wifi sta started, joining SSID:K230_AP
+init_evt=True  wifi_fail=False  dma_fail=False  restarts=1
+```
+
+**⛔ 这条数据直接修正了 §10.16/§10.17 的一个结论**：原先记「**C5 只在整板断电冷启动后才正常**，
+RTS 复位/烧录必失败（7+ 次一致）」—— **回退那个开关之后，烧录复位一次就正常起来了**，
+既没有 `dma_alloc` 失败、也没有重启循环。⇒ 所谓"C5 需要冷启动"很可能**本来就是那个开关的症状**，
+不是 C5 的固有毛病。
+
+**⇒ 收敛的解释（仍 `待验证`）**：`SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` 让 lwip/wifi 的缓冲落到 PSRAM，
+而 esp_hosted 的 SDIO DMA 对缓冲有位置要求 ⇒ 既让复位后的 init event 容易丢（报垃圾长度
+278230 → `dma_alloc` 失败），也让大块数据收不上来（`0 RX frames`）。**它当时对 `largest`
+一个字节都没改善（253952→253952），纯属有害无益，我却留着没回退** —— 这是本轮最大的教训：
+**试探性改动没收益就要当场回退，否则它会伪装成别的故障。**
+
+**⬜ 仍未验的最后一步**：图传数据面（`shown > 0`）。本轮没验成，卡在 **K230 侧 REPL 无响应** ——
+`k230_repl.ps1` 发完 Ctrl-C/Ctrl-D/paste 后 K230 一个字节都不回（输出只有 149 B，正常 1407 B），
+多半是之前反复软复位 + 反复初始化相机把它搞卡了。⇒ **下次先给 K230 单独断电重启**，再按
+§10.16 末尾那套顺序抢窗口。P4 侧不用再断电：现在烧录复位就能让 C5 正常。
+
+**⚠️ 操作坑（本轮第 2 次复现）**：**烧录后 P4 的 USB-Serial-JTAG 会掉枚举**（COM7 消失，
+`FLASH_EXIT=2` 或抓不到日志），需**拔插 USB** 才回来；顺带它也给 C5 做了冷启动，
+正好是验图传的前提。
