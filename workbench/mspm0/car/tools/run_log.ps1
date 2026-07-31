@@ -167,7 +167,11 @@ L ("first line             : #{0} @ t={1} ms (MCU uptime)" -f $seqFirst, $rows[0
 # power-on. If we just attached mid-session (seq already in the thousands) the sentence below
 # would be nonsense - the earlier lines were not "lost", we simply were not capturing yet.
 if ($seqFirst -le 200) {
-    L ("  COLD-BOOT READ: link became usable {0:N1} s after power-on; the {1} line(s) before #{0} never made it out." -f ($rows[0].t_ms / 1000.0), ($seqFirst - 1), $seqFirst)
+    # NOTE {2} not {0} for the sequence number: the third argument ($seqFirst) was silently unused and
+    # "#{0}" printed the TIME instead, e.g. "the 4 line(s) before #1.2". Caught by tools/_fmt_check.ps1.
+    # Worth fixing rather than shrugging at: this is the line we read to time how long the camera takes
+    # to come up after power-on, so a bogus sequence number here is read as data.
+    L ("  COLD-BOOT READ: link became usable {0:N1} s after power-on; the {1} line(s) before #{2} never made it out." -f ($rows[0].t_ms / 1000.0), ($seqFirst - 1), $seqFirst)
 } else {
     L "  (not a cold boot - capture attached mid-session, so the earlier seq numbers were simply not captured)"
 }

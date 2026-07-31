@@ -45,7 +45,6 @@
 #   !! Halting freezes the PWM outputs at whatever duty they had. Send `z` (full stop) BEFORE
 #   flashing if the motors could be driving - otherwise a wheel keeps spinning while halted.
 
-Set-Location $PSScriptRoot
 # Toolchain paths come from ONE place (_tools.ps1). Hardcoding them here used to make this
 # script fail outright on the other development machine - see _tools.ps1 header.
 param(
@@ -56,6 +55,7 @@ param(
     # 用法：.\flash.ps1 -Speed 2000
     [int]$Speed = 500
 )
+Set-Location $PSScriptRoot
 
 . "$PSScriptRoot\_tools.ps1"
 # NOTE: Find-Openocd returns @{Exe;Scripts} (API defined at the top of _tools.ps1).
