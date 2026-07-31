@@ -104,6 +104,9 @@ $rows = New-Object System.Collections.ArrayList
 $marks = New-Object System.Collections.ArrayList   # [task] snapshots, aligned to distance
 $reboot = $null
 $prevUp = -1
+$prevSq = -1
+$prevC1 = 0
+$prevC2 = 0
 $nextAsk = (Get-Date).AddMilliseconds(600)
 $lastMm = 0.0
 while (((Get-Date) - $t0).TotalSeconds -lt $MaxS) {
@@ -136,6 +139,7 @@ while (((Get-Date) - $t0).TotalSeconds -lt $MaxS) {
         if ($ln -notmatch '\| C:(-?\d+),(-?\d+)') { continue }
         $c1 = [int]$Matches[1]; $c2 = [int]$Matches[2]
         $up = if ($ln -match 't(\d+)$') { [int]$Matches[1] } else { -1 }
+        $sq = if ($ln -match '#(\d+) t\d+$') { [int]$Matches[1] } else { -1 }
         $v1 = 0; $v2 = 0; $p1 = 0; $p2 = 0; $i1 = 0; $i2 = 0
         if ($ln -match '\| V:(-?\d+),(-?\d+)') { $v1 = [int]$Matches[1]; $v2 = [int]$Matches[2] }
         if ($ln -match '\| PWM:(-?\d+),(-?\d+)') { $p1 = [int]$Matches[1]; $p2 = [int]$Matches[2] }
@@ -143,12 +147,24 @@ while (((Get-Date) - $t0).TotalSeconds -lt $MaxS) {
         [void]$rows.Add([pscustomobject]@{
                 el = [math]::Round(((Get-Date) - $t0).TotalSeconds, 2)
                 up = $up; c1 = $c1; c2 = $c2; v1 = $v1; v2 = $v2; p1 = $p1; p2 = $p2; i1 = $i1; i2 = $i2
+                sq = $sq
                 mm = [math]::Round((($c1 + $c2) / 2.0) / $CountsPerMm, 1)
             })
         $lastMm = [math]::Round((($c1 + $c2) / 2.0) / $CountsPerMm, 1)
-        # a reboot is the ONLY way uptime can decrease
-        if ($null -eq $reboot -and $prevUp -gt 0 -and $up -gt 0 -and $up -lt $prevUp) { $reboot = $rows.Count - 1 }
+        # Reset detection. NOT "uptime went down" alone - that gives FALSE positives.
+        # Measured (lap_013749.csv row 119): a telemetry line got truncated and 't110975' parsed as
+        # 't1', so uptime appeared to collapse while the encoder counts (16983/14774) carried on
+        # smoothly from the previous sample. Truncation happens because this script interleaves `?`
+        # polls with the 10 Hz stream on one port, so replies split telemetry lines.
+        # Two corroborating conditions, both of which truncation cannot fake:
+        #   - the frame SEQUENCE number #N restarts (it sits before the uptime field)
+        #   - the encoder counts collapse toward zero (a real boot clears them; row 120 showed 0/0)
+        if ($null -eq $reboot -and $prevSq -gt 0 -and $sq -gt 0 -and $sq -lt $prevSq -and
+            ([math]::Abs($c1) + [math]::Abs($c2)) -lt ([math]::Abs($prevC1) + [math]::Abs($prevC2)) / 2) {
+            $reboot = $rows.Count - 1
+        }
         if ($up -gt 0) { $prevUp = $up }
+        if ($sq -gt 0) { $prevSq = $sq; $prevC1 = $c1; $prevC2 = $c2 }
     }
 }
 Slow "?"

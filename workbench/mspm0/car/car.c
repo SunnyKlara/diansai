@@ -1922,6 +1922,83 @@ int main(void)
      * 这几行让固件自己报走到哪一步就没声了: 最后出现的 boot 标记 = 卡点的前一步。
      * 排查完删掉(它们只在启动跑一次, 不影响时序)。 */
     uart_dbg_puts("\nboot1 syscfg+delay ok\n");
+    /* ⭐ 复位原因自报（2026-08-01 加）—— 为什么值得占几行固件:
+     * 真机反复出现"跑到一半 MCU 复位", 而遥测层面**三种完全不同的根因签名一模一样**:
+     *   ① VDD 掉压(BOR) ② nRESET 脚被拉低(那根 RST 线) ③ 软件故障/看门狗。
+     * 三者修法毫不相干(改上限·换电池 / 拔一根线 / 改代码), 靠猜要赔一整晚(已赔过)。
+     * ⚠️ SWD 读不到它: openocd 每次 init 都会复位芯片, 会把 RSTCAUSE 覆盖成"调试器复位"
+     *    ⇒ **只能靠固件在开机时读**, 这也是本行必须存在的理由。
+     * ⚠️ `DL_SYSCTL_getResetCause()` 读即清 ⇒ 只能读一次, 必须在这里读完就打出来。 */
+    {
+        DL_SYSCTL_RESET_CAUSE rc = DL_SYSCTL_getResetCause();
+        const char *s;
+        switch (rc) {
+        case DL_SYSCTL_RESET_CAUSE_BOR_SUPPLY_FAILURE:
+            s = "BOR_SUPPLY (VDD dropped -> supply: cap/battery/wires)"; break;
+        case DL_SYSCTL_RESET_CAUSE_POR_EXTERNAL_NRST:
+        case DL_SYSCTL_RESET_CAUSE_BOOTRST_EXTERNAL_NRST:
+            s = "EXTERNAL_NRST (nRESET pulled low -> unplug the RST wire)"; break;
+        case DL_SYSCTL_RESET_CAUSE_SYSRST_CPU_LOCKUP_VIOLATION:
+            s = "CPU_LOCKUP (software fault -> code, not power)"; break;
+        case DL_SYSCTL_RESET_CAUSE_SYSRST_WWDT0_VIOLATION:
+        case DL_SYSCTL_RESET_CAUSE_SYSRST_WWDT1_VIOLATION:
+            s = "WWDT (watchdog timeout -> code stuck somewhere)"; break;
+        case DL_SYSCTL_RESET_CAUSE_POR_HW_FAILURE:
+            s = "POR_HW_FAILURE"; break;
+        case DL_SYSCTL_RESET_CAUSE_POR_SW_TRIGGERED:
+        case DL_SYSCTL_RESET_CAUSE_SYSRST_SW_TRIGGERED:
+        case DL_SYSCTL_RESET_CAUSE_CPURST_SW_TRIGGERED:
+            s = "SW_TRIGGERED (normal after flashing / openocd)"; break;
+        case DL_SYSCTL_RESET_CAUSE_SYSRST_DEBUG_TRIGGERED:
+        case DL_SYSCTL_RESET_CAUSE_CPURST_DEBUG_TRIGGERED:
+            s = "DEBUG_TRIGGERED (normal, debugger)"; break;
+        default:
+            s = "OTHER"; break;
+        }
+        uart_dbg_puts("[rst] cause=");
+        uart_dbg_put_int((int)rc);   /* 原始值也打, 便于对照手册 RSTCAUSE 表 */
+        uart_dbg_puts(" ");
+        uart_dbg_puts(s);
+        uart_dbg_puts("\n");
+    }
+    /* ⭐ 复位原因自报（2026-08-01 加）—— 为什么值得占几行固件:
+     * 真机连续出现"跑到一半 MCU 复位"(PWM 仅 40%、转速正常、全在转向时、静止 90s 零复位),
+     * 而遥测层面**三种完全不同的根因签名一模一样**: ① VDD 掉压(BOR) ② nRESET 脚被拉低
+     * (那根 RST 线; SSOT 记过 DAP 掉电时它会把 nRESET 拽到 0.3~0.7V 阈值边缘) ③ 软件故障/看门狗。
+     * 三者修法毫不相干(换电池/拔一根线/改代码), 靠猜要赔一整晚。RSTCAUSE 一句话分清。
+     * ⚠️ `DL_SYSCTL_getResetCause()` 读即清 ⇒ 只能读一次, 必须在这里读完存下来。 */
+    {
+        DL_SYSCTL_RESET_CAUSE rc = DL_SYSCTL_getResetCause();
+        const char *s;
+        switch (rc) {
+        case DL_SYSCTL_RESET_CAUSE_BOR_SUPPLY_FAILURE:
+            s = "BOR_SUPPLY(VDD 掉压 => 查电池/线路/稳压)"; break;
+        case DL_SYSCTL_RESET_CAUSE_POR_EXTERNAL_NRST:
+        case DL_SYSCTL_RESET_CAUSE_BOOTRST_EXTERNAL_NRST:
+            s = "EXTERNAL_NRST(nRESET 被拉低 => 拔掉板上那根 RST 线)"; break;
+        case DL_SYSCTL_RESET_CAUSE_SYSRST_CPU_LOCKUP_VIOLATION:
+            s = "CPU_LOCKUP(软件故障 => 查代码, 不是电)"; break;
+        case DL_SYSCTL_RESET_CAUSE_SYSRST_WWDT0_VIOLATION:
+        case DL_SYSCTL_RESET_CAUSE_SYSRST_WWDT1_VIOLATION:
+            s = "WWDT(看门狗超时 => 查代码卡在哪)"; break;
+        case DL_SYSCTL_RESET_CAUSE_POR_HW_FAILURE:
+            s = "POR_HW_FAILURE"; break;
+        case DL_SYSCTL_RESET_CAUSE_POR_SW_TRIGGERED:
+        case DL_SYSCTL_RESET_CAUSE_SYSRST_SW_TRIGGERED:
+        case DL_SYSCTL_RESET_CAUSE_CPURST_SW_TRIGGERED:
+            s = "SW_TRIGGERED(软件请求, 烧录/openocd 复位属正常)"; break;
+        case DL_SYSCTL_RESET_CAUSE_SYSRST_DEBUG_TRIGGERED:
+        case DL_SYSCTL_RESET_CAUSE_CPURST_DEBUG_TRIGGERED:
+            s = "DEBUG_TRIGGERED(调试器复位, 属正常)"; break;
+        default:
+            s = "OTHER"; break;
+        }
+        uart_dbg_puts("[rst] cause=0x");
+        uart_dbg_put_int((int)rc);       /* 原始值也打, 便于对照手册 RSTCAUSE 表 */
+        uart_dbg_puts(" ");
+        uart_dbg_puts(s);
+        uart_dbg_puts("\n");
+    }
     GC9A01_Backlight(1);
     GC9A01_Init();
     uart_dbg_puts("boot2 lcd ok\n");
