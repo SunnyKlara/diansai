@@ -61,6 +61,48 @@ static int parse_i32(const char *s, uint16_t n, int32_t *out)
     return 1;
 }
 
+/* 定点解析带符号小数 -> ×1000 的整数。用于 `$BP` 的 position_cm 字段:
+ *   "+5.23" -> 5230, "-12.00" -> -12000, "0.00" -> 0
+ * 为什么是 ×1000: BP 给的是**厘米**, 而 uf_target_t.cx 的既定语义是 **x_mm×100**;
+ *   1cm = 10mm ⇒ cm×1000 == mm×100, 于是一次乘法就把 BP 规约进现有语义, 上层零改动。
+ * 为什么不用 atof/strtod: 本文件刻意不依赖 libc(省 flash + 能裸编 PC 单测), 且宽松解析会把
+ *   "5.2x" 读成 5.2 —— 一个坏帧变成看起来合法的球位, 比丢帧危险得多(同 parse_i32 的理由)。
+ * 严格性: 允许前导 '+'/'-'; 小数点最多一个、小数位最多 3 位(超出即非法, 不做静默截断);
+ *   整数部分与小数部分至少要有一位数字; 空字段、单个符号、"1." 、".5" 全判非法。 */
+static int parse_fixed3(const char *s, uint16_t n, int32_t *out)
+{
+    uint16_t i = 0;
+    int neg = 0, ndig = 0, nfrac = 0, dot = 0;
+    int32_t v = 0;
+    if (n == 0) return 0;
+    if (s[0] == '+' || s[0] == '-') { neg = (s[0] == '-'); i = 1; }
+    for (; i < n; i++) {
+        char c = s[i];
+        if (c == '.') {
+            if (dot) return 0;               /* 第二个小数点 */
+            if (ndig == 0) return 0;         /* ".5" 这种没有整数位的写法不收 */
+            dot = 1;
+            continue;
+        }
+        if (c < '0' || c > '9') return 0;
+        if (dot) { if (nfrac >= 3) return 0; nfrac++; }
+        v = v * 10 + (int32_t)(c - '0');
+        ndig++;
+    }
+    if (ndig == 0) return 0;                 /* 只有符号 */
+    if (dot && nfrac == 0) return 0;         /* "1." 这种小数点后没数字的写法不收 */
+    while (nfrac < 3) { v *= 10; nfrac++; }  /* 补齐到 ×1000 */
+    *out = neg ? -v : v;
+    return 1;
+}
+
+/* BP 位置的合理性上限(0.01mm 单位) = ±150.0mm。
+ * 交付文档《03_串口协议和控制板注意事项》把"检查位置范围"列为控制板的职责(正常球心 ±12.0cm)。
+ * 取 ±15.0cm 而不是 ±12.0cm: 宁可放过端点附近的合法读数, 也不要把真数据判死。
+ * 越界的处置是**降级成"没看到球"而不是丢帧** —— 丢帧会让上层以为链路断了(STALE)并去查线,
+ * 而实际链路是好的、只是这一帧数值荒谬; 判 NO_TARGET 才是对的, 且上层已有安全行为。 */
+#define UF_BP_ABS_MAX  15000
+
 /* buf[0..len) = '$' 之后、'\n' 之前的全部字符。解析成功返回 1。 */
 static int uf_parse(uf_parser_t *p, uint32_t now_ms)
 {
@@ -81,7 +123,11 @@ static int uf_parse(uf_parser_t *p, uint32_t now_ms)
         }
     }
 
-    /* 拆 5 个逗号字段: V,id,cx,cy,area */
+    /* 拆逗号字段。支持两种载荷(按第一个字段的类型标识分派):
+     *   `V`  : V,id,cx,cy,area          我们自己的格式(pi_vision / tools/vision_test.ps1 用)
+     *   `BP` : BP,valid,position_cm     K230 交付包 V4 的格式(workbench/K230钢球位置识别_比赛交付_V4)
+     * 为什么两种都留而不是统一成一种: `$V` 那条路已 PC 单测 + 被 vision_test.ps1 当"假相机"用
+     * (没有相机也能在板上验完整条链); `$BP` 那条是真相机实际在发的。删掉任一条都会失去一种能力。 */
     {
         uint16_t start[5], flen[5];
         int nf = 0;
@@ -93,6 +139,28 @@ static int uf_parse(uf_parser_t *p, uint32_t now_ms)
                 nf++; seg = (uint16_t)(i + 1);
             }
         }
+
+        /* ---- `$BP,<valid>,<position_cm>*HH` : K230 V4 ---- */
+        if (nf == 3 && flen[0] == 2 && p->buf[start[0]] == 'B' && p->buf[start[0]+1] == 'P') {
+            int32_t valid, pos;
+            if (!parse_i32(&p->buf[start[1]], flen[1], &valid) ||
+                !parse_fixed3(&p->buf[start[2]], flen[2], &pos)) { p->n_bad_form++; return 0; }
+            if (valid != 0 && valid != 1)                        { p->n_bad_form++; return 0; }
+            if (pos > UF_BP_ABS_MAX || pos < -UF_BP_ABS_MAX) valid = 0;   /* 见 UF_BP_ABS_MAX 注释 */
+            /* valid=0 时**刻意保留 cx 不清零也不使用**: 交付文档明确警告"valid=0 时不要把位置改成
+             * 0, 否则会造成舵机突然动作"。我们的做法更彻底 —— id=UF_ID_NONE 让 uf_get() 整帧拒绝
+             * 返回, 上层(ball.c)按 NO_MEAS 走它自己的安全分支, 根本读不到这个 cx。 */
+            p->last.id       = valid ? 1 : UF_ID_NONE;
+            p->last.cx       = pos;      /* 已换算成 x_mm×100, 与 CFG_BALL_CX_PER_MM=100 对齐 */
+            p->last.cy       = 0;
+            p->last.area     = 0;
+            p->last.stamp_ms = now_ms;
+            p->have_frame    = 1;
+            p->n_ok++;
+            return 1;
+        }
+
+        /* ---- `$V,<id>,<cx>,<cy>,<area>*HH` : 本仓库既有格式 ---- */
         if (nf != 5)                              { p->n_bad_form++; return 0; }
         if (flen[0] != 1 || p->buf[start[0]] != 'V') { p->n_bad_form++; return 0; }  /* 标识必须是 V */
 

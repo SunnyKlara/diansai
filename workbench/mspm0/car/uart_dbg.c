@@ -36,7 +36,13 @@ void uart_dbg_set_sinks(uint32_t mask)
 #if !CFG_ESP_UART_EN
     mask &= UART_SINK_DAP;
 #endif
-    if (mask) g_sinks = mask;      /* mask=0 忽略: 不允许把所有输出关掉(见 .h 注释) */
+    /* 🔁 2026-07-31: **mask=0 现在是合法的**（原先被这里和 car.c 两处一起挡掉）。
+     * 为什么必须允许: 官方答疑 Q62 明文"测试期间仅允许图传工作" ⇒ 正式测试要能一键关掉无线遥测。
+     * 挡掉 0 的原代码使这件事**做不到**, 那不是保护、是合规缺口。
+     * 为什么现在敢关: ① 命令通道(RX)与 sink(TX)无关 ⇒ 关了照样能发 `l3` 恢复;
+     *   ② LCD 的 RUN 页(`u2`, 走时/状态/里程/球位)是独立的观测通道, 关掉串口不等于变瞎。
+     * ⚠ 调用方有义务**在关闭之前**把回执打出来 —— 关完再打就没有任何口能收到了(car.c 已如此处理)。*/
+    g_sinks = mask;
 }
 
 uint32_t uart_dbg_get_sinks(void) { return g_sinks; }

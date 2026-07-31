@@ -20,7 +20,7 @@ ifeq ($(VERBOSE), 1)
   V :=
 endif
 
-OBJECTS = car.obj motor.obj gc9a01.obj uart_dbg.obj control.obj encoder.obj imu.obj attitude.obj nav.obj magnet.obj uart_frame.obj line.obj linesens.obj lineframe.obj servo.obj task.obj beep.obj disp_run.obj $(patsubst %.c,%.obj,$(notdir $(SYSCFG_C_FILES)))
+OBJECTS = car.obj motor.obj gc9a01.obj uart_dbg.obj control.obj encoder.obj imu.obj attitude.obj nav.obj magnet.obj uart_frame.obj line.obj linesens.obj lineframe.obj servo.obj task.obj beep.obj disp_run.obj ball.obj $(patsubst %.c,%.obj,$(notdir $(SYSCFG_C_FILES)))
 
 NAME = car
 
@@ -105,7 +105,7 @@ $(foreach c_file,$(SYSCFG_C_FILES),$(eval $(call C_RULE,$(c_file))))
 # ../config.h 必须在依赖里! (2026-07-27 实测漏了这一条: 改完 config.h 跑 mingw32-make 直接
 # "Nothing to be done", 二进制里还是旧参数 —— 而本工程铁律恰恰是"达标即回填 config.h 再烧",
 #  漏依赖会让这条铁律静默失效: 文档/源码显示新值, 芯片跑的是旧值, 且没有任何报错提示。)
-car.obj: ../car.c ../config.h ../gc9a01.h ../motor.h ../uart_dbg.h ../control.h ../encoder.h ../imu.h ../attitude.h ../nav.h ../magnet.h ../uart_frame.h ../vservo.h ../cmd_gate.h ../servo.h $(SYSCFG_H_FILES)
+car.obj: ../car.c ../config.h ../gc9a01.h ../motor.h ../uart_dbg.h ../control.h ../encoder.h ../imu.h ../attitude.h ../nav.h ../magnet.h ../uart_frame.h ../vservo.h ../cmd_gate.h ../servo.h ../ball.h $(SYSCFG_H_FILES)
 	@ echo Building $@
 	$(V) $(CC) $(CFLAGS) $< -c -o $@
 
@@ -154,6 +154,14 @@ lineframe.obj: ../lineframe.c ../lineframe.h ../config.h
 # uart_frame 是纯算法层(不依赖 HAL), 但**必须真的编进固件** —— 它在 2026-07-27 之前只有 .h、
 # 不在这份 makefile 里, 于是"视觉串口链已就绪"是假象。进了 OBJECTS 才叫存在。
 uart_frame.obj: ../uart_frame.c ../uart_frame.h
+	@ echo Building $@
+	$(V) $(CC) $(CFLAGS) $< -c -o $@
+
+# ball = H题第3/4/5/6项的滚球平衡控制层。**纯算法层, 刻意不依赖 config.h 与 SysConfig** ——
+# 参数由 car.c 的 ball_apply_cfg() 从 config.h §7.12 灌进去, 这样 pc_test/test_ball.c 零依赖可编。
+# ⚠ 只加进 OBJECTS 而漏掉本规则的后果: make 报 `No rule to make target 'ball.obj'`, 而
+#   build.ps1 的过滤器不收 "No rule" 这个词 ⇒ **报错被吞、只看到构建列表少了一项**(2026-07-30 实测)。
+ball.obj: ../ball.c ../ball.h
 	@ echo Building $@
 	$(V) $(CC) $(CFLAGS) $< -c -o $@
 

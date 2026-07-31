@@ -38,7 +38,8 @@
  *   ⇒ 控制器压根压不住，只能从源头前馈减掉。
  *
  * ── 观测器为什么带模型（不是普通 alpha-beta）──
- *   相机 30fps ⇒ 两帧之间有 33ms 空白，而控制回路跑 100Hz ⇒ 三分之二的拍没有新测量。
+ *   相机 30fps ⇒ 两帧之间有 33ms 空白，而控制回路跑 50Hz（CFG_BALL_MS=20ms，理由见 config.h
+ *   §7.12 与报告 2.3.3）⇒ 33/20 ⇒ **约三分之一的拍没有新测量**。
  *   普通 alpha-beta 在空白期只能"假设匀速"线性外推，而球此刻正在**受控加速**。
  *   本模块把**已知的控制输入**（当前 theta_b 与 a_x）代进预测：
  *        a_known = K_BALL·(theta_b + pitch) - (5/7)·a_x
@@ -102,7 +103,7 @@ typedef enum {
 /* ── 每拍喂进去的测量值 ────────────────────────────────────────── */
 typedef struct {
     float x_mm;         /* 相机测得的球位（mm，沿槽轴，符号与题目刻度同向）*/
-    int   meas_valid;   /* 本拍有没有**新**测量。相机 30fps 而控制 100Hz ⇒ 多数拍为 0 */
+    int   meas_valid;   /* 本拍有没有**新**测量。相机 30fps 而控制 50Hz ⇒ 约 1/3 的拍为 0 */
     float meas_age_s;   /* 最近一次有效测量距今多久（秒）。> max_age_s ⇒ 判反馈不可信 */
     float ax_mm_s2;     /* 车纵向加速度（mm/s^2，+ = 沿 +x 方向加速）。
                          * ⭐ 首选来源 = **速度指令的微分**（无延迟、无噪声），IMU 加计只补
@@ -118,6 +119,14 @@ typedef struct {
     /* --- 控制器参数（默认 [纸面]，整定后回填 config.h）--- */
     float kp;             /* 位置增益，单位 1/s^2。ωn = sqrt(kp) */
     float kd;             /* 速度增益，单位 1/s。 ζ = kd/(2·sqrt(kp)) */
+    float ki;             /* 积分增益，单位 1/s^3。0 = 关闭；运行时只改它做单变量整定 */
+    float i_band_mm;      /* 积分分离带：仅 |x_est-x_ref| <= 此值且有新视觉帧时累计 */
+    float i_limit_deg;    /* I 项自身角度限幅；与总输出限幅、方向 anti-windup 独立 */
+    /* 摩擦(起动阻力)前馈幅值，度。<=0 = 关闭。
+     * 存在理由是实测的: 起动阈值约 0.9° 而弱侧总权限仅 1.67° ⇒ 摩擦吃掉一半以上可用加速度,
+     * 轨迹前馈之后留给 PD 的接近 0(真机 sat 恒 74%)。让 PD 叠在阈值之上即可把它还回来。
+     * 实现与"为什么不能用 sign(e) 直接跳变"见 ball.c §5b。 */
+    float fric_deg;
     float theta_max_deg;  /* 输出倾角限幅（度）。<= BALL_THETA_MECH_MAX_DEG */
     float x_soft_mm;      /* 软限位（mm）：|x| 超过就把 setpoint 拉向 0 并报 warn */
     float x_hard_mm;      /* 物理端点（mm，仅用于把软限位夹在合理范围内）*/
@@ -160,6 +169,9 @@ typedef struct {
                            *   由本模块自己累加，不依赖调用方怎么理解 meas_age_s。*/
     unsigned long no_meas_ticks;  /* 累计有多少拍没有新测量（诊断：相机是不是在掉帧）*/
 
+    /* 弱积分运行态。积分只在新鲜视觉帧到达时按真实帧间隔更新，避免等效 Ki 随 FPS 漂移。 */
+    float i_err_mm_s;      /* ∫(x_est-x_ref)dt，单位 mm·s */
+
     /* 轨迹状态 */
     float traj_t;         /* 轨迹已跑多久（秒）*/
     int   traj_phase;     /* 0=出发 1=停留 2=返回 3=稳定 4=完成 */
@@ -168,10 +180,14 @@ typedef struct {
      * 对应校赛B 把扰动估计 f_hat 画出来那招，答辩加分点）*/
     float theta_cmd_deg;  /* 本拍输出（对车倾角，已限幅）*/
     float th_pd_deg;      /* 其中 PD 贡献 */
+    float th_i_deg;       /* 其中弱积分贡献（已按 i_limit_deg 限幅）*/
+    float th_fric_deg;    /* 其中摩擦前馈贡献（诊断用；进遥测才能判断它是否在起作用）*/
     float th_traj_deg;    /* 其中轨迹加速度前馈贡献 */
     float th_ax_deg;      /* 其中纵向加速度前馈贡献 */
     float th_pitch_deg;   /* 其中 pitch 补偿贡献 */
     int   sat;            /* 本拍是否撞到限幅（撞限幅说明权限不够或增益过大）*/
+    int   i_active;       /* 本拍满足“新鲜视觉 + 小误差带”，积分门已打开 */
+    int   i_aw_hold;      /* 本拍积分增量因会加深总输出饱和而被拒绝 */
 
     /* 轨迹参考（遥测/画曲线用）*/
     float x_ref_mm, v_ref_mm_s, a_ref_mm_s2;
@@ -184,7 +200,7 @@ typedef struct {
     float traj_total_s;       /* 轨迹总耗时（要求 3 的 <=5s 判据）*/
 } ball_t;
 
-/* 用 [纸面] 默认参数初始化。ωn=3 rad/s、ζ=0.8 ⇒ kp=9、kd=4.8。 */
+/* 用保守默认参数初始化。PD 为 kp=9、kd=6；弱积分能力存在但 Ki 默认 0，待真机在线整定。 */
 void ball_init(ball_t *b);
 
 /* 进 HOLD 模式，把球稳在 setpoint_mm。要求 4/5/6 用它（setpoint=0 即"稳在中心点"）；
@@ -197,13 +213,16 @@ void ball_start_traj(ball_t *b, float amp_mm);
 /* 停：回 BALL_IDLE，输出 0 度（摊平）。不动参数与观测器标定。 */
 void ball_abort(ball_t *b);
 
+/* 清积分状态与诊断标志，不改 Ki/误差带/限幅参数。切目标、切模式、失去反馈时必须调用。 */
+void ball_reset_integral(ball_t *b);
+
 /* 清成绩单（peak/航点误差）。每次正式测试开始前调一次，否则峰值会跨趟累积。 */
 void ball_reset_stats(ball_t *b);
 
 /*
  * 走一拍。返回当前状态，并把**摆杆对车的目标倾角（度）**写进 *theta_deg_out。
  *   BALL_IDLE / BALL_BLOCKED -> theta=0（摊平）
- *   其余                     -> theta = PD + 轨迹前馈 + a_x 前馈 + pitch 补偿，已限幅
+ *   其余                     -> theta = PD + 弱I + 轨迹/a_x/pitch/摩擦前馈，已限幅
  * 幂等：TRAJ_DONE 之后再调会自动转入 HOLD（继续把球稳在 -amp），不会自己重跑轨迹。
  */
 ball_state_t ball_step(ball_t *b, const ball_in_t *in, float *theta_deg_out);

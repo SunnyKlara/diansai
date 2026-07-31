@@ -54,10 +54,17 @@ static void plant_step(plant_t *p, float theta_b_deg, float pitch_deg, float ax,
     p->v += a * dt;
 }
 
+/* 固件里滚球回路的真实频率 = 1000/CFG_BALL_MS = 1000/20 = 50Hz。
+ * 凡是**数字会写进设计报告**的那几组必须用它，否则报告里的"由固件 ball.c 导出"
+ * 就名不副实（曾经这里写 100Hz，与固件的 20ms 节拍不符）。
+ * 例外只有 test_observer_sparse：那组刻意用更快的 100Hz 制造更稀疏的测量、当上界测。 */
+#define SIM_CTRL_HZ   50.0f
+#define SIM_CAM_FPS   30.0f
+
 /*
  * 闭环仿真一段时间。
- *   ctrl_hz  = 控制回路频率（默认 100Hz）
- *   cam_fps  = 相机帧率（默认 30 ⇒ 三分之二的拍没有新测量，这是真实工况）
+ *   ctrl_hz  = 控制回路频率（报告相关的组一律传 SIM_CTRL_HZ）
+ *   cam_fps  = 相机帧率（30 ⇒ 约三分之一的拍没有新测量，这是真实工况）
  *   noise_mm = 加在相机读数上的确定性锯齿噪声幅值（不用 rand()，保证可复现）
  * 返回最后一拍的状态。
  */
@@ -271,13 +278,13 @@ static void test_ff_cancels_in_sim(void)
         float want_off = BALL_ROLL_COEF * 300.0f / 9.0f;   /* 解析: (5/7)*ax/kp = 23.81mm */
         ball_t b; plant_t p = { 0.0f, 0.0f };
         ball_init(&b); b.ff_ax_en = 0; ball_set_hold(&b, 0.0f);
-        sim_run(&b, &p, 4.0f, 300.0f, 0.0f, 100.0f, 30.0f, 0.0f);
+        sim_run(&b, &p, 4.0f, 300.0f, 0.0f, SIM_CTRL_HZ, SIM_CAM_FPS, 0.0f);
         ck_near("a_x 前馈[关] 稳态误差 = -(5/7)ax/kp = -23.8mm", b.err_mm, -want_off, 2.5f);
 
         {
             ball_t b2; plant_t p2 = { 0.0f, 0.0f };
             ball_init(&b2); b2.ff_ax_en = 1; ball_set_hold(&b2, 0.0f);
-            sim_run(&b2, &p2, 4.0f, 300.0f, 0.0f, 100.0f, 30.0f, 0.0f);
+            sim_run(&b2, &p2, 4.0f, 300.0f, 0.0f, SIM_CTRL_HZ, SIM_CAM_FPS, 0.0f);
             ck_true("a_x 前馈[开] 稳态误差 < 1mm", fabsf(b2.err_mm) < 1.0f);
             printf("        (关=%.2fmm  开=%.3fmm  => 前馈值 %.1f mm)\n",
                    b.err_mm, b2.err_mm, fabsf(b.err_mm) - fabsf(b2.err_mm));
@@ -289,13 +296,13 @@ static void test_ff_cancels_in_sim(void)
         float want_off = BALL_K_MM_S2_PER_RAD * sinf(0.5f * DEG2RADf) / 9.0f; /* 6.79mm */
         ball_t b; plant_t p = { 0.0f, 0.0f };
         ball_init(&b); b.ff_pitch_en = 0; ball_set_hold(&b, 0.0f);
-        sim_run(&b, &p, 4.0f, 0.0f, 0.5f, 100.0f, 30.0f, 0.0f);
+        sim_run(&b, &p, 4.0f, 0.0f, 0.5f, SIM_CTRL_HZ, SIM_CAM_FPS, 0.0f);
         ck_near("pitch 补偿[关] 稳态误差 = K*sin(0.5deg)/kp = +6.8mm", b.err_mm, want_off, 1.0f);
 
         {
             ball_t b2; plant_t p2 = { 0.0f, 0.0f };
             ball_init(&b2); b2.ff_pitch_en = 1; ball_set_hold(&b2, 0.0f);
-            sim_run(&b2, &p2, 4.0f, 0.0f, 0.5f, 100.0f, 30.0f, 0.0f);
+            sim_run(&b2, &p2, 4.0f, 0.0f, 0.5f, SIM_CTRL_HZ, SIM_CAM_FPS, 0.0f);
             ck_true("pitch 补偿[开] 稳态误差 < 1mm", fabsf(b2.err_mm) < 1.0f);
             printf("        (关=%.2fmm  开=%.3fmm  => 补偿值 %.1f mm)\n",
                    b.err_mm, b2.err_mm, fabsf(b.err_mm) - fabsf(b2.err_mm));
@@ -307,10 +314,13 @@ static void test_ff_cancels_in_sim(void)
 static void test_observer_sparse(void)
 {
     ball_t b; plant_t p = { 0.0f, 0.0f };
-    printf("test_observer_sparse (相机 30fps, 控制 100Hz => 2/3 的拍没有测量):\n");
+    /* 这里刻意用 100Hz 而不是固件的 50Hz(CFG_BALL_MS=20ms): 控制拍越快、相机帧率不变
+     * ⇒ 无测量的拍占比越高(100Hz 下 2/3, 50Hz 下 1/3) ⇒ 对观测器**更苛刻**。
+     * 也就是说这一组是上界测试, 真机工况比它宽松。别把 100Hz 当成固件节拍。 */
+    printf("test_observer_sparse (相机 30fps, 控制 100Hz => 2/3 的拍无测量; 比固件 50Hz 更苛刻):\n");
     ball_init(&b);
     ball_set_hold(&b, 40.0f);          /* 让球动起来，考察动态跟踪而不是静态 */
-    sim_run(&b, &p, 3.0f, 0.0f, 0.0f, 100.0f, 30.0f, 0.3f);   /* ±0.3mm 锯齿噪声 */
+    sim_run(&b, &p, 3.0f, 0.0f, 0.0f, 100.0f, SIM_CAM_FPS, 0.3f);   /* ±0.3mm 锯齿噪声；100Hz 见上注 */
 
     ck_true("估计位置与真值差 < 1.5mm", fabsf(b.x_est - p.x) < 1.5f);
     ck_true("估计速度与真值差 < 20mm/s", fabsf(b.v_est - p.v) < 20.0f);
@@ -374,7 +384,7 @@ static void test_closed_loop_settles(void)
     /* 逐段跑，抓真正的超调峰值（只看末态会漏掉中途冲过头那一帧，
      * 而官方 Q37 明说"考察全程"⇒ 判分看的正是那一帧）*/
     for (i = 0; i < 20; i++) {
-        sim_run(&b, &p, 0.1f, 0.0f, 0.0f, 100.0f, 30.0f, 0.0f);
+        sim_run(&b, &p, 0.1f, 0.0f, 0.0f, SIM_CTRL_HZ, SIM_CAM_FPS, 0.0f);
         if (p.x < worst_neg) worst_neg = p.x;
     }
     overshoot = -worst_neg;
@@ -387,7 +397,7 @@ static void test_closed_loop_settles(void)
     /* 再跑 2s：必须继续收敛而不是振荡起来 */
     {
         float e_before = fabsf(b.err_mm);
-        sim_run(&b, &p, 2.0f, 0.0f, 0.0f, 100.0f, 30.0f, 0.0f);
+        sim_run(&b, &p, 2.0f, 0.0f, 0.0f, SIM_CTRL_HZ, SIM_CAM_FPS, 0.0f);
         ck_true("再跑 2s 误差没有变大 (无自激)", fabsf(b.err_mm) <= e_before + 0.5f);
     }
 }
@@ -399,7 +409,7 @@ static void test_req3_full(void)
     printf("test_req3_full (要求3: O->+5cm->折返->-5cm, <=5s, 误差<=1cm):\n");
     ball_init(&b);
     ball_start_traj(&b, 0.0f);            /* 用默认 ±50mm */
-    sim_run(&b, &p, ball_traj_duration(&b) + 0.5f, 0.0f, 0.0f, 100.0f, 30.0f, 0.3f);
+    sim_run(&b, &p, ball_traj_duration(&b) + 0.5f, 0.0f, 0.0f, SIM_CTRL_HZ, SIM_CAM_FPS, 0.3f);
 
     ck_true("轨迹已跑完 (mode 自动转 HOLD)", b.traj_phase == 4);
     ck_true("总时长 <= 5s", b.traj_total_s <= 5.0f);
@@ -419,7 +429,7 @@ static void test_peak_tracks_worst(void)
     ball_t b; plant_t p = { 25.0f, 0.0f };
     printf("test_peak_tracks_worst (判分靠回放视频, 取最坏帧不是平均):\n");
     ball_init(&b); ball_set_hold(&b, 0.0f);
-    sim_run(&b, &p, 3.0f, 0.0f, 0.0f, 100.0f, 30.0f, 0.0f);
+    sim_run(&b, &p, 3.0f, 0.0f, 0.0f, SIM_CTRL_HZ, SIM_CAM_FPS, 0.0f);
     ck_true("peak >= 初始偏差 20mm", b.peak_abs_err_mm >= 20.0f);
     ck_true("peak 明显大于末态误差 (证明记的是最坏不是当前)",
             b.peak_abs_err_mm > fabsf(b.err_mm) + 5.0f);
@@ -438,11 +448,11 @@ static void test_use_model_helps(void)
     printf("test_use_model_helps (带模型预测 vs 纯线性外推):\n");
 
     ball_init(&b1); b1.use_model = 1; ball_set_hold(&b1, 60.0f);
-    sim_run(&b1, &p1, 1.0f, 0.0f, 0.0f, 100.0f, 30.0f, 0.0f);
+    sim_run(&b1, &p1, 1.0f, 0.0f, 0.0f, SIM_CTRL_HZ, SIM_CAM_FPS, 0.0f);
     e1 = fabsf(b1.v_est - p1.v);
 
     ball_init(&b2); b2.use_model = 0; ball_set_hold(&b2, 60.0f);
-    sim_run(&b2, &p2, 1.0f, 0.0f, 0.0f, 100.0f, 30.0f, 0.0f);
+    sim_run(&b2, &p2, 1.0f, 0.0f, 0.0f, SIM_CTRL_HZ, SIM_CAM_FPS, 0.0f);
     e2 = fabsf(b2.v_est - p2.v);
 
     ck_true("带模型的速度估计误差 <= 不带模型的", e1 <= e2 + 1.0f);

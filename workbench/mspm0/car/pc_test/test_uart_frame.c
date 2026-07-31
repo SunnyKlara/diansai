@@ -16,6 +16,7 @@
 #include "uart_frame.h"
 #include "vservo.h"
 #include <stdio.h>
+#include <string.h>   /* strlen: 只在测试里用来给 $BP 用例现算校验和, uart_frame.c 本身不依赖 libc */
 
 static int g_fail = 0;
 
@@ -261,6 +262,105 @@ static void test_end_to_end(void)
     ck("掉线 -> 停车", v + w, 0);
 }
 
+/* ── `$BP` 载荷: K230 钢球识别交付包 V4 实际在发的格式 ──────────────────────
+ * 交付包在 workbench/K230钢球位置识别_比赛交付_V4/ ，协议见其 03_说明文档/03_串口协议…。
+ * 这一组断言的意义: 那份交付是**实机验证过的**(23.7~24.1FPS / 1900 帧稳定)，所以协议以它为准、
+ * 由 MCU 侧适配。适配的核心是单位换算 —— BP 给**厘米小数**，而 uf_target_t.cx 的既定语义是
+ * **x_mm×100**，差 1000 倍。这个换算写错不会报错，只会让所有增益差 1000 倍。 */
+static void test_bp_frames(void)
+{
+    uf_parser_t p; uf_target_t t;
+    printf("-- $BP 载荷(K230 V4) --\n");
+
+    /* 交付文档给的两个字面例子, 校验和照抄原文, 不自己重算 —— 若我们算的与它给的不一致,
+     * 说明对"异或从哪一位开始"的理解有分歧, 而那正是最该被这条断言逼出来的分歧。 */
+    uf_init(&p);
+    ck("有效帧被接受", feed(&p, "$BP,1,+5.23*12\r\n", 100), 1);
+    ck("ok 计数",      (long)p.n_ok, 1);
+    ck("状态=OK",      uf_status(&p, 100), UF_OK);
+    ck_true("拿到目标", uf_get(&p, 100, &t) == 1);
+    /* +5.23cm = 52.3mm ⇒ cx 必须是 5230 (0.01mm 单位)。写成 523 或 52300 都编译得过、也跑得动,
+     * 只是球位差 10/100 倍 —— 这条断言就是拦它的。 */
+    ck("+5.23cm -> cx=5230", (long)t.cx, 5230);
+    ck("cy 置 0",   (long)t.cy, 0);
+    ck("area 置 0", (long)t.area, 0);
+
+    uf_init(&p);
+    ck("无效帧也是有效帧(链路活着)", feed(&p, "$BP,0,0.00*3C\r\n", 200), 1);
+    ck("状态=NO_TARGET(不是 STALE)", uf_status(&p, 200), UF_NO_TARGET);
+    ck_true("valid=0 时 uf_get 必须拒绝返回", uf_get(&p, 200, &t) == 0);
+
+    /* 负号与三位小数 */
+    uf_init(&p);
+    (void)feed(&p, "$BP,1,-12.00*", 300);           /* 先喂到 '*' 前, 校验和下面单独算 */
+    uf_init(&p);
+    {
+        const char *body = "BP,1,-12.00";
+        char line[40]; int i = 0, k;
+        uint8_t x = uf_checksum(body, (uint16_t)strlen(body));
+        line[i++] = '$';
+        for (k = 0; body[k]; k++) line[i++] = body[k];
+        line[i++] = '*';
+        line[i++] = "0123456789ABCDEF"[(x >> 4) & 0xF];
+        line[i++] = "0123456789ABCDEF"[x & 0xF];
+        line[i++] = '\n'; line[i] = 0;
+        ck("负位置帧被接受", feed(&p, line, 300), 1);
+        ck_true("拿到目标", uf_get(&p, 300, &t) == 1);
+        ck("-12.00cm -> cx=-12000", (long)t.cx, -12000);
+    }
+
+    /* 严格性: 这些必须被拒。宽松解析会把坏帧变成"看起来合法的球位", 比丢帧危险。 */
+    {
+        struct { const char *body; const char *why; } bad[] = {
+            { "BP,1,5.2x",    "小数里混字母" },
+            { "BP,1,.5",      "没有整数位" },
+            { "BP,1,1.",      "小数点后没数字" },
+            { "BP,1,1.2345",  "小数位超过 3 位" },
+            { "BP,1,+",       "只有符号" },
+            { "BP,1,",        "空字段" },
+            { "BP,2,1.00",    "valid 只能是 0/1" },
+            { "BP,1,1.00,9",  "字段数不对(4 个)" },
+        };
+        unsigned b;
+        for (b = 0; b < sizeof(bad)/sizeof(bad[0]); b++) {
+            char line[48]; int i = 0, k;
+            uint8_t x = uf_checksum(bad[b].body, (uint16_t)strlen(bad[b].body));
+            uf_init(&p);
+            line[i++] = '$';
+            for (k = 0; bad[b].body[k]; k++) line[i++] = bad[b].body[k];
+            line[i++] = '*';
+            line[i++] = "0123456789ABCDEF"[(x >> 4) & 0xF];
+            line[i++] = "0123456789ABCDEF"[x & 0xF];
+            line[i++] = '\n'; line[i] = 0;
+            /* 校验和是对的 ⇒ 只可能因为格式被拒, 这样才验到"字段严格性"而非"校验和" */
+            ck_true(bad[b].why, feed(&p, line, 400) == 0 && p.n_bad_form == 1 && p.n_bad_csum == 0);
+        }
+    }
+
+    /* 越界降级成 NO_TARGET 而不是丢帧: 链路是好的, 只是这一帧数值荒谬。
+     * 丢帧会让上层判 STALE 去查线, 方向就跑偏了。 */
+    uf_init(&p);
+    {
+        const char *body = "BP,1,+20.00";           /* 200mm, 远超 ±150mm 合理上限 */
+        char line[40]; int i = 0, k;
+        uint8_t x = uf_checksum(body, (uint16_t)strlen(body));
+        line[i++] = '$';
+        for (k = 0; body[k]; k++) line[i++] = body[k];
+        line[i++] = '*';
+        line[i++] = "0123456789ABCDEF"[(x >> 4) & 0xF];
+        line[i++] = "0123456789ABCDEF"[x & 0xF];
+        line[i++] = '\n'; line[i] = 0;
+        ck("越界帧仍算成功解析", feed(&p, line, 500), 1);
+        ck("越界 -> NO_TARGET(不是丢帧)", uf_status(&p, 500), UF_NO_TARGET);
+        ck("越界不计 bad_form", (long)p.n_bad_form, 0);
+    }
+
+    /* 两种载荷必须能在同一条线上共存 —— vision_test.ps1 用 $V 假装相机, 真相机发 $BP。 */
+    uf_init(&p);
+    ck("同一解析器上 $V 与 $BP 混发", feed(&p, "$V,1,-1234,517,842*43\n$BP,1,+5.23*12\r\n", 600), 2);
+    ck_true("最后一帧是 BP 的值", uf_get(&p, 600, &t) == 1 && t.cx == 5230);
+}
+
 int main(void)
 {
     printf("==== test_uart_frame (视觉链: 帧解析 + 伺服控制律) ====\n");
@@ -269,6 +369,7 @@ int main(void)
     test_no_target_vs_stale();
     test_bad_frames();
     test_resync();
+    test_bp_frames();
     test_vservo();
     test_end_to_end();
     printf("\n==== %s ====\n", g_fail == 0 ? "ALL PASS" : "HAS FAILURES");

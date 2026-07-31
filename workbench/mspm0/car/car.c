@@ -34,6 +34,7 @@
 #include "task.h"       /* 第2项任务层: 按键/计时/到达判定/安全停 (纯算法层, PC 单测 47/47) */
 #include "beep.h"       /* 蜂鸣器非阻塞状态机 (纯算法层, PC 单测 24/24) */
 #include "disp_run.h"   /* LCD RUN 页纯排版: 出6行文本+变化位掩码 (纯算法层, PC 单测 31/31) */
+#include "ball.h"       /* H题第3/4/5/6项: 车载滚球平衡 (纯算法层, PC 单测 14 组全过) // 真机零验证 */
 #include <math.h>       /* 水平仪页用 sqrtf/fabsf/atan2f (软浮点, 仅 IDLE 下的显示页调用) */
 
 /* ★所有可调参数(时基/周期/PWM上限/ENC_CPR/PID增益/死区/容差/调试开关)已集中到 config.h。
@@ -55,9 +56,10 @@ static void line_sweep_query(void);
 enum { MODE_IDLE = 0, MODE_CURRENT, MODE_SPEED, MODE_POSITION, MODE_OPEN, MODE_DUAL,
        MODE_DRIVE, MODE_DRIVE_CL, MODE_NAV_S, MODE_NAV_T, MODE_VSERVO,
        MODE_LINE,                 /* m11: H题第2项 —— 按键启动 + 循迹跑一圈 + 检到启停线停车 */
+       MODE_BALL,                 /* m12: H题第3项 —— 车静止, 摆杆把球稳在目标位/跑往返轨迹 */
        MODE_N };
 static const char *mode_name[MODE_N] = { "IDLE", "CURR", "SPD", "POS", "OPEN", "DUAL", "DRV", "DRVC",
-                                        "NAVS", "NAVT", "VSRV", "LINE" };
+                                        "NAVS", "NAVT", "VSRV", "LINE", "BALL" };
 
 /* ==== 运行时(串口可改) ==== */
 static volatile int g_mode   = MODE_IDLE;
@@ -108,7 +110,7 @@ static int      g_cross_max = 0;    /* 本趟见过的最大在线通道数 */
 static uint32_t g_cross_cnt = 0;
 static float    g_w_lp      = 0.0f; /* |w| 低通 —— 分段速度的曲率代理(为什么不用 |err| 见 config.h) */
 static int      g_vseg_now  = 0;    /* 本拍分段速度给出的巡航 RPM(遥测/排障) */
-/* 分段速度三个旋钮的**运行时副本**(开机取 config.h 默认, 命令 A/B/L 在线改)。
+/* 分段速度三个旋钮的**运行时副本**(开机取 config.h 默认, 命令 A/H/D 在线改)。
  * 理由同 g_line.kp/kd: 整定要"跑一趟→看数→改一个值→再跑一趟"迭代好几轮,
  * 每轮重烧 140s 不但慢, 还直撞 SSOT §D2 禁忌 2(连续快烧把本芯片怼进 lockup 过一次)。
  * ⚠ 只活在 RAM, 断电即失 ⇒ **整定出来的值必须回填 config.h 并 commit**("达标即锁死")。 */
@@ -119,6 +121,10 @@ static int      g_vs_slow   = CFG_LINE_VSEG_V_SLOW;
  * 但实际能盖到几路取决于探头离地高度与胶带宽度 —— 而这两样只能在真板上量。
  * 若只能改 config.h, 台架上一发现"on_max 只到 3"就得重烧 142s 再试, 一轮试错半小时。 */
 static int      g_cross_min = CFG_LINE_CROSS_MIN_ON;
+/* 模块装车朝向: 1 = X1 在车左(pos[0] 取正) / 0 = X1 在车右。命令 `R<0|1>` 在线翻。
+ * 为什么必须能在线翻: 搞反了车会**朝反方向跑飞**(越偏越往外打舵), 而判据只要"压 x1 看 err 符号"
+ * 30 秒就能验完 —— 若只能改 config.h, 一次验错要赔 142s 重烧, 且极可能是在车已经跑飞之后。 */
+static int      g_x1_left   = CFG_LINE_X1_ON_LEFT;
 static int      g_line_st   = 0;    /* 最近一次 line_state_t */
 static uint32_t g_task_run0 = 0;    /* 起跑那一拍的 SysTick(打成绩单用) */
 static int      g_task_v    = 0;    /* 任务层要的速度档(0STOP/1CRUISE/2SLOW) */
@@ -134,8 +140,36 @@ static float    g_ball_mm   = DISP_RUN_NO_BALL;  /* 球位 mm; 第4/5/6项接上
  * ★ 帧从**现有两个串口**进来(见 poll_uart 里的 '$' 分流) ⇒ 不用第三路 UART、不用相机就能测:
  *   PC 直接发 `$V,1,200,240,900*HH` 就能让车按"看到目标"去动。相机到手后接哪个口都行。 */
 static uf_parser_t g_uf;
+
+/* 🔴 注入通道**专用**解析器 —— 与相机的 g_uf 严格分开。
+ *
+ * 为什么必须分开(2026-07-31 真机 bug, 我自己接相机时引入的):
+ *   `vision_grab()` 的判据是 `ch == '$' || g_uf.in_frame`。当相机与调试口**共用** g_uf 时,
+ *   相机每 40ms 灌一帧 17 字节, 那 1.5ms 里 `in_frame` 恒为 1 —— 此刻调试口来的**任何**字符都会被
+ *   当成相机帧的一部分吞掉、不进命令通道。
+ *   概率算得出来且与实测吻合: 1.5/40 = 3.75%/字符, 命令按 25ms/字符发 ⇒ 6 字符命令至少丢一个 ≈ 20%。
+ *     · 丢首字母 ⇒ 整条被格式门拒掉 ⇒ 实测现象 `U1226: board reports us=1086`(脉宽没变)
+ *     · **丢中间数字 ⇒ `U1226` 变 `U126`, 会被接受并给出一个错的脉宽 —— 静默且危险**
+ *   代价已实证: 它让一次 Sweep 整体报废(丢命令的那点从未通电 ⇒ 中位估计被拉到 ≈0us ⇒ 赶球一直朝
+ *   一边推 ⇒ 球顶端点 ⇒ 后续全部 guard hit)。**一条丢失的命令报废整次运行。**
+ *   以前没暴露, 只因为这条路径上从来没有真相机在灌帧。
+ *
+ * 分开之后: 相机字节 → g_uf(唯一入口是 SysTick 抽出来的环形缓冲); 调试/ESP 的 `$` 行 → g_uf_inj。
+ * 两者的 in_frame 互不可见 ⇒ 相机再怎么灌也吞不掉命令字符。
+ * 解析成功的注入帧**并入 g_uf.last**, 于是下游(uf_get / BALL: 遥测 / LCD / m10 / m12)完全不必知道
+ * 帧是从哪来的 —— "PC 假装相机"这个能力(bring-up 检查 3/4)一个字都不用改。 */
+static uf_parser_t g_uf_inj;
 static vs_cfg_t    g_vs;
 static uint32_t    g_vs_lost_ms = 0;   /* 连续拿不到新鲜目标多久了(ms) */
+/* ==== H题滚球平衡(m12) ====
+ * g_ball 的参数由 ball_apply_cfg() 从 config.h §7.12 灌进去 —— ball.c 刻意不 include config.h
+ * (保持纯算法层 / PC 单测零依赖), 所以"配置的落点"在这里而不是 ball.c 里。
+ * g_ball_stamp: uf_get() 在同一帧内反复调用都会返 1(数据没变), 而观测器必须区分"这一拍有没有
+ *   **新**测量" —— 靠帧的 stamp_ms 变没变来判。这是"相机 30fps + 控制回路更快"的必然要求。 */
+static ball_t      g_ball;
+static uint32_t    g_ball_stamp = 0;
+static int         g_ball_stamp_init = 0;
+static float       g_ball_v_prev = 0.0f; /* 上一拍车级线速度 mm/s, 用于把速度指令微分成 a_x */
 /* ==== IMU / 航向状态（详见文件后半 "姿态/航向" 段的职责分工说明） ==== */
 static attitude_t g_att;                 /* 姿态状态(yaw/pitch/roll + 陀螺零偏) */
 static int   g_imu_ok   = 0;             /* imu_init 是否读到 0x47 */
@@ -198,6 +232,7 @@ static void stop_all(void)
     g_mode = MODE_IDLE; g_target = 0;
     g_dv = 0; g_dw = 0; g_m1duty = 0; g_m2duty = 0;
     nav_abort(&g_nav);      /* 导航任务也必须忘掉 —— 否则 `z` 之后再进 m8 会接着走剩下的距离 */
+    ball_abort(&g_ball);    /* z/timeout must also discard ball-mode integral and trajectory history. */
 #if CFG_LINE_UART_EN
     /* m11 任务也必须一起收尾(同一条急停路径, 不复制第二份逻辑 —— 见上面那条 2026-07-27 的坑)。
      * ⚠ 只在 RUN/BRAKE 时才 abort: task_abort 对 DONE 态的语义是"复位回 IDLE",
@@ -230,6 +265,9 @@ static uint32_t run_limit_ms(int mode)
         /* m11: 按键一按就没人再发命令了(说明 4 禁止人为干涉) ⇒ 这道闸门要宽到装得下一整圈。
          * ⚠ 真正的墙是 CFG_RUN_MS_HARDCAP, 见 config.h §7.11 那条警告。 */
         case MODE_LINE:     return CFG_RUN_MS_LINE;
+        /* m12: 摆杆整定时人在看球、不一定持续发命令; 给 20s。车在本模式不动 ⇒ 超时风险只是
+         * "摆杆继续动着没人管", 比循迹跑飞轻得多。硬上限仍是全局 15s(见下), 刻意不放大。 */
+        case MODE_BALL:     return CFG_RUN_MS_BALL;
         default:            return 0;
     }
 }
@@ -297,6 +335,19 @@ static int nav_gain_cmd(char c, int v)
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
 #if CFG_LINE_UART_EN
+/* 按装车朝向铺 pos[]（左为正，中线为 0；8 路 ±42/±30/±18/±6 @12mm 间距）。
+ * ⚠ **只写 pos[]，绝不重调 `line_init`** —— line_init 会把 `have_w/have_b` 清零并把增益
+ *   重置成 config 默认值 ⇒ 在线翻朝向会顺手抹掉"开机自动置好的标定"(cal 变 NO ⇒ `line_step`
+ *   恒返回 NOCAL 拒绝转向) 和这一轮整定出来的 kp/kd/w_max。这个副作用不会报错, 只会表现为
+ *   "翻了个方向循迹就不动了", 极难归因。 */
+static void line_pos_apply(void)
+{
+    int i;
+    float s = g_x1_left ? +1.0f : -1.0f;
+    for (i = 0; i < LF_CH; i++)
+        g_line.pos[i] = s * (((float)(LF_CH - 1) / 2.0f) - (float)i) * (float)CFG_LINE_PITCH_MM;
+}
+
 /* 分段速度三个值的回显。W_LO/W_HI 打 ×10 的整数(uart_dbg 没有浮点格式化, 全仓统一这么打)。 */
 static void print_vseg(void)
 {
@@ -305,25 +356,40 @@ static void print_vseg(void)
     uart_dbg_puts(" hi(x10)=");    uart_dbg_put_int((int)(g_vs_hi * 10.0f));
     uart_dbg_puts(" slow(RPM)=");  uart_dbg_put_int(g_vs_slow);
     uart_dbg_puts(" xmin=");       uart_dbg_put_int(g_cross_min);   /* 启停线门限(命令 N) */
+    /* 朝向连 pos[0] 一起打: 光看 x1left= 还要脑内换算符号, 直接把生效的 pos[0] 摊出来最省事。
+     * 判据 —— 压住 x1 那一路时 `err` 的符号必须与 pos0 同号。 */
+    uart_dbg_puts(" x1left=");     uart_dbg_put_int(g_x1_left);
+    uart_dbg_puts(" pos0=");       uart_dbg_put_int((int)g_line.pos[0]);
     uart_dbg_puts("\n");
 }
 
-/* 循迹的在线旋钮(**大写 A/B/L/N**, 小写全被占了 —— a=定竖直轴 b=AT桥接 l=遥测去向 n=走直)。
+/* 循迹的在线旋钮(**大写 A/H/D/N/R**, 小写全被占了 —— a=定竖直轴 h=静默超时 d=Kd n=走直 r=角速度)。
  *   A<x10>  |w_lp| 的"直线阈" W_LO ×10   (A120 => 12.0)
- *   B<x10>  |w_lp| 的"弯道阈" W_HI ×10   (B400 => 40.0)
- *   L<rpm>  弯道速度 V_SLOW              (L55)
+ *   H<x10>  |w_lp| 的"弯道阈" W_HI ×10   (H400 => 40.0)   H = HI
+ *   D<rpm>  弯道速度 V_SLOW              (D55)             D = Down-speed
  *   N<n>    启停线门限 = 至少几路在线     (N3 / N4)
- * 四条都 **参数 0 = 回 config.h 默认**(同 t0/c0 的既有约定, 少记一套规则)。
- * 把 L 设成等于当前巡航速度就等价于关掉分段(下游有 v_curve=min(V_SLOW,v_fast) 的 clamp)
- * ⇒ 不必再给 EN 开关一条在线命令。 */
+ *   R<0|1>  模块装车朝向(X1 在左=1)
+ * 前四条 **参数 0 = 回 config.h 默认**(同 t0/c0 的既有约定, 少记一套规则); R 是例外, 见其分支。
+ * 把 D 设成等于当前巡航速度就等价于关掉分段(下游有 v_curve=min(V_SLOW,v_fast) 的 clamp)
+ * ⇒ 不必再给 EN 开关一条在线命令。
+ * ⚠ **选字母前必须先查占用, 不能凭"小写被占了就用大写"**: 本函数最初取了 `B`/`L`, 而
+ *   `B`=`linesens_set_baud`、`L`=`linesens_dump`(打 8 路位型, 循迹最常用的调试命令) 早就占着,
+ *   而本拦截又放在 switch **之前** ⇒ 那两条命令会被静默吃掉、连报错都没有。
+ *   查法: `Select-String -Path car.c -Pattern "case '(.)'" -AllMatches -CaseSensitive`
+ *   ——⚠ 必须带 `-CaseSensitive`, 否则 PowerShell 的 Sort -Unique 会把 `E/e`、`C/c` 合并、
+ *   给出一张"看起来全被占了"的假表(我第一次就是这么被误导的)。
+ *   2026-07-31 占用实况: 大写已用 `B C E F G K L M Q S T U V W X Y`, 空闲 `A D H I J N O P R Z`。 */
 static int vseg_cmd(char c, int v)
 {
     if      (c == 'A') { g_vs_lo   = (v > 0) ? (float)v / 10.0f : CFG_LINE_VSEG_W_LO; }
-    else if (c == 'B') { g_vs_hi   = (v > 0) ? (float)v / 10.0f : CFG_LINE_VSEG_W_HI; }
-    else if (c == 'L') { g_vs_slow = (v > 0) ? v                : CFG_LINE_VSEG_V_SLOW; }
+    else if (c == 'H') { g_vs_hi   = (v > 0) ? (float)v / 10.0f : CFG_LINE_VSEG_W_HI; }
+    else if (c == 'D') { g_vs_slow = (v > 0) ? v                : CFG_LINE_VSEG_V_SLOW; }
     /* 夹到 1..8: 0 会让判据恒成立(每拍都"压在启停线上"), >8 则永不成立 —— 两头都是静默失效,
      * 现场很难看出来, 所以在入口就夹死而不是信任手输。 */
     else if (c == 'N') { g_cross_min = (v > 0) ? clampi(v, 1, 8) : CFG_LINE_CROSS_MIN_ON; }
+    /* R<0|1>: 装车朝向。⚠ 这一条**不能沿用"0=回默认"的约定** —— 0 在这里是一个合法值
+     * (X1 在右), 若把它当"回默认"就永远发不出"X1 在右"这个指令。故 R 直接取 0/1 字面值。 */
+    else if (c == 'R') { g_x1_left = (v != 0) ? 1 : 0; line_pos_apply(); }
     else return 0;
     /* HI 必须严格大于 LO, 否则下游插值分母为 0 / 负 ⇒ 直接除爆或算出反向速度。
      * 在**入口就夹死**而不是在控制回路里判: 回路每拍都跑, 把校验放那儿等于每拍付一次代价,
@@ -428,6 +494,77 @@ static void print_magnet(void)
  *   bad_csum>0         -> 线路噪声 / 发端校验算错
  *   bad_form>0         -> 发端格式写错(字段数/非数字/标识不对)
  *   ok>0 但 status=STALE -> 曾经通过, 现在掉线了 */
+/* ==== VIS_UART(PB16) 物理层计数器 ====
+ * 为什么需要它: uf_* 那套统计只在**字节已经进到解析器**之后才动, 所以 "ok=0 且全 0" 这一种读数
+ * 同时对应三个完全不同的世界 —— 线没接上 / 接上了但电平·波特率错(收到的是垃圾) / 字节进来了但
+ * 被 vision_grab 当非帧字节丢掉。真机上这三者的修法毫不相干(动线 / 换波特率 / 改代码), 而
+ * 2026-07-31 那次 bring-up 恰好卡在这个岔口: MCU 侧注入全 PASS, 真相机零帧, 无从判断该动哪边。
+ * 加两个物理层计数器就能一次分开:
+ *   bytes=0 err=0  -> RX 脚上**一个边沿都没有**: K230 没跑 / TX 接到 PB15 了 / 没共地
+ *   bytes=0 err>0  -> 有信号但**帧结构对不上**: 波特率不符 / 电平不对 / 接的是别的信号
+ *   bytes>0        -> 物理层通了, 问题在协议层(看 bad_csum / bad_form / overflow)
+ * tail 存最近 8 个原始字节: 波特率错时它是稳定的乱码, 一眼可辨(而 "$BP,1,+" 就说明全好)。
+ * ⚠ 它只统计 **VIS_UART** ⇒ 从调试口注入的 $BP 不会让 bytes 涨, 这正是要的隔离性。
+ * 只在 poll_uart 里写、只在 print_vision 里读, 单线程, 不需要临界区。 */
+typedef struct {
+    uint32_t bytes;      /* 该脚上成功收到的原始字节总数 */
+    uint32_t err;        /* 出现 framing/parity/break/overrun 的次数 */
+    uint32_t err_last;   /* 最近一次的错误位(原始 mask, 供细分) */
+    uint8_t  tail[8];    /* 最近 8 个原始字节(环形) */
+    uint8_t  tail_n;     /* 写指针; 缓冲满时它正好指向最旧那个 */
+} vis_rx_stat_t;
+
+/* 两路都监听, 两路都计数 —— 这不是冗余, 是为了不必猜线插在哪。
+ *
+ * 载板 §10.1 把相机分给 `PB4/PB5`(UART1, J2-4L/J2-5L), 而固件这边改到了 `PB15/PB16`(UART2,
+ * J2-6R/J2-7R)。照板子文档接线的人一定接在 PB5 上, 而 PB16 上就永远 bytes=0 —— 2026-07-31 真机
+ * 就卡在这个不一致上, 且从 MCU 侧完全看不出"线在隔壁那根脚"。
+ * 恰好 UART1 是**配好了但全工程没有任何代码读它**的空外设(循迹早已全面改成 GPIO 直读 X1..X8,
+ * `git grep LINE_UART_INST` 零命中) ⇒ 白拿一路接收, 没有任何冲突。
+ * 于是两路都喂 vision_grab: 线插在哪根都能通, 且 `V` 会直接报出相机在哪根脚上。
+ * ⚠ 若循迹模块**同时**插在 PB5 上, 它的字节也会进 vision_grab —— 无害: 非 '$' 开头一律丢弃。 */
+static vis_rx_stat_t g_vis;         /* PB16 = UART2 = 固件设计位 */
+static vis_rx_stat_t g_vis1;        /* PB5  = UART1 = 载板文档位(空闲外设, 白拿) */
+
+/* 相机字节的环形缓冲: 生产者 = 5kHz SysTick(vis_drain_isr), 消费者 = 主循环(poll_uart)。
+ * 为什么必须有它、为什么抽取放在 SysTick 而不是开 UART RX 中断 —— 完整的账在 vis_drain_isr
+ * 上方那段(一帧 17 字节背靠背 1.5ms vs FIFO 只有 4 深, 以及 syscfg 里那条"RX 中断故意不开")。 */
+#define VIS_RING_SZ 256u        /* 必须是 2 的幂; 420B/s 下够 ~600ms 主循环卡顿的余量 */
+static volatile uint8_t  g_vring[VIS_RING_SZ];
+static volatile uint16_t g_vr_head;    /* 只由 SysTick 写 */
+static volatile uint16_t g_vr_tail;    /* 只由主循环写 */
+static volatile uint32_t g_vr_drop;    /* 环满而丢弃的字节数; 正常应恒为 0 */
+
+/* 打一路接收脚的物理层状态。tail 的 HEX+ASCII 双视图是关键: 波特率错时它是稳定的乱码, 一眼可辨,
+ * 而 "$BP,1,+" 这种可读内容直接说明物理层与波特率都对、只剩协议层可查。 */
+static void print_vis_pin(const char *tag, const vis_rx_stat_t *s)
+{
+    uart_dbg_puts("\n[vs] ");            uart_dbg_puts(tag);
+    uart_dbg_puts(": bytes=");           uart_dbg_put_int((int)s->bytes);
+    uart_dbg_puts(" err=");              uart_dbg_put_int((int)s->err);
+    if (s->err) { uart_dbg_puts("(mask="); uart_dbg_put_int((int)s->err_last); uart_dbg_puts(")"); }
+    if (s->bytes) {
+        static const char hexd[] = "0123456789ABCDEF";
+        /* 最近 8 字节, 按时间先后。够 8 个就从写指针处绕一圈, 不够就从 0 开始。 */
+        uint32_t n = (s->bytes < 8u) ? s->bytes : 8u;
+        uint32_t b0 = (s->bytes < 8u) ? 0u : s->tail_n;
+        uart_dbg_puts(" tail=");
+        for (uint32_t k = 0; k < n; k++) {
+            uint8_t b = s->tail[(b0 + k) & 7u];
+            uart_dbg_putc(hexd[(b >> 4) & 0xF]);
+            uart_dbg_putc(hexd[b & 0xF]);
+            uart_dbg_putc(' ');
+        }
+        uart_dbg_puts("| ascii='");
+        for (uint32_t k = 0; k < n; k++) {
+            uint8_t b = s->tail[(b0 + k) & 7u];
+            uart_dbg_putc((b >= 0x20 && b < 0x7F) ? (char)b : '.');
+        }
+        uart_dbg_puts("'  <== 相机在这根脚上");
+    }
+    uart_dbg_puts("\n");
+}
+
 static void print_vision(void)
 {
     uint32_t ms = g_st / ST_PER_MS;
@@ -435,15 +572,35 @@ static void print_vision(void)
     uart_dbg_puts("[vs] status=");
     uart_dbg_puts(st == UF_OK ? "OK" : (st == UF_NO_DATA ? "NO_DATA" :
                  (st == UF_STALE ? "STALE" : "NO_TARGET")));
-    uart_dbg_puts(" ok=");        uart_dbg_put_int((int)g_uf.n_ok);
-    uart_dbg_puts(" bad_csum=");  uart_dbg_put_int((int)g_uf.n_bad_csum);
-    uart_dbg_puts(" bad_form=");  uart_dbg_put_int((int)g_uf.n_bad_form);
-    uart_dbg_puts(" overflow=");  uart_dbg_put_int((int)g_uf.n_overflow);
+    /* 计数 = 相机实例 + 注入实例之和。求和(而不是各打一行)是为了**保持输出格式不变** ——
+     * ball_bringup / vis_watch 的正则都按单组数字写的, 而两路的统计合起来才是"视觉链健康度"。
+     * 之所以能直接相加不重复: 注入帧解析成功时只搬 last/have_frame, 不碰 g_uf 的计数器。 */
+    uart_dbg_puts(" ok=");        uart_dbg_put_int((int)(g_uf.n_ok        + g_uf_inj.n_ok));
+    uart_dbg_puts(" bad_csum=");  uart_dbg_put_int((int)(g_uf.n_bad_csum  + g_uf_inj.n_bad_csum));
+    uart_dbg_puts(" bad_form=");  uart_dbg_put_int((int)(g_uf.n_bad_form  + g_uf_inj.n_bad_form));
+    uart_dbg_puts(" overflow=");  uart_dbg_put_int((int)(g_uf.n_overflow  + g_uf_inj.n_overflow));
     uart_dbg_puts(" | last id="); uart_dbg_put_int((int)g_uf.last.id);
     uart_dbg_puts(" cx=");        uart_dbg_put_int((int)g_uf.last.cx);
     uart_dbg_puts(" area=");      uart_dbg_put_int((int)g_uf.last.area);
     uart_dbg_puts(" age_ms=");    uart_dbg_put_int((int)(g_uf.have_frame ? (ms - g_uf.last.stamp_ms) : 0));
-    uart_dbg_puts("\n[vs] 自测(不用相机): 往本口发一行 $V,1,200,240,900*<异或校验> 然后 m10\n");
+
+    /* ---- 物理层那两行: 上面全是 0 时, 只有它们能告诉你该动线还是动代码 ---- */
+    print_vis_pin("pb16(UART2,J2-7R)", &g_vis);
+    print_vis_pin("pb5 (UART1,J2-5L)", &g_vis1);
+    /* ring_drop>0 = 主循环有 >600ms 的卡顿(SysTick 抽到了但没人取走) ⇒ 是**主循环**的问题,
+     * 与接线和波特率无关。不打出来的话它会表现成"偶发丢帧"而查不到源头。 */
+    uart_dbg_puts("[vs] ring_drop=");   uart_dbg_put_int((int)g_vr_drop);
+    uart_dbg_puts(" (>0 = 主循环卡顿吃不下, 不是接线问题)\n");
+    /* 判读直接写在输出里 —— 排障时人不该再去翻文档对表。 */
+    if (g_vis.bytes == 0 && g_vis1.bytes == 0 && g_vis.err == 0 && g_vis1.err == 0)
+        uart_dbg_puts("[vs] => 两根脚都一个边沿都没有: ①相机脚本没在跑(K230 停在 REPL 就是这样, 屏上看不出来)"
+                      " ②线接到了别的脚 ③没共地。**先别怀疑固件**, 注入测试已证解析链是好的。\n");
+    else if (g_vis.bytes == 0 && g_vis1.bytes == 0)
+        uart_dbg_puts("[vs] => 有信号但帧结构对不上(只有错误没有字节): 波特率不符 / 电平不对 / 接的不是串口。\n");
+    else if (g_uf.n_ok == 0)
+        uart_dbg_puts("[vs] => 物理层已通(字节在进来), 问题在协议层: 看 tail 的 ascii 是不是 $BP,... "
+                      "是乱码则波特率错; 是好字符则看 bad_csum/bad_form/overflow。\n");
+    uart_dbg_puts("[vs] 自测(不用相机): 往本口发一行 $V,1,200,240,900*<异或校验> 然后 m10\n");
 }
 
 /* 舵机状态（命令 S / U / C 之后自动打）。
@@ -463,6 +620,195 @@ static void print_servo(void)
     uart_dbg_puts(" sign=");         uart_dbg_put_int(c->sign);
     uart_dbg_puts(" ccinv=");        uart_dbg_put_int(servo_cc_invert());
     uart_dbg_puts(CFG_SERVO_CALIBRATED ? " cal=YES\n" : " cal=NO(deg 不可信, 见 config.h §7.9)\n");
+}
+
+/* ==== H题滚球平衡(m12) 的三个小helper ==== */
+
+/* 把 config.h §7.12 的值灌进 g_ball。**这里是配置的唯一落点** —— ball.c 不 include config.h。
+ * ⚠ 顺序: 必须先 ball_init()(它铺默认值 + 清运行态), 再逐个覆盖。 */
+static void ball_apply_cfg(void)
+{
+    ball_init(&g_ball);
+    g_ball.kp            = CFG_BALL_KP;
+    g_ball.kd            = CFG_BALL_KD;
+    g_ball.ki            = CFG_BALL_KI;
+    g_ball.i_band_mm     = CFG_BALL_I_BAND_MM;
+    g_ball.i_limit_deg   = CFG_BALL_I_LIMIT_DEG;
+    g_ball.theta_max_deg = CFG_BALL_THETA_MAX;
+    g_ball.x_soft_mm     = CFG_BALL_X_SOFT_MM;
+    g_ball.x_hard_mm     = CFG_BALL_X_HARD_MM;
+    g_ball.alpha         = CFG_BALL_ALPHA;
+    g_ball.beta          = CFG_BALL_BETA;
+    g_ball.use_model     = CFG_BALL_USE_MODEL;
+    g_ball.max_age_s     = (float)CFG_BALL_MAX_AGE_MS / 1000.0f;
+    g_ball.ff_ax_en      = CFG_BALL_FF_AX;
+    g_ball.ff_pitch_en   = CFG_BALL_FF_PITCH;
+    g_ball.traj_amp_mm   = CFG_BALL_TRAJ_AMP_MM;
+    g_ball.traj_t_out    = CFG_BALL_TRAJ_T_OUT;
+    g_ball.traj_t_dwell  = CFG_BALL_TRAJ_T_DWELL;
+    g_ball.traj_t_back   = CFG_BALL_TRAJ_T_BACK;
+    g_ball.traj_t_settle = CFG_BALL_TRAJ_T_SETTLE;
+    g_ball_stamp = 0; g_ball_stamp_init = 0; g_ball_v_prev = 0.0f;
+}
+
+/* ball 给的是"摆杆对车"的倾角(度); 这里叠上装配标定后交给舵机层。
+ * ⚠ 两级限幅: ball 内部已按 CFG_BALL_THETA_MAX 夹过, servo 层还会按它自己的 max_deg 再夹一次。
+ * ⚠ 中位与符号都还是 ⬜ 待实测 ⇒ 摆杆装好后先按 config.h §7.12 那两个实验(S1/S2)定死再整定。 */
+static void ball_drive_servo(float th_deg)
+{
+    servo_set_deg(CFG_BALL_SERVO_MID_DEG + (float)CFG_BALL_SERVO_SIGN * th_deg);
+}
+
+/* 滚球状态回读(命令 `?` 与 `R` 之后自动打)。整数化输出, 无 printf。
+ * ⭐ 四个分量(pd/traj/ax/pitch)单独打出来的理由: 它们是"我们真的在补偿"的**可视化证据**
+ *   (对应校赛B 把扰动估计 f_hat 画出来那招, 答辩加分点), 也是整定时判"哪一项在起作用"的唯一手段。
+ * ⚠ peak 才是判分量 —— 官方 Q37「考察全程」⇒ 判分取最坏帧, 别看末态 err。 */
+static void print_ball(void)
+{
+    static const char *st[] = { "IDLE", "HOLD", "TRAJ", "DONE", "BLOCKED" };
+    uart_dbg_puts("[ball] st=");    uart_dbg_puts(st[(int)g_ball.state]);
+    uart_dbg_puts(" fail=");        uart_dbg_puts(ball_fail_str(g_ball.fail));
+    uart_dbg_puts(" warn=");        uart_dbg_puts(ball_fail_str(g_ball.warn));
+    uart_dbg_puts(" | x*10=");      uart_dbg_put_int((int)(g_ball.x_est * 10.0f));
+    uart_dbg_puts(" ref*10=");      uart_dbg_put_int((int)(g_ball.x_ref_mm * 10.0f));
+    uart_dbg_puts(" v=");           uart_dbg_put_int((int)g_ball.v_est);
+    uart_dbg_puts(" | err*10=");    uart_dbg_put_int((int)(g_ball.err_mm * 10.0f));
+    uart_dbg_puts(" PEAK*10=");     uart_dbg_put_int((int)(g_ball.peak_abs_err_mm * 10.0f));
+    uart_dbg_puts("\n[ball] th*10="); uart_dbg_put_int((int)(g_ball.theta_cmd_deg * 10.0f));
+    uart_dbg_puts(" (pd=");         uart_dbg_put_int((int)(g_ball.th_pd_deg * 10.0f));
+    uart_dbg_puts(" i=");           uart_dbg_put_int((int)(g_ball.th_i_deg * 10.0f));
+    uart_dbg_puts(" traj=");        uart_dbg_put_int((int)(g_ball.th_traj_deg * 10.0f));
+    uart_dbg_puts(" fric=");        uart_dbg_put_int((int)(g_ball.th_fric_deg * 10.0f));
+    uart_dbg_puts(" ax=");          uart_dbg_put_int((int)(g_ball.th_ax_deg * 10.0f));
+    uart_dbg_puts(" pit=");         uart_dbg_put_int((int)(g_ball.th_pitch_deg * 10.0f));
+    uart_dbg_puts(") sat=");        uart_dbg_put_int(g_ball.sat);
+    uart_dbg_puts(" nomeas=");      uart_dbg_put_int((int)g_ball.no_meas_ticks);
+    uart_dbg_puts(" | kp*1000=");   uart_dbg_put_int((int)(g_ball.kp * 1000.0f));
+    uart_dbg_puts(" kd*1000=");     uart_dbg_put_int((int)(g_ball.kd * 1000.0f));
+    uart_dbg_puts(" ki*1000=");     uart_dbg_put_int((int)(g_ball.ki * 1000.0f));
+    uart_dbg_puts(" iband*10=");    uart_dbg_put_int((int)(g_ball.i_band_mm * 10.0f));
+    uart_dbg_puts(" ilim*100=");    uart_dbg_put_int((int)(g_ball.i_limit_deg * 100.0f));
+    uart_dbg_puts(" ia=");          uart_dbg_put_int(g_ball.i_active);
+    uart_dbg_puts(" aw=");          uart_dbg_put_int(g_ball.i_aw_hold);
+    uart_dbg_puts(" ff=");          uart_dbg_put_int(g_ball.ff_ax_en | (g_ball.ff_pitch_en << 1));
+    /* 这两个也必须能回读: 它们是**在线可改**的(M/F), 而改完不回读就等于不知道现在在跑什么。 */
+    uart_dbg_puts(" thmax*10=");    uart_dbg_put_int((int)(g_ball.theta_max_deg * 10.0f));
+    uart_dbg_puts(" a*100=");       uart_dbg_put_int((int)(g_ball.alpha * 100.0f));
+    uart_dbg_puts(" b*100=");       uart_dbg_put_int((int)(g_ball.beta * 100.0f));
+    if (g_ball.traj_phase > 0) {    /* 轨迹跑过才打这一行, 否则全是"未测到"的 -1 反而干扰判读 */
+        uart_dbg_puts("\n[ball] traj ph=");   uart_dbg_put_int(g_ball.traj_phase);
+        uart_dbg_puts(" t*10=");              uart_dbg_put_int((int)(g_ball.traj_total_s * 10.0f));
+        uart_dbg_puts(" wpOUT*10=");          uart_dbg_put_int((int)(g_ball.err_wp_out_mm * 10.0f));
+        uart_dbg_puts(" wpBACK*10=");         uart_dbg_put_int((int)(g_ball.err_wp_back_mm * 10.0f));
+        uart_dbg_puts("  (门限 100=10mm; 自设目标 50=5mm)");
+    }
+    uart_dbg_puts("\n");
+}
+
+/*
+ * 滚球层的命令。返回 1 = 已消费(调用方直接 return)。
+ * 设计取舍: **只新增一个字母 `R`** —— 52 个字母里小写已全被占, 大写只剩 13 个。所以沿用
+ *   m11 已经建立的"p/i/d/t 按模式路由"约定(SSOT §D 记着"i 被刻意复用"这个先例):
+ *     m12 下  t<mm>     = 目标位置(带符号, 语义与"目标"一致)
+ *             p<×1000>  = kp        d<×1000> = kd
+ *             i<0..3>   = 前馈掩码(bit0=a_x, bit1=pitch)  —— 滚球是纯 PD 无 I, 这个位置空着
+ *             M<deg>    = 倾角限幅(安全权限)     F<×100>  = 观测器 alpha(beta 自动同步)
+ *     任意模式 P1 = 起动要求3 往返轨迹(会自动进 m12) | P0 = 中止回 HOLD
+ *       🔁 2026-07-31 由 `R` 改为 `P`：`R` 被 vseg_cmd 拦在前面无条件吃掉(且会翻循迹朝向), 详见下方
+ * 为什么 theta_max 与 alpha 也必须是在线的(而不是只放 config.h): 它们是整定滚球时改得最频繁的
+ *   两个量 —— theta_max 决定"敢给多大权限"(从小往大放是唯一安全的顺序), alpha 决定 24Hz 反馈下
+ *   微分噪声压不压得住。留在 config.h 就意味着每试一个值烧一次板, 直接撞禁忌 2(连续快烧已把这块
+ *   MCU 怼进 lockup 过一次)。M/F 用大写是刻意的: 整定脚本发错一个字母不该变成"设了个电机目标"。
+ * ⚠ 全部只活在 RAM ⇒ 整定出达标值必须回填 config.h §7.12 并 commit("达标即锁死")。
+ */
+static int ball_cmd(char c, int v)
+{
+    /* 🔴 起动轨迹用 `P`（Profile），**不能用 `R`** —— 2026-07-31 真机踩实的字母碰撞：
+     *   `run_cmd` 里那行 `if (c=='A'||'H'||'D'||'N'||'R') { if (vseg_cmd(c,v)) return; }` 拦在
+     *   `ball_cmd` **之前**，而 `vseg_cmd` 对 `R` 是**无条件**处理（设循迹 X1 朝向后 return 1）
+     *   ⇒ `R1` 永远到不了这里。实测判据：发 `R1` 只回 `[vseg] ... x1left=1`，没有 `[ball] TRAJ start`。
+     *   那行注释自己早写了这个代价（"一旦撞了…会被静默吃掉"），这次就是被它言中。
+     * ⚠ 更坏的是它**有副作用**：`R1` 会把 `g_x1_left` 翻成 1（本车实测是 X1 在**右**、`pos0=-42`）
+     *   ⇒ 误发 `R1` 等于把循迹探头朝向翻反、循迹会朝反方向跑飞。已用 `R0` 恢复。
+     * ⇒ 故本层改用 `P0/P1`；`R` 不再在这里出现，避免"看代码以为能用"。
+     * 空闲大写只剩 `I J O P Z`（`A H D N R` 归 vseg，`M F` 已被本层占）；选 P 而非 I/O 是因为
+     *   后两者在串口日志里与 1/0 极易看错，而这是个会让车动起来的命令。 */
+    if (c == 'P') {
+        if (v > 0) {
+            /* 起动轨迹前**先把车级指令清零**: 要求3 明文"小车在静止状态时" */
+            g_dv = 0; g_dw = 0; g_target = 0;
+            g_mode = MODE_BALL;
+            ball_start_traj(&g_ball, 0.0f);   /* 0 = 用 config 的 ±50mm */
+            uart_dbg_puts("\n[ball] TRAJ start: O->+");
+            uart_dbg_put_int((int)g_ball.traj_amp_mm);
+            uart_dbg_puts("mm -> 折返 -> -");
+            uart_dbg_put_int((int)g_ball.traj_amp_mm);
+            uart_dbg_puts("mm, 预计 t*10=");
+            uart_dbg_put_int((int)(ball_traj_duration(&g_ball) * 10.0f));
+            uart_dbg_puts(" (要求3 限 50)\n");
+        } else {
+            ball_set_hold(&g_ball, 0.0f);
+            uart_dbg_puts("\n[ball] TRAJ abort -> HOLD 0mm\n");
+        }
+        print_ball();
+        return 1;
+    }
+    if (g_mode != MODE_BALL) return 0;
+    switch (c) {
+        case 't': ball_set_hold(&g_ball, (float)v); ball_reset_stats(&g_ball);
+                  uart_dbg_puts("[ball] setpoint(mm)="); uart_dbg_put_int((int)g_ball.setpoint_mm);
+                  uart_dbg_puts("\n"); return 1;
+        case 'p': if (v > 0) g_ball.kp = (float)v / 1000.0f; print_ball(); return 1;
+        case 'd': if (v >= 0) g_ball.kd = (float)v / 1000.0f; print_ball(); return 1;
+        case 'i': g_ball.ff_ax_en    = (v & 1) ? 1 : 0;
+                  g_ball.ff_pitch_en = (v & 2) ? 1 : 0;
+                  uart_dbg_puts("[ball] ff ax="); uart_dbg_put_int(g_ball.ff_ax_en);
+                  uart_dbg_puts(" pitch=");       uart_dbg_put_int(g_ball.ff_pitch_en);
+                  uart_dbg_puts("  (做 A/B 量'前馈值多少毫米'用; 正式跑必须都=1)\n");
+                  return 1;
+        /* M<deg> = 倾角限幅。**整定第一天必须先把它调小**(从 2~3° 起), 理由:
+         * 摆杆一动球就加速, theta_max 就是"这个回路能对球施加多大权限"。默认 6° 对应
+         * a_max=0.73m/s², 在一根 25cm 管里已经很凶 —— 符号一旦搞反, 球会直接冲到端点挡片。
+         * 硬顶 BALL_THETA_MECH_MAX_DEG(11.54°) 来自题目 h>=5cm 的几何, 不是设计选择 ⇒ 不许超。 */
+        case 'M': if (v >= 1 && v <= (int)BALL_THETA_MECH_MAX_DEG) g_ball.theta_max_deg = (float)v;
+                  else uart_dbg_puts("[ball] M<1..11> 度; 上限是题目 h>=5cm 给的机械顶 11.54\n");
+                  print_ball(); return 1;
+        /* F<alpha*100> = 观测器位置修正增益。24Hz 相机 + 50Hz 控制 ⇒ 约 1/3 的拍没有新测量,
+         * 微分噪声全靠这个观测器压。alpha 小=平滑但滞后大(相位滞后会吃掉 kd 的阻尼),
+         * alpha 大=跟得紧但把量化噪声放进 v_est。
+         * ⚠ beta 必须跟着一起动: 经典临界阻尼取 beta=alpha^2/(2-alpha)。只改 alpha 不改 beta,
+         *   观测器就成了一对不自洽的增益 —— 这类"改了一半"的错最难看出来, 所以在这里一并算掉。 */
+        /* G<度×100> = 摩擦(起动阻力)前馈幅值。0 = 关闭。
+         * 为什么必须是在线的: 它应当等于**实测起动阈值**，而那个量随管子清洁度与位置变化极大
+         *   (2026-07-31 实测 0.53~1.59°，3 倍散布) ⇒ 必须现场扫，纸面值没有意义。
+         * ⚠ 上限 300 = 3.00°: 再大就超过弱侧总权限(1.67°)，只会让输出恒饱和。 */
+        /* J<deg x100> = friction (breakaway) feedforward magnitude, 0 = off.
+         * Must be an ONLINE knob: its right value is the measured breakaway angle, and that varies
+         * hugely with tube cleanliness and position (measured 2026-07-31: 0.53..1.59 deg, a 3x spread),
+         * so no compile-time default is meaningful. Cap 300 = 3.00 deg; beyond the weak side's 1.67 deg
+         * of authority it would only pin the output at saturation.
+         * Letter choice: 'G' is already the line-follower field calibration (G0/G1/G2). ball_cmd only
+         * sees letters while m12 is active so they would not actually collide, but that is exactly the
+         * silent-shadowing trap documented above - so use a letter with zero existing use. 'I'/'O' read
+         * as 1/0 in serial logs and 'Z' sits next to the emergency stop 'z', hence 'J'. */
+        case 'J': if (v >= 0 && v <= 300) g_ball.fric_deg = (float)v / 100.0f;
+                  else uart_dbg_puts("[ball] J<0..300> = friction ff, deg x100 (0=off)\n");
+                  print_ball(); return 1;
+        /* I<Ki*1000> = weak integral gain. Changing Ki always clears accumulated state so an A/B run
+         * changes exactly one variable instead of inheriting history from the previous setting. */
+        case 'I': if (v >= 0 && v <= 10000) {
+                      g_ball.ki = (float)v / 1000.0f;
+                      ball_reset_integral(&g_ball);
+                  } else uart_dbg_puts("[ball] I<0..10000> = Ki*1000 (0=off, resets integrator)\n");
+                  print_ball(); return 1;
+        case 'F': if (v >= 1 && v <= 99) {
+                      float a = (float)v / 100.0f;
+                      g_ball.alpha = a;
+                      g_ball.beta  = a * a / (2.0f - a);
+                  } else uart_dbg_puts("[ball] F<1..99> = alpha*100 (beta 自动按 a^2/(2-a) 同步)\n");
+                  print_ball(); return 1;
+        default:  return 0;
+    }
 }
 
 /* 导航任务结束时的"成绩单" —— 一行讲完这趟到底干成什么样。
@@ -568,6 +914,19 @@ static void imu_dump(void)
             uart_dbg_puts(" sign=");          uart_dbg_put_int(g_yaw_sign);
             uart_dbg_puts(" bias0.01dps=");   uart_dbg_put_int((int)(g_att.gbias[2]*100));
             uart_dbg_puts(" (a<0|1|2>改轴 s<1|-1>改符号, 改完必须重新 k 标定)\n");
+            /* ⭐ pitch/roll 必须打出来 —— 在 2026-07-31 之前它们**全工程一处都没被打印过**,
+             * g_att.pitch 只喂给 ball.c 和 LCD 水平仪页。后果是作战地图 A7 那条判决实验
+             * ("静止读 pitch 噪声 <0.1deg; 手垫车一侧看 pitch 跟不跟随、符号对不对")
+             * **物理上无法执行** —— 而 A7 是第 5+6 项共 40 分的前置假设。
+             * 三个用途: ① 定 CFG_BALL_PITCH_SIGN(垫车看符号) ② 验 A7 噪声门限
+             *   ③ 弯道球偏时判"是不是 pitch 在作妖"(审题 L2.4 列的头号嫌疑)。
+             * ⚠ 打的是 g_att.pitch **原值**, 不含 CFG_BALL_PITCH_SIGN —— 定符号时必须看未经该符号
+             *   加工的量, 否则是循环论证(拿待定的符号去解释现象)。m12 遥测里 print_ball 的 `pit=`
+             *   是**乘过符号且取过负**的前馈贡献量, 不能拿它定符号。 */
+            uart_dbg_puts("[imu] pitch0.1deg="); uart_dbg_put_int((int)(g_att.pitch*10));
+            uart_dbg_puts(" roll0.1deg=");       uart_dbg_put_int((int)(g_att.roll*10));
+            uart_dbg_puts(" (原值, 未乘 CFG_BALL_PITCH_SIGN)\n");
+            uart_dbg_puts("[imu] A7 判据: 静止连读多次 pitch 抖动应 <1(=0.1deg); 垫高车头看 pitch 是否单向跟随\n");
         }
     } else {
         uart_dbg_puts(" (期望71=0x47; 读到0或255=无响应,查CS/MISO接线与供电)\n");
@@ -596,13 +955,25 @@ static void run_cmd(const char *s, int n)
     g_cmd_at = g_st;                 /* 任何命令都刷新静默超时(为什么是"任何"见 config.h §7 取舍) */
     int mode_before = g_mode;
 #if CFG_LINE_UART_EN
-    /* A/B/L 三条分段速度旋钮先拦一手。放在 switch 前面而不是加三个 case:
+    /* A/H/D/N/R 五条循迹旋钮先拦一手。放在 switch 前面而不是加五个 case:
      * 它们**不分模式都该能改**(整定时常在 m11 外先设好再起跑), 而 switch 里
-     * 已有的模式相关分支容易把这层语义搞乱。 */
-    if (c == 'A' || c == 'B' || c == 'L' || c == 'N') { if (vseg_cmd(c, v)) return; }
+     * 已有的模式相关分支容易把这层语义搞乱。
+     * ⚠ **代价**: 拦在前面 ⇒ 一旦选的字母与 switch 里已有的 case 撞了, 那条老命令会被
+     *   **静默吃掉**(没有报错、没有回显)。所以加新字母前必须查一次占用表, 查法见 vseg_cmd 注释。 */
+    if (c == 'A' || c == 'H' || c == 'D' || c == 'N' || c == 'R') { if (vseg_cmd(c, v)) return; }
 #endif
+    /* 滚球层先看一眼: m12 下 t/p/d/i/M/F 归它(同 m11 的路由约定), `P` 任何模式都收。
+     * 放在 switch 前而不是加 case, 理由同上面那三条: 免得和 switch 里已有的模式分支纠缠。
+     * ⚠ 注意它排在 vseg 那一行**之后** ⇒ `A H D N R` 这五个字母滚球层永远看不到。轨迹命令原本用 `R`,
+     *   就是被这条顺序静默吃掉的(2026-07-31 真机), 已改用 `P`。**以后给滚球层加字母必须先查这行。** */
+    if (ball_cmd(c, v)) return;
     switch (c) {
-        case 'm': if (v >= 0 && v < MODE_N) { g_mode = v; g_target = 0; g_m1duty = 0; g_m2duty = 0; g_dv = 0; g_dw = 0; reset_all_pid(); } break;
+        case 'm': if (v >= 0 && v < MODE_N) { g_mode = v; g_target = 0; g_m1duty = 0; g_m2duty = 0; g_dv = 0; g_dw = 0; reset_all_pid();
+                      /* 进 m12 就立刻开始护球(HOLD 0mm)。**这不是顺手** —— 1cm 钢球放在光滑无摩擦
+                       * 的半圆槽里, 人一松手就滚走(题目禁止任何增摩擦改造) ⇒ 必须"按键之前就在闭环",
+                       * 人才放得上去。官方 Q50「钢球脱落即判定本次失败」让这条从建议变成必须。 */
+                      if (g_mode == MODE_BALL) { ball_set_hold(&g_ball, 0.0f); ball_reset_stats(&g_ball); print_ball(); }
+                  } break;
         /* t<v>: 速度环目标。**在 m11 下改的是循迹巡航速度**(见 g_line_v_cruise) ——
          * 语义一致(都是"目标速度"), 且 m11 下 g_target 本来无用。
          * 为什么必须能在线改: 2026-07-29 真机证明**速度是循迹的决定性旋钮**而不是 Kp ——
@@ -789,12 +1160,27 @@ static void run_cmd(const char *s, int n)
             if (g_bridge_end == 0) g_bridge_end = 1;   /* 防 wrap 到 0 被当成"未桥接" */
             return;                         /* 不打 print_status: 那会污染 AT 通道 */
         }
-        /* l<mask>: 遥测往哪些口打印。1=有线(DAP VCOM) / 2=无线(ESP) / 3=双发(默认, 见 config.h §9)。
-         * 什么时候要改: 整定用 f20(50Hz) 时双发会吃掉主循环一半时间(每字节发两遍) -> 只留一个口。
-         * mask=0 被忽略(不允许把所有输出关掉 = 把自己变瞎)。 */
-        case 'l': if (v > 0) { uart_dbg_set_sinks((uint32_t)v);
-                      uart_dbg_puts("[uart] sinks="); uart_dbg_put_int((int)uart_dbg_get_sinks());
-                      uart_dbg_puts(" (1=wired DAP, 2=wireless ESP, 3=both)\n"); }
+        /* l<mask>: 遥测往哪些口打印。**0=全关** / 1=有线(DAP VCOM) / 2=无线(ESP) / 3=双发(默认)。
+         * 什么时候要改: ① 整定用 f20~f25 时双发会吃掉主循环一半时间(每字节发两遍) -> 只留一个口;
+         *   ② 🔴 **正式测试必须 `l0`** —— 官方答疑 Q62 明文"测试期间仅允许图传工作"。
+         * 🔁 **2026-07-31: `l0` 现在生效**。原先 `if (v > 0)` 这道门把它挡掉了(uart_dbg.c 里还有第二道,
+         *   已一并放开) ⇒ 那时**根本没有一键关无线的手段**, 是合规缺口而非保护。
+         * ⚠ **回执必须在关闭之前打** —— 关完再打就没有任何口收得到, 现场会误判成"板子死了"。
+         * 关掉后怎么看车: **LCD RUN 页 `u2`**(走时/状态/里程/球位) 是独立通道; 命令通道(RX)与 sink 无关,
+         *   随时 `l3` 恢复。 */
+        case 'l': if (v >= 0 && v <= 3) {
+                      if (v == 0) {   /* 先打回执, 再静音 —— 顺序不能反 */
+                          uart_dbg_puts("[uart] sinks->0 : ALL telemetry OFF (Q62 test mode).\n"
+                                        "[uart]   watch the car on LCD RUN page: send u2 . send l3 to restore.\n");
+                      }
+                      uart_dbg_set_sinks((uint32_t)v);
+                      if (v != 0) {
+                          uart_dbg_puts("[uart] sinks="); uart_dbg_put_int((int)uart_dbg_get_sinks());
+                          uart_dbg_puts(" (0=off, 1=wired DAP, 2=wireless ESP, 3=both)\n");
+                      }
+                  } else {
+                      uart_dbg_puts("[uart] l<mask> 范围 0..3 (0=全关 1=有线 2=无线 3=双发)\n");
+                  }
                   break;
 #endif
         case 'g': imu_dump(); return;   /* IMU 验活读数(陀螺到货后 bring-up 用) */
@@ -806,6 +1192,9 @@ static void run_cmd(const char *s, int n)
 #if CFG_LINE_UART_EN
     if (s[0] == '?') print_task();   /* `?` 顺带回读任务层 —— 现场问"它到底在哪一步"就靠这行 */
 #endif
+    /* `?` 顺带回读滚球层。只在进过 m12 之后才有意义, 但无条件打——现场最怕的是"以为在控制、
+     * 其实 BLOCKED 在 NO_MEAS"，那一行必须一眼看到。 */
+    if (s[0] == '?') print_ball();
 }
 /* ==== 命令格式门(只在编了无线口时才需要) ====
  * 只接受 `<字母>[-][数字...]` 这一种形状, 可选 `#` 前缀。多一个空格、多一个字母 => 拒。
@@ -857,6 +1246,77 @@ static int vision_grab(uint8_t ch)
         return 1;
     }
     return 0;
+}
+
+/* 注入通道(调试口 / ESP)的 '$' 分流 —— 走**独立**解析器, 完整理由见 g_uf_inj 声明处。
+ * 关键点: 判据只看 `g_uf_inj.in_frame`, **绝不看 g_uf.in_frame** —— 否则相机灌帧时又会吞命令。
+ * 返回 1 = 本字节已被视觉通道吃掉(调用方不要再送进命令流)。 */
+static int vision_grab_inj(uint8_t ch)
+{
+    if (ch == '$' || g_uf_inj.in_frame) {
+        if (uf_push(&g_uf_inj, (char)ch, g_st / ST_PER_MS)) {
+            /* 刚解析成功一帧 ⇒ 并入主实例, 让下游对"帧来自哪一路"无感。
+             * 只搬 last/have_frame, **不动计数器** —— 计数在 print_vision 里按两个实例求和,
+             * 那样既不会重复计数, 也不必维护"上次同步到哪"的增量状态。 */
+            g_uf.last       = g_uf_inj.last;
+            g_uf.have_frame = 1;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+/* ==== VIS_UART(PB16) 物理层计数器 ====
+ * 为什么需要它: uf_* 那套统计只在**字节已经进到解析器**之后才动, 所以 "ok=0 且全 0" 这一种读数
+ * 同时对应三个完全不同的世界 —— 线没接上 / 接上了但电平·波特率错(收到的是垃圾) / 字节进来了但
+ * 被 vision_grab 当非帧字节丢掉。真机上这三者的修法毫不相干(动线 / 换波特率 / 改代码), 而
+ * 2026-07-31 那次 bring-up 恰好卡在这个岔口: MCU 侧注入全 PASS, 真相机零帧, 无从判断该动哪边。
+ * 加两个物理层计数器就能一次分开:
+ *   bytes=0 err=0  -> RX 脚上**一个边沿都没有**: K230 没跑 / TX 接到 PB15 了 / 没共地
+ *   bytes=0 err>0  -> 有信号但**帧结构对不上**: 波特率不符 / 电平不对 / 接的是别的信号
+ *   bytes>0        -> 物理层通了, 问题在协议层(看 bad_csum / bad_form / overflow)
+ * tail 存最近 8 个原始字节: 波特率错时它是稳定的乱码, 一眼可辨(而 "$BP,1,+" 就说明全好)。
+ * 只在 poll_uart 里写、只在 print_vision 里读, 单线程, 不需要临界区。 */
+/* ==== 视觉字节的接收: 在 5kHz SysTick 里抽 FIFO, 解析仍留主循环 ====
+ *
+ * 🔴 为什么非这么做不可(2026-07-31 真机实测):
+ *   一帧 `$BP,1,+9.62*1B\r\n` 是 17 字节, 在 115200 下**背靠背 1.5ms** 打进来, 而 MSPM0 的
+ *   RX FIFO 只有 4 深(生成码里阈值还是 1_2_FULL=2) ⇒ 想不丢字节, 必须**每 ~350us 抽一次**。
+ *   主循环要刷 GC9A01(SPI 全屏可达几十 ms)又要打遥测, 根本给不出这个节拍。
+ *   实测后果: PB5 上 bytes=28907 而 **ok=0** —— 一帧都没解析成功, bad_csum=355 / bad_form=590,
+ *   错误掩码恒为 **0x10=OVERRUN**(不是 framing ⇒ 波特率和电平都没问题, 纯粹是抽得不够快)。
+ *
+ * ⛔ 为什么不开 UART 的 RX 中断(那是最"标准"的做法):
+ *   car.syscfg 里有一条 2026-07-29 立的禁令 —— 在 UART1 上开过 RX 中断, 结果 5V 电平持续制造
+ *   帧/噪声错误中断, 把主循环吃干、固件彻底哑掉, 两种 ISR 写法都锁死。那条禁令还在。
+ *   而 5kHz SysTick(200us) 已经**小于 350us 要求**且是跑了几周的稳定 ISR ⇒ 白拿一个够快的节拍,
+ *   不新增中断源、不动 NVIC、不碰那条禁令。这是"用已有的东西满足时序"而不是"加一个新风险"。
+ *
+ * ISR 里只搬字节、不解析: uf_push 会写 g_uf(主循环要读 g_uf.last), 放进 ISR 就有撕裂风险。
+ * 环形缓冲单生产者(SysTick)单消费者(主循环), head/tail 各只被一方写 ⇒ M0+ 上 16 位对齐读写
+ * 本身原子, 不需要临界区。 */
+/* 抽一路 UART 的 FIFO 进环形缓冲 + 记错误标志。**只在 SysTick ISR 里调用**。
+ * 用 raw 中断状态读错误 ⇒ 不需要使能任何中断, 也不会跟别处的中断配置打架。 */
+static void vis_drain_isr(UART_Regs *uart, vis_rx_stat_t *s)
+{
+    uint8_t ch;
+    uint32_t es = DL_UART_getRawInterruptStatus(uart,
+                      DL_UART_INTERRUPT_FRAMING_ERROR | DL_UART_INTERRUPT_PARITY_ERROR |
+                      DL_UART_INTERRUPT_BREAK_ERROR   | DL_UART_INTERRUPT_OVERRUN_ERROR);
+    if (es) {
+        s->err++;
+        s->err_last = es;
+        DL_UART_clearInterruptStatus(uart, es);
+    }
+    while (DL_UART_receiveDataCheck(uart, &ch)) {
+        uint16_t h = g_vr_head;
+        uint16_t n = (uint16_t)((h + 1u) & (VIS_RING_SZ - 1u));
+        s->bytes++;
+        s->tail[s->tail_n & 7u] = ch;
+        s->tail_n = (uint8_t)((s->tail_n + 1u) & 7u);
+        if (n != g_vr_tail) { g_vring[h] = ch; g_vr_head = n; }
+        else                { g_vr_drop++; }     /* 主循环卡了 >600ms; 丢弃比覆盖旧数据好 */
+    }
 }
 
 #if CFG_LINE_UART_EN
@@ -911,14 +1371,32 @@ static void poll_uart(void)
     /* 循迹模块的字节走独立缓冲, **绝不进命令流** —— 传感器数据里出现 'z' 之类会误触发急停。
      * 时基用与视觉帧同一个 g_st/ST_PER_MS, 好让帧间隙判定与遥测时间戳对得上。 */
     linesens_poll(g_st / ST_PER_MS);
+    /* 相机专用口(UART2/PB15-16): 字节**只喂帧解析器, 不进命令通道**。
+     * 为什么不复用 vision_grab 的"非 $ 就转命令"那条路: 相机永远不该发命令, 而画面噪声/半截帧里
+     * 出现字母是常态 —— 让它进命令流就等于给了它触发 t/z/m 的机会。丢弃非帧字节是正确行为。
+     * 为什么相机要独占一个口: DBG_UART 的 RX 被 DAP 的 TX 占着、ESP_UART 的 RX 被 ESP#2 占着,
+     * 两个都接不了第三个发送端(见 car.syscfg 里 VIS_UART 那段的完整理由)。 */
+    /* 相机字节由 SysTick 抽进环形缓冲(见 vis_drain_isr 的账), 这里只负责把它喂给帧解析器。
+     * 一次最多吃满整环 ⇒ 不会因为"边喂边来"在这里转不出去。 */
+    {
+        uint16_t t = g_vr_tail;
+        uint32_t guard = VIS_RING_SZ;
+        while (t != g_vr_head && guard--) {
+            (void)vision_grab(g_vring[t]);
+            t = (uint16_t)((t + 1u) & (VIS_RING_SZ - 1u));
+            g_vr_tail = t;
+        }
+    }
+    /* ⚠ 这两路必须用 vision_grab_inj(独立解析器), **不能**用 vision_grab —— 后者看的是相机的
+     *   g_uf.in_frame, 相机灌帧时会把这里的命令字符吞掉(见 g_uf_inj 声明处那笔账)。 */
 #if CFG_ESP_UART_EN
     while (DL_UART_receiveDataCheck(DBG_UART_INST, &ch))
-        if (!vision_grab(ch)) feed_cmd_stream(ch, cbuf, &clen, 1);
+        if (!vision_grab_inj(ch)) feed_cmd_stream(ch, cbuf, &clen, 1);
     while (DL_UART_receiveDataCheck(ESP_UART_INST, &ch))
-        if (!vision_grab(ch)) feed_cmd_stream(ch, ebuf, &elen, 1);
+        if (!vision_grab_inj(ch)) feed_cmd_stream(ch, ebuf, &elen, 1);
 #else
     while (DL_UART_receiveDataCheck(DBG_UART_INST, &ch)) {
-        if (vision_grab(ch)) continue;
+        if (vision_grab_inj(ch)) continue;
         if (ch == '\r' || ch == '\n') { if (clen > 0) { run_cmd(cbuf, clen); clen = 0; } }
         else if (clen < 15) cbuf[clen++] = (char)ch;
     }
@@ -1237,7 +1715,17 @@ static void enc_probe_run(void)
  * 保证固定 5kHz 采样, 远超电机最高换向率(~1k/s@60%PWM), 不混叠。encoder_count() 读到干净计数。 */
 /* SysTick 5kHz: 编码器采样 + 递增主时基计数 g_st(200us/拍)。控制调度改读 g_st 算真实时间,
  * 不再数会被 LCD/UART 拖慢的主循环拍数(见时基修正说明)。 */
-void SysTick_Handler(void) { encoder_poll(); g_st++; }
+void SysTick_Handler(void)
+{
+    encoder_poll();
+    /* 相机的 17 字节突发需要 <=350us 的抽取节拍, 200us 的这里是唯一够快又已被验证稳定的地方。
+     * 完整理由(含"为什么不开 UART RX 中断")见 vis_drain_isr 上方那段。只搬字节, 不解析。 */
+    vis_drain_isr(VIS_UART_INST, &g_vis);       /* PB16 = 固件设计位 */
+#if CFG_LINE_UART_EN
+    vis_drain_isr(LINE_UART_INST, &g_vis1);     /* PB5 = 载板文档位; 该外设全工程没别人读 */
+#endif
+    g_st++;
+}
 
 /* ==== 姿态 / 航向(yaw) ====
  * 职责分工: attitude.c 是**纯算法层**(轴向置换/积分/滤波都在那儿, 已 PC 单测 PASS);
@@ -1358,6 +1846,7 @@ int main(void)
     motor_init();
     magnet_init();                       /* 电磁铁: 占空先归 0 再启动定时器(上电绝不许默认吸合) */
     servo_init();                        /* 转向舵机: 同理先写 0(不出脉冲=limp), 中位未标定前不许输出 */
+    ball_apply_cfg();                    /* 滚球层: 把 config.h §7.12 灌进 g_ball(ball.c 不 include config.h) */
     uart_dbg_puts("boot3 motor+mag+servo ok\n");
     linesens_init();                     /* 循迹模块串口: 只设波特率+清缓冲, 不发任何东西(纯监听) */
     uart_dbg_puts("boot4 linesens ok\n");
@@ -1370,23 +1859,18 @@ int main(void)
     /* dt 传 CFG_IMU_MS 只是初值, 每拍会用 SysTick 真实经过时间覆盖 g_att.dt */
     attitude_init(&g_att, (float)CFG_IMU_MS / 1000.0f, CFG_ATT_ALPHA);
     nav_init(&g_nav);          /* 车级导航层: 参数取 config.h §7.5, 含(现为 0 的)里程/转角标定值 */
-    uf_init(&g_uf);            /* 视觉帧解析器 */
+    uf_init(&g_uf);            /* 视觉帧解析器: 相机(PB5/PB16) 专用 */
+    uf_init(&g_uf_inj);        /* 同上, 注入通道(调试口/ESP)专用 —— 分开的理由见其声明处 */
 #if CFG_LINE_UART_EN
     /* 循迹算法层: pos 传 NULL ⇒ 按 CFG_LINE_PITCH_MM 等间距铺开(左为正)。
      * ⚠ CFG_LINE_PITCH_MM 现在是 **[估计]12mm**, 必须拿尺量实物后回填 —— 它是横向偏差的标尺,
      *   量错等于整条循迹的增益标定错(而症状会像"PID 怎么调都蛇行")。 */
-    /* 🔴 **X1 装在车的右侧、X8 在左侧**（2026-07-29 用户按实物确认）。
-     * 而 `line.c` 的默认 `pos[]` 假设 `raw[0]`(=X1) 是**最左**那个探头(`pos[0]=+42mm`, 左为正)
-     * ⇒ 直接吃默认值会让横向偏差**整体反相**, 循迹朝反方向跑飞。
-     * ⇒ 显式传入取反后的 pos[]: X1 在右 = 负、X8 在左 = 正; 8 路 ±42/±30/±18/±6 mm。
-     * **为什么不去重插那 8 根线**: 改一行数据可验证、可回溯; 动 8 根杜邦线会引入新的错位风险
-     * (本轮已因选脚/接线折腾一整晚)。⚠ 若将来把模块前后翻转安装, 这里要跟着改回来。 */
-    static const float LINE_POS[LF_CH] = {
-        -3.5f * (float)CFG_LINE_PITCH_MM, -2.5f * (float)CFG_LINE_PITCH_MM,
-        -1.5f * (float)CFG_LINE_PITCH_MM, -0.5f * (float)CFG_LINE_PITCH_MM,
-        +0.5f * (float)CFG_LINE_PITCH_MM, +1.5f * (float)CFG_LINE_PITCH_MM,
-        +2.5f * (float)CFG_LINE_PITCH_MM, +3.5f * (float)CFG_LINE_PITCH_MM };
-    line_init(&g_line, LF_CH, LINE_POS);
+    /* 装车朝向(X1 在左还是在右)由 `CFG_LINE_X1_ON_LEFT` 一位决定, **不再硬编码 pos[] 数组**
+     * —— 这一位已经翻过一次(2026-07-29 在右 → 2026-07-31 用户把模块倒转 180° 变成在左),
+     * 每翻一次都去改 8 个字面量的符号既易错又不可在线验。理由/判据见 config.h 该宏处。
+     * 先 line_init(NULL) 建好其余状态, 再由 line_pos_apply() 按朝向铺 pos[]。 */
+    line_init(&g_line, LF_CH, 0);
+    line_pos_apply();
     g_line.kp = CFG_KP_LINE;  g_line.kd = CFG_KD_LINE;
     g_line.w_max = CFG_LINE_W_MAX;  g_line.search_w = CFG_LINE_SEARCH_W;
     g_line.on_thresh = CFG_LINE_ON_THRESH;  g_line.min_contrast = CFG_LINE_MIN_CONTRAST;
@@ -1432,6 +1916,10 @@ int main(void)
     uart_dbg_puts("[ctl]      不用相机也能测: 往本口发一行 $V,... 再发 m10 (以 $ 开头的行不进命令通道)\n");
     uart_dbg_puts("[ctl] IMU: g dump | k bias-cal(静止2s) | o yaw=0 | a<0|1|2>定轴 s<1|-1>定符号 ; telemetry Y=yaw(0.1deg) W=wz(0.01dps)\n");
     uart_dbg_puts("[ctl] LCD: u0 计数页 / u1 水平仪页(定轴放平用: 挪车让小球进绿环=<=2deg, 黄=<=5, 橙=<=14底线)\n");
+    uart_dbg_puts("[ctl]      u2 RUN页(走时/状态/里程/球位) <- 正式测试的唯一观测通道, 见下一行\n");
+    /* 这一行是给"正式测试当天照着念"的: 答疑 Q62 明文只许图传工作, 而遥测一关就没有串口可看,
+     * 现场很容易忘了 LCD 那条路、把静默当成板子死了。写进 boot banner 是因为它每次上电都在眼前。 */
+    uart_dbg_puts("[ctl] 正式测试(Q62 仅许图传): 发 l0 关全部遥测 + u2 看LCD; 事后 l3 恢复双发\n");
 #if CFG_LINE_UART_EN
     /* 开机指纹: 有这一行就说明片上是带循迹串口链路的版本(旧固件打不出来)。
      * 嗅探期的用法: 先 `L` 看 rx 有没有在涨(判物理层), 再 `B<baud>` 扫波特率, 最后看 '|' 定帧边界。*/
@@ -1451,7 +1939,13 @@ int main(void)
     uart_dbg_put_int(CMD_MUTE_MS);
     uart_dbg_puts("ms (ESP boot 日志会被拒, 看遥测 rej= 计数)\n");
 #endif
-    uart_dbg_puts("[ctl] enc=4x quad ENC_CPR=800(cal) | build "); uart_dbg_puts(__DATE__); uart_dbg_puts(" "); uart_dbg_puts(__TIME__); uart_dbg_puts("\n");
+    /* ⚠ 这三个标定常数**必须从 config.h 现算**, 不许写成字面量 —— 原文曾硬编码 "ENC_CPR=800",
+     * 而真值 2026-07-27 手转重标成 954.75 后那行字符串没跟着改, boot banner 于此变成
+     * "看起来权威的错数据"(本仓库最怕的一类: 下个对话拿它反推 rpm/里程会全错)。
+     * 打 ×100 是因为 uart_dbg_put_int 只吃整数, 而这两个值都是小数。 */
+    uart_dbg_puts("[ctl] enc=4x quad ENC_CPR*100="); uart_dbg_put_int((int)(ENC_CPR * 100.0f));
+    uart_dbg_puts(" counts_per_mm*100=");            uart_dbg_put_int((int)(ENC_COUNTS_PER_MM * 100.0f));
+    uart_dbg_puts(" | build "); uart_dbg_puts(__DATE__); uart_dbg_puts(" "); uart_dbg_puts(__TIME__); uart_dbg_puts("\n");
     uart_dbg_puts("[imu] init WHOAMI="); uart_dbg_put_int(imu_id);
     uart_dbg_puts(imu_id == ICM42688_WHOAMI_VAL ? " OK(ICM42688)\n" : " 未就绪(接线/供电/片选异常, 用 g 命令复测)\n");
     uart_dbg_puts("[imu] yaw axis="); uart_dbg_put_int(g_yaw_axis);
@@ -1471,6 +1965,7 @@ int main(void)
     int     prev_mode    = MODE_IDLE;
     uint32_t last_spd = 0, last_pos = 0, last_prn = 0, last_dsp = 0;   /* 各周期上次触发时刻(g_st单位=200us) */
     uint32_t last_imu = 0;
+    uint32_t last_ball = 0;   /* 滚球回路自己的节拍(CFG_BALL_MS), **不再跟 SPEED_MS 共用** */
 
     while (1) {
 #if CFG_ESP_UART_EN
@@ -1564,6 +2059,13 @@ int main(void)
 #endif
 
         /* 进位置模式: 捕获当前计数为零点 -> 目标是"相对入模点位移"(入模=保持当前位, 不驱回boot零点; 大计数也安全) */
+        /* Leaving m12 by any path (m command, z, timeout, bridge) must not carry I into the next
+         * ball session. Apply the zero command once as well; changing g_mode alone stops ball_step(),
+         * so without this the physical beam would remain at its last nonzero pulse. */
+        if (prev_mode == MODE_BALL && g_mode != MODE_BALL) {
+            ball_abort(&g_ball);
+            ball_drive_servo(0.0f);
+        }
         if (g_mode == MODE_POSITION && prev_mode != MODE_POSITION) { pos_ref[0] = c0; pos_ref[1] = c1; }
         prev_mode = g_mode;
 
@@ -1602,6 +2104,21 @@ int main(void)
             spd_tick = 1;
         }
         if ((uint32_t)(now - last_pos) >= POS_MS * ST_PER_MS) { last_pos = now; pos_tick = 1; }
+
+        /* ---- 滚球回路节拍(CFG_BALL_MS) ----
+         * 为什么要独立于 SPEED_MS: SPEED_MS=50ms 是**速度测量窗**的宽度(编码器一窗多少 counts),
+         * 它跟已整定锁定的速度环增益绑死, 不能动。但 20Hz 对滚球回路不够:
+         * 2.3.3 节的频域校验要求采样 >= 19.7Hz(穿越频率 0.985Hz 的 20 倍) ⇒ 20Hz 只有 1.02 倍余量,
+         * 等于没有余量。取 20ms(50Hz) ⇒ 2.5 倍余量, 且**正好等于舵机 PWM 载波周期**
+         * (再快也没用: 指令更新快于载波不会变成更快的机械动作)。
+         * 相机 30fps ⇒ 每 1.67 拍来一帧新测量, 约 40% 的拍走观测器模型外推。 */
+        int   ball_tick  = 0;
+        float dt_ball_s  = 0.0f;
+        if ((uint32_t)(now - last_ball) >= CFG_BALL_MS * ST_PER_MS) {
+            dt_ball_s = (float)(uint32_t)(now - last_ball) / (float)ST_HZ;   /* 真实 dt, 不用常数 */
+            last_ball = now;
+            ball_tick = 1;
+        }
 
         /* ---- 姿态/航向节拍(CFG_IMU_MS): 读 IMU -> 轴向置换 -> 符号 -> 死区 -> 用真实 dt 积分 ---- */
         if (g_imu_ok && (uint32_t)(now - last_imu) >= CFG_IMU_MS * ST_PER_MS) {
@@ -1763,7 +2280,7 @@ int main(void)
                 } else if (g_task_v == 1) {
                     int v_fast = (g_line_v_cruise > 0) ? g_line_v_cruise : CFG_TASK_V_CRUISE;
 #if CFG_LINE_VSEG_EN
-                    /* 用 g_vs_* 运行时副本(命令 A/B/L 可在线改), 不直读 CFG_ —— 否则整定要重烧 */
+                    /* 用 g_vs_* 运行时副本(命令 A/H/D 可在线改), 不直读 CFG_ —— 否则整定要重烧 */
                     int v_curve = g_vs_slow;
                     if (v_curve > v_fast) v_curve = v_fast;  /* 弯道档不该比直线档还快 */
                     if (g_w_lp <= g_vs_lo) {
@@ -1865,6 +2382,52 @@ int main(void)
             }
             break; }
 
+        /* m12: H题第3项 —— 车静止, 摆杆把球稳在目标位 / 跑 O->+5cm->折返->-5cm 的往返轨迹。
+         * ⭐ 球位帧走的是**现有**那条 '$' 分流(poll_uart 把整行喂 g_uf) ⇒ **不用相机也能测**:
+         *   PC 发 `$V,1,<x_mm*100>,0,0*<异或>` 即可(tools/vision_test.ps1)。这正是"摆杆和相机
+         *   都还没到位、软件先在板上验完"的那条路 —— 摆杆一到位只剩装 + 标定 + 整定。
+         * ⚠ 本模式**强制 pwm=0**: 要求3 明文"小车在静止状态时"。 */
+        case MODE_BALL: {
+            if (ball_tick) {
+                uf_target_t t;
+                ball_in_t   bin;
+                float th = 0.0f;
+                uint32_t ms = now / ST_PER_MS;
+                int have, fresh = 0;
+
+                t.id = 0; t.cx = 0; t.cy = 0; t.area = 0; t.stamp_ms = 0;
+                have = uf_get(&g_uf, ms, &t);
+                if (have) {
+                    /* 只有 stamp 变了才算"新测量" —— 同一帧被多拍反复读到, 不能当新数据喂观测器
+                     * (相机 30fps 而本回路 50Hz ⇒ 约三分之一的拍走模型外推, 见 ball.h) */
+                    if (!g_ball_stamp_init || t.stamp_ms != g_ball_stamp) {
+                        fresh = 1; g_ball_stamp = t.stamp_ms; g_ball_stamp_init = 1;
+                    }
+                }
+                bin.x_mm       = (float)t.cx / CFG_BALL_CX_PER_MM;
+                bin.meas_valid = fresh;
+                /* 从没收到过帧就给个大龄, 让 ball 判 NO_MEAS 并摊平摆杆 —— 不能拿 0 当"球在中心" */
+                bin.meas_age_s = g_uf.have_frame ? ((float)(ms - g_uf.last.stamp_ms) / 1000.0f)
+                                                 : 999.0f;
+                /* a_x 用**车级速度指令的微分**而不是 IMU: 前馈要的是"即将发生的加速度",
+                 * 而 IMU 测的是"已经发生的", 后者天生晚一拍(取舍写在 ball.h)。
+                 * m12 下车不动 ⇒ g_dv 恒 0 ⇒ a_x=0; 代码提前写好, 将来并进 m11 直接可用。 */
+                {
+                    float mm_per_rev = ENC_CPR / ENC_COUNTS_PER_MM;
+                    float v_mm_s = (float)g_dv / 60.0f * mm_per_rev;
+                    float ax = (dt_ball_s > 0.0f) ? (v_mm_s - g_ball_v_prev) / dt_ball_s : 0.0f;
+                    g_ball_v_prev = v_mm_s;
+                    bin.ax_mm_s2 = (float)CFG_BALL_AX_SIGN * ax;
+                }
+                bin.pitch_deg = (float)CFG_BALL_PITCH_SIGN * g_att.pitch;
+                bin.dt_s      = dt_ball_s;
+
+                ball_step(&g_ball, &bin, &th);
+                ball_drive_servo(th);
+                pwm_out[0] = pwm_out[1] = 0;
+            }
+            break; }
+
         case MODE_CURRENT: {            /* g_target = 目标电流 mA(带符号=方向) */
             uint16_t r0 = 0, r1 = 0;
             motor_read_current_raw(&r0, &r1);
@@ -1924,6 +2487,40 @@ int main(void)
                 uart_dbg_putc(',');       uart_dbg_put_int((int)(g_nav.err_deg * 10.0f));
                 uart_dbg_putc(',');       uart_dbg_put_int((int)(g_nav.peak_hdg_deg * 10.0f));
             }
+            /* 摆杆/球标定字段 BALL:<cx>,<us>,<age_ms>,<stamp_ms>
+             * **只要视觉链曾收到过帧就打, 不限模式** —— 这是刻意的: 摆杆标定(tools/ball_ident.ps1)
+             *   是在 IDLE 下用 `U<us>` 直接给脉宽、让球自由滚, 此时 ball 环没跑, 若只在 m12 打就读不到。
+             * ⭐ 为什么打**原始像素 cx** 而不是换算好的 mm:
+             *   CFG_BALL_CX_PER_MM 是标定的**产物**之一(现在那个 100.0f 是猜的)。打 mm 就等于把一个
+             *   未标定的常数烙进数据里 ⇒ 每改一次标尺都要重烧板。打 cx 则 PC 侧可任意重标、零重烧,
+             *   而"少烧一次板"在本工程是有价格的(禁忌 2: 连续快烧曾把芯片怼进 lockup)。
+             * stamp_ms 是给 PC 判"这帧是不是新的": 相机掉线时 age 会涨而 stamp 冻住, 两者一起看
+             *   才能区分"相机没更新"与"MCU 没在读" —— 只看 age 分不出来。 */
+            if (g_uf.have_frame) {
+                uint32_t bms = now / ST_PER_MS;
+                uart_dbg_puts(" | BALL:"); uart_dbg_put_int((int)g_uf.last.cx);
+                uart_dbg_putc(',');        uart_dbg_put_int(servo_us());
+                uart_dbg_putc(',');        uart_dbg_put_int((int)(bms - g_uf.last.stamp_ms));
+                uart_dbg_putc(',');        uart_dbg_put_int((int)g_uf.last.stamp_ms);
+                /* ⚠ id 必须一起打, 不是可选字段。相机没看到球时发的是 `$V,-1,0,0,0` —— 那**是一个
+                 * 有效帧**(uart_frame.c 刻意如此: 用来区分"模块活着但没看见"与"模块掉线"), 所以
+                 * stamp 会更新而 cx 是 0。只看 cx 的话, "没看到球"会被读成"球正好在中心 0mm",
+                 * 而标定脚本按 stamp 变化收样本 ⇒ 会把一串假的 0 喂进抛物线拟合。
+                 * ⇒ PC 侧必须先按 id != -1 过滤。判据: 遮住相机, id 应立刻变 -1 而 age 仍很小。 */
+                uart_dbg_putc(',');        uart_dbg_put_int((int)g_uf.last.id);
+            }
+            /* 观测器内部量 BE:<x_est×10>,<v_est×10>,<x_ref×10>,<th_cmd×10>,<sat>,<peak×10>
+             * 只在 m12 追加(字节在无线下有代价: 双发实测 +6.7ms/行)。整定时要看的就是这几个:
+             *   x_est vs x_ref 看跟得上没, th_cmd 看有没有一直贴着限幅(sat=1 说明增益或轨迹过激),
+             *   peak 是**判分量**(评委看回放取最坏帧, 不是看平均)。 */
+            if (g_mode == MODE_BALL) {
+                uart_dbg_puts(" | BE:"); uart_dbg_put_int((int)(g_ball.x_est * 10.0f));
+                uart_dbg_putc(',');      uart_dbg_put_int((int)(g_ball.v_est * 10.0f));
+                uart_dbg_putc(',');      uart_dbg_put_int((int)(g_ball.x_ref_mm * 10.0f));
+                uart_dbg_putc(',');      uart_dbg_put_int((int)(g_ball.theta_cmd_deg * 10.0f));
+                uart_dbg_putc(',');      uart_dbg_put_int(g_ball.sat);
+                uart_dbg_putc(',');      uart_dbg_put_int((int)(g_ball.peak_abs_err_mm * 10.0f));
+            }
             /* 航向: Y=yaw(0.1°, 连续累计可超±360, 便于"转5圈"标度校验) W=偏航角速度(0.01dps) */
             uart_dbg_puts(" | Y:"); uart_dbg_put_int((int)(g_att.yaw * 10.0f));
             uart_dbg_puts(" W:");   uart_dbg_put_int((int)(g_wz_dps * 100.0f));
@@ -1976,6 +2573,23 @@ int main(void)
                                     ? (g_task.t_stop - g_task.t_start)
                                     : (now / ST_PER_MS - g_task.t_start);
                 di.dist_mm    = ((float)(c0 + c1) * 0.5f) / ENC_COUNTS_PER_MM;
+                /* 🔴 2026-07-31 修: `g_ball_mm` 此前**全工程只有声明处那一次初始化**(DISP_RUN_NO_BALL),
+                 * 没有任何地方给它赋过值 ⇒ RUN 页的球位那一行**永远显示 "ball --"**。
+                 * 为什么这是硬伤而不是小瑕疵: 官方答疑 Q62 要求正式测试期间只许图传工作 ⇒ 那时
+                 *   **LCD 是唯一观测通道**, 而第 3/4/5/6 项全部是球位判据 ⇒ 我们自己看不到球在哪。
+                 * 这里就地取值而不是在 m12 里赋值, 有两个理由:
+                 *   ① **不限模式** —— IDLE 下也要能看到球位: 标定时确认球放进槽了、正式测试按键前确认
+                 *      相机已就绪(K230 有 3.5MB kmodel, 上电到出帧要多久还没测), 都靠这一行;
+                 *   ② 单一赋值点, 不会出现"m12 更新了、别的模式留着陈旧值"那类不一致。
+                 * 新鲜度判据直接用 uf_get(): 它只在"新鲜 且 确实有目标(id!=-1)"时返 1 ⇒ 相机掉线或
+                 *   视野里没球, 这里就退回 NO_BALL 显示 "ball --", **绝不显示陈旧坐标**
+                 *   (显示陈旧值比显示"没有"危险: 人会以为球还在那儿)。 */
+                {
+                    uf_target_t bt;
+                    g_ball_mm = uf_get(&g_uf, now / ST_PER_MS, &bt)
+                              ? ((float)bt.cx / CFG_BALL_CX_PER_MM)
+                              : DISP_RUN_NO_BALL;
+                }
                 di.ball_mm    = g_ball_mm;
                 di.n_runs     = g_task.n_runs;
                 di.n_lost     = g_lost_seg;

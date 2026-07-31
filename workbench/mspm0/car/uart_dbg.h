@@ -23,8 +23,11 @@ void uart_dbg_putc(char c);
 void uart_dbg_puts(const char *s);   /* 遇 '\n' 自动补 '\r', 串口助手换行整齐 */
 void uart_dbg_put_int(int32_t v);    /* 带符号十进制 */
 
-/* 运行时切换输出去向(位掩码, 见上面 UART_SINK_*)。mask=0 会被忽略——
- * 允许"把所有输出关掉"等于允许把自己变成瞎子，那是排障时最不该有的状态。 */
+/* 运行时切换输出去向(位掩码, 见上面 UART_SINK_*)。
+ * 🔁 **2026-07-31 改：mask=0 现在合法**（原注释"mask=0 会被忽略，因为等于把自己变瞎"已作废）。
+ *   理由 = 官方答疑 Q62 明文"测试期间仅允许图传工作" ⇒ 必须能一键关掉无线遥测，挡掉 0 就是合规缺口。
+ *   而"变瞎"这个顾虑不成立: ① RX 与 sink 无关，关了照样能发 `l3` 恢复;
+ *   ② LCD RUN 页(`u2`)是独立观测通道。⚠ 调用方须**先打回执再关**，否则没有口能收到确认。 */
 void     uart_dbg_set_sinks(uint32_t mask);
 uint32_t uart_dbg_get_sinks(void);
 

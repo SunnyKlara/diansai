@@ -300,6 +300,31 @@ UART3.peripheral.$assign       = "UART1";
 UART3.peripheral.rxPin.$assign = "PB5";
 UART3.peripheral.txPin.$assign = "PB4";
 
+/* ---- 视觉串口 UART2: TX=PB15 RX=PB16 (相机模块 -> MCU 的球位帧 $V,...) ----
+ * 引脚真值源 = 载板 §10.1 定版主表那两行:
+ *     `B15`(PB15) = UART2_TX(复用2) -> 相机 RX   |   `B16`(PB16) = UART2_RX(复用2) <- 相机 TX
+ * 这两个脚原本标的是 "ESP#1 RXD/TXD" —— 但**只装了 ESP#2(PB2/PB3)**, ESP#1 从来没接过 ⇒ 空闲可用。
+ *
+ * 🔴 为什么必须加这第 4 路(不加就是"相机接上去一个字节都收不到"):
+ *   视觉帧的入口是 car.c 的 vision_grab(), 而它只从 **DBG_UART(UART0/PA10-11)** 与
+ *   **ESP_UART(UART3/PB2-3)** 取字节。这两个口的 RX 已分别被 DAP 的 TX 和 ESP#2 的 TXD 占住,
+ *   相机再往上接就是两个输出抢一个脚。UART1(PB4/PB5) 虽然因八路巡线改 GPIO 直读而空出来了,
+ *   但它的字节走 linesens_poll、**刻意不进视觉/命令流**(传感器数据里的 'z' 会误触发急停)。
+ *   ⇒ 相机需要一个自己的 RX。此事 k230_vision/README §63 早已点明, 这里把它补上。
+ *
+ * ⚠ 相机字节**只喂帧解析器, 不进命令通道**(见 poll_uart 里的处理): 相机永远不该发命令,
+ *   而一旦让它的字节进命令流, 画面噪声里的字母就可能变成 t/z/m 之类的真命令。
+ * ⚠ 交叉 + 共地。相机若是 5V 电平(K230/Pi 的 USB-TTL 多为 3.3V, 但要量一下),
+ *   PB16 不耐 5V, 必须串 1k 或分压 —— 本板在编码器与八路巡线上各踩过一次同类坑。
+ * 波特率 115200 = pi_vision/ball_vision.py 与 k230_vision/main.py 两侧的既定值, 别单方面改。 */
+const UART4 = UART.addInstance();
+UART4.$name                    = "VIS_UART";
+UART4.enableFIFO               = true;
+UART4.targetBaudRate           = 115200;
+UART4.peripheral.$assign       = "UART2";
+UART4.peripheral.rxPin.$assign = "PB16";
+UART4.peripheral.txPin.$assign = "PB15";
+
 /* ---- 电流采样 ADC0: 序列采 3 路 DRV8231 IPROPI ---- */
 /*   MEM0=CHAN_0=PA27  MEM1=CHAN_1=PA26  MEM2=CHAN_3=PA24(电磁铁), 参考=VDDA 3.3V
  * ⚠ M1/M2 的通道映射**按真机实测**是与本注释原假设相反的(M1=PA26=MEM1, M2=PA27=MEM0),

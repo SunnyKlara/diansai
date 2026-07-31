@@ -66,11 +66,27 @@ void ball_init(ball_t *b)
      *   Q50「钢球脱落如何判定」→ **"钢球脱落即判定本次失败"**。
      *   ⇒ 超调成了**纯风险、零收益**：这里没有"上升时间"类指标要抢（要求3 限 5s 而我们
      *     的轨迹只用 4.5s、只吃掉 10% 摆角权限），所以把阻尼加到临界是**免费的保险**。
-     *   ζ=1.0 的阶跃响应理论上无超调，且 settling 4/(ζωn)=1.33s 反而比 ζ=0.8 的 1.67s 更快。
+     * ⚠ 别拿 4/(ζωn) 说"ζ=1.0 还更快" —— 那个公式只对欠阻尼成立，ζ≥1 时不适用。
+     *   PC 仿真(50Hz, 30mm 阶跃, 只改 kd)实测: ζ=1.0 反向过冲 0.000mm / 5% 调节 1.56s;
+     *   ζ=0.8 过冲 -0.43mm / 调节 1.10s。**真实取舍 = 用 0.46s 调节时间买掉 0.43mm 过冲**,
+     *   而那 0.46s 落在轨迹已有的 0.5s 余量内(4.5s vs 限时 5s) ⇒ 仍然选 ζ=1.0。
+     *   复现: pc_test/dump_ball_sim.c 的 sim_step30.csv 与 sim_step30_z08.csv。
      * 校验（ball.h 有推导）：e=50mm 时 θ = 9*50/7007 rad = 3.68° < 6° ⇒ 不饱和 ✓
-     *                       ωn=0.48Hz ⇒ 30fps 相机是 60 倍过采样 ✓ */
+     * ⚠ 采样率不能拿 ωn=0.48Hz 去比（那样算出 30fps 是 60 倍过采样，是错的）：
+     *   判据是**回路增益穿越频率** ωc=0.985Hz 的 20 倍 = 19.7Hz ⇒ 30fps 只有 1.52 倍余量，
+     *   控制回路 50Hz 是 2.54 倍。推导见报告 2.3.3。 */
     b->kp = 9.0f;
     b->kd = 6.0f;
+
+    /* Weak integral is compiled in but disabled by default. The real-board sequence is: prove the
+     * unchanged PD baseline, then change only Ki online. The band and angle cap bound the experiment. */
+    b->ki = 0.0f;
+    b->i_band_mm = 20.0f;
+    b->i_limit_deg = 0.30f;
+
+    /* 摩擦前馈默认**关闭** —— 它的正确幅值是"实测起动阈值"，而那个值随管子清洁度/位置变化很大
+     * (2026-07-31 实测 0.53~1.59°，3 倍散布) ⇒ 不该有一个纸面默认值。用 `J<x100>` 在线整定后回填。 */
+    b->fric_deg = 0.0f;
 
     /* 限幅 [保护]：机械极限 11.54°（题目 h>=5cm 推出），取 6° 留一倍余量。
      * 6° 对应球加速度 733mm/s^2，而我们把车的加速度限在 300mm/s^2（前馈只需 1.75°）
@@ -120,8 +136,9 @@ void ball_init(ball_t *b)
     b->traj_phase = 0;
 
     b->theta_cmd_deg = 0.0f;
-    b->th_pd_deg = b->th_traj_deg = b->th_ax_deg = b->th_pitch_deg = 0.0f;
+    b->th_pd_deg = b->th_traj_deg = b->th_ax_deg = b->th_pitch_deg = b->th_fric_deg = 0.0f;
     b->sat = 0;
+    ball_reset_integral(b);
 
     b->x_ref_mm = b->v_ref_mm_s = b->a_ref_mm_s2 = 0.0f;
 
@@ -141,6 +158,15 @@ void ball_reset_stats(ball_t *b)
     b->warn = BALL_F_NONE;
 }
 
+void ball_reset_integral(ball_t *b)
+{
+    if (!b) return;
+    b->i_err_mm_s = 0.0f;
+    b->th_i_deg = 0.0f;
+    b->i_active = 0;
+    b->i_aw_hold = 0;
+}
+
 void ball_set_hold(ball_t *b, float setpoint_mm)
 {
     if (!b) return;
@@ -153,6 +179,7 @@ void ball_set_hold(ball_t *b, float setpoint_mm)
     b->warn = BALL_F_NONE;
     b->traj_phase = 0;
     b->traj_t = 0.0f;
+    ball_reset_integral(b);
 }
 
 void ball_start_traj(ball_t *b, float amp_mm)
@@ -166,6 +193,7 @@ void ball_start_traj(ball_t *b, float amp_mm)
     b->traj_t = 0.0f;
     b->traj_phase = 0;
     b->setpoint_mm = 0.0f;
+    ball_reset_integral(b);
     ball_reset_stats(b);
 }
 
@@ -177,8 +205,9 @@ void ball_abort(ball_t *b)
     b->traj_phase = 0;
     b->traj_t = 0.0f;
     b->theta_cmd_deg = 0.0f;
-    b->th_pd_deg = b->th_traj_deg = b->th_ax_deg = b->th_pitch_deg = 0.0f;
+    b->th_pd_deg = b->th_traj_deg = b->th_ax_deg = b->th_pitch_deg = b->th_fric_deg = 0.0f;
     b->sat = 0;
+    ball_reset_integral(b);
 }
 
 /* ── 轨迹采样（纯 t 的函数）───────────────────────────────────────── */
@@ -225,10 +254,10 @@ int ball_traj_sample(const ball_t *b, float t, float *x, float *v, float *a)
 /* ── 走一拍 ─────────────────────────────────────────────────────── */
 ball_state_t ball_step(ball_t *b, const ball_in_t *in, float *theta_deg_out)
 {
-    float dt, a_known, th_g_rad;
+    float dt, a_known, th_g_rad, meas_dt = 0.0f;
     float x_ref = 0.0f, v_ref = 0.0f, a_ref = 0.0f;
-    float e, ev, a_pd, th, lim, ae;
-    int   running;
+    float e, ev, a_pd, th, th_base, lim, ae;
+    int   running, i_reset_this_step = 0;
 
     if (!b || !in) { if (theta_deg_out) *theta_deg_out = 0.0f; return BALL_IDLE; }
 
@@ -236,12 +265,14 @@ ball_state_t ball_step(ball_t *b, const ball_in_t *in, float *theta_deg_out)
     if (dt <= 0.0f) dt = 1e-3f;    /* 防 0 除。真实 dt 必须由调用方给（见 ball.h 警示）*/
 
     /* ── 0. 配置合法性：宁可响亮失败，也别拿 0 增益假装在控制 ──────────── */
-    if (b->kp <= 0.0f || b->theta_max_deg <= 0.0f) {
+    if (b->kp <= 0.0f || b->theta_max_deg <= 0.0f || b->ki < 0.0f ||
+        (b->ki > 0.0f && (b->i_band_mm <= 0.0f || b->i_limit_deg <= 0.0f))) {
         b->fail  = BALL_F_BADCFG;
         b->state = BALL_BLOCKED;
         b->theta_cmd_deg = 0.0f;
-        b->th_pd_deg = b->th_traj_deg = b->th_ax_deg = b->th_pitch_deg = 0.0f;
+        b->th_pd_deg = b->th_traj_deg = b->th_ax_deg = b->th_pitch_deg = b->th_fric_deg = 0.0f;
         b->sat = 0;
+        ball_reset_integral(b);
         if (theta_deg_out) *theta_deg_out = 0.0f;
         return BALL_BLOCKED;
     }
@@ -261,17 +292,21 @@ ball_state_t ball_step(ball_t *b, const ball_in_t *in, float *theta_deg_out)
     b->v_est += a_known * dt;
 
     if (in->meas_valid) {
+        float ti = b->t_since_meas;
+        if (ti < 1e-4f) ti = 1e-4f;
         if (!b->est_init) {
             /* 第一个测量直接当真值落座，速度设 0（没有第二点算不出速度）*/
             b->x_est = in->x_mm;
             b->v_est = 0.0f;
             b->est_init = 1;
         } else {
-            float ti = b->t_since_meas;
-            float r  = in->x_mm - b->x_est;
-            if (ti < 1e-4f) ti = 1e-4f;
+            float r = in->x_mm - b->x_est;
             b->x_est += b->alpha * r;
             b->v_est += (b->beta / ti) * r;   /* ⚠ 除测量间隔，不是控制拍长 */
+            /* Integrate only on a real camera interval. A first frame has no interval; a frame after a
+             * gap longer than the feedback freshness bound must re-establish control without adding a
+             * large lump to I. This keeps the effective Ki independent of camera FPS. */
+            if (ti <= b->max_age_s) meas_dt = ti;
         }
         b->t_since_meas = 0.0f;
     } else {
@@ -284,8 +319,9 @@ ball_state_t ball_step(ball_t *b, const ball_in_t *in, float *theta_deg_out)
         b->fail  = BALL_F_NO_MEAS;
         b->state = BALL_BLOCKED;
         b->theta_cmd_deg = 0.0f;
-        b->th_pd_deg = b->th_traj_deg = b->th_ax_deg = b->th_pitch_deg = 0.0f;
+        b->th_pd_deg = b->th_traj_deg = b->th_ax_deg = b->th_pitch_deg = b->th_fric_deg = 0.0f;
         b->sat = 0;
+        ball_reset_integral(b);
         if (theta_deg_out) *theta_deg_out = 0.0f;
         return BALL_BLOCKED;
     }
@@ -294,8 +330,9 @@ ball_state_t ball_step(ball_t *b, const ball_in_t *in, float *theta_deg_out)
     if (b->mode == BALL_M_OFF) {
         b->state = BALL_IDLE;
         b->theta_cmd_deg = 0.0f;
-        b->th_pd_deg = b->th_traj_deg = b->th_ax_deg = b->th_pitch_deg = 0.0f;
+        b->th_pd_deg = b->th_traj_deg = b->th_ax_deg = b->th_pitch_deg = b->th_fric_deg = 0.0f;
         b->sat = 0;
+        ball_reset_integral(b);
         if (theta_deg_out) *theta_deg_out = 0.0f;
         return BALL_IDLE;
     }
@@ -306,6 +343,7 @@ ball_state_t ball_step(ball_t *b, const ball_in_t *in, float *theta_deg_out)
         float T2 = T1 + b->traj_t_dwell;
         float T3 = T2 + b->traj_t_back;
         float T4 = T3 + b->traj_t_settle;
+        int phase_before = b->traj_phase;
 
         b->traj_t += dt;
         running = ball_traj_sample(b, b->traj_t, &x_ref, &v_ref, &a_ref);
@@ -341,6 +379,14 @@ ball_state_t ball_step(ball_t *b, const ball_in_t *in, float *theta_deg_out)
         } else {
             b->state = BALL_TRAJ_RUN;
         }
+
+        /* A return, settle, or completed phase has a different target/direction. Do not carry a
+         * bias learned in the previous phase across that discontinuity. Phase 0->1 is continuous
+         * at +amp, so it intentionally keeps I; phases 2/3/4 clear it. */
+        if (b->traj_phase != phase_before && b->traj_phase >= 2) {
+            ball_reset_integral(b);
+            i_reset_this_step = 1;
+        }
     } else {
         x_ref = b->setpoint_mm;
         v_ref = 0.0f;
@@ -356,6 +402,10 @@ ball_state_t ball_step(ball_t *b, const ball_in_t *in, float *theta_deg_out)
             v_ref = 0.0f;
             a_ref = 0.0f;
             b->warn = BALL_F_LIMIT;   /* sticky：留到成绩单，别在成功那一刻消失 */
+            /* Limit recovery is a new safety objective. Historical bias from the old target can
+             * push farther into the end stop, so discard it and suppress reintegration this frame. */
+            ball_reset_integral(b);
+            i_reset_this_step = 1;
         }
     }
 
@@ -376,7 +426,74 @@ ball_state_t ball_step(ball_t *b, const ball_in_t *in, float *theta_deg_out)
     b->th_ax_deg    = b->ff_ax_en    ? ((in->ax_mm_s2 / BALL_G_MM_S2) * RAD2DEG) : 0.0f;
     b->th_pitch_deg = b->ff_pitch_en ? (-in->pitch_deg) : 0.0f;
 
-    th = b->th_pd_deg + b->th_traj_deg + b->th_ax_deg + b->th_pitch_deg;
+    /* ── 5b. 摩擦（起动阻力）前馈 ──────────────────────────────────────
+     * 🔴 为什么必须有它（2026-07-31 真机把账算清了）:
+     *   实测起动阈值约 0.9°(=68us)，而弱侧总权限只有 1.67°(=126us) ⇒ **摩擦吃掉一半以上**:
+     *      总 204mm/s² − 起动 110mm/s² = **可用仅 94mm/s²**
+     *   而轨迹前馈自己就要 78(出发)/100(返回) mm/s² ⇒ **留给 PD 的接近 0**。
+     *   真机后果: `sat` 恒在 74%、一过冲就再也拉不回来、球撞到 ±120mm。
+     *   ⇒ 让 PD 的输出**叠在起动阈值之上**、而不是自己从 0 爬过去，那 68us 就还回来了。
+     *   这是摩擦主导系统的标准做法（Coulomb friction feedforward），不是 hack。
+     *
+     * ⚠ **不能用 sign(e) 直接跳变** —— 那样在目标附近会以 ±fric 抖动（stick-slip 极限环，
+     *   正是我们要消掉的东西）。故在 |e| < dead 的带内**线性过渡**: 到达目标时补偿平滑归零。
+     *   dead 取 fric 对应的位置误差（= 死区宽度本身），物理含义是"进了死区就不再硬推"。
+     *
+     * ⚠ 补偿的方向按**位置误差**取, 不按 PD 输出取。本仓库在车级位置环上踩过这个坑
+     *   (SSOT: "前馈按位置误差方向叠; 按速度输出符号会末端震荡")。
+     *
+     * fric_deg <= 0 时整段不生效 ⇒ 默认关闭, 靠 `G<x100>` 在线开, 达标再回填 config.h。 */
+    b->th_fric_deg = 0.0f;
+    if (b->fric_deg > 0.0f) {
+        float dead = (b->kp > 0.0f)
+                   ? (b->fric_deg * (BALL_K_MM_S2_PER_RAD / RAD2DEG) / b->kp)  /* 死区宽度(mm) */
+                   : 0.0f;
+        float s;
+        if (dead <= 0.0f)      s = (e > 0.0f) ? -1.0f : ((e < 0.0f) ? 1.0f : 0.0f);
+        else if (e >  dead)    s = -1.0f;                 /* 球在 +x 侧 ⇒ 往 -x 推 */
+        else if (e < -dead)    s =  1.0f;
+        else                   s = -e / dead;             /* 带内线性过渡, e=0 时为 0 */
+        b->th_fric_deg = b->fric_deg * s;
+    }
+
+    th_base = b->th_pd_deg + b->th_traj_deg + b->th_ax_deg +
+              b->th_pitch_deg + b->th_fric_deg;
+
+    /* Total output limit is needed by the conditional integrator as well as the final clamp. */
+    lim = b->theta_max_deg;
+    if (lim > BALL_THETA_MECH_MAX_DEG) lim = BALL_THETA_MECH_MAX_DEG;
+
+    /* Weak integral: update only on a real, fresh camera interval inside the separation band.
+     * Clamp the physical I angle and back-calculate its state, so no hidden windup can build behind
+     * the I cap. Conditional anti-windup rejects only increments that deepen total-output
+     * saturation; opposite increments remain enabled and can actively unwind the actuator. */
+    b->i_active = 0;
+    b->i_aw_hold = 0;
+    if (b->ki <= 0.0f) {
+        ball_reset_integral(b);
+    } else if (!i_reset_this_step && meas_dt > 0.0f && fabsf(e) <= b->i_band_mm) {
+        float old_th_i = b->th_i_deg;
+        float cand_i = b->i_err_mm_s + e * meas_dt;
+        float cand_th_i = -(b->ki * cand_i / BALL_K_MM_S2_PER_RAD) * RAD2DEG;
+        float delta_th_i;
+        float cand_total;
+
+        b->i_active = 1;
+        cand_th_i = clampf(cand_th_i, -b->i_limit_deg, b->i_limit_deg);
+        cand_i = -(cand_th_i / RAD2DEG) * BALL_K_MM_S2_PER_RAD / b->ki;
+        delta_th_i = cand_th_i - old_th_i;
+        cand_total = th_base + cand_th_i;
+
+        if ((cand_total > lim && delta_th_i > 0.0f) ||
+            (cand_total < -lim && delta_th_i < 0.0f)) {
+            b->i_aw_hold = 1;
+        } else {
+            b->i_err_mm_s = cand_i;
+            b->th_i_deg = cand_th_i;
+        }
+    }
+
+    th = th_base + b->th_i_deg;
 
     /* ── 6. 限幅（永远不许超过题目给的机械极限）───────────────────────── */
     lim = b->theta_max_deg;
