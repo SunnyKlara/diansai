@@ -80,6 +80,34 @@ chk("1 RPM in mm/s",                   3.115,   circ / 60.0,                0.00
 v65 = 65.0 * circ / 60.0
 chk("65 RPM",                          202.4,   v65,                        0.2, "mm/s")
 
+# ---- 2.1 line-following cruise ceiling from sampling geometry ---------
+# The report argues the cruise cap comes from sampling geometry, not motor power:
+# one control tick must not move the car further sideways than one sensor pitch,
+# otherwise the error signal can jump a whole probe between samples. Presented in
+# the report as consistent with the per-step measurements, not as a prediction.
+PITCH_MM = 12.0        # measured probe spacing on YB-MUX04-1.0
+TICK_S = 0.050         # line loop period
+
+
+def rpm_to_mms(rpm):
+    return rpm * circ / 60.0
+
+
+v_cap = PITCH_MM / TICK_S
+chk("cruise cap from pitch/tick",      240.0,  v_cap,                       0.1, "mm/s")
+chk("cruise cap in RPM",               77.0,   v_cap * 60.0 / circ,         0.2, "RPM")
+chk("110 RPM speed",                   343.0,  rpm_to_mms(110),             0.6, "mm/s")
+chk("110 RPM per tick",                17.1,   rpm_to_mms(110) * TICK_S,    0.05, "mm")
+# tol 0.5 on the two speeds quoted as integers (342.6 -> 343, 233.6 -> 234):
+# the report rounds them to whole mm/s, so anything tighter fails on the rounding
+# itself rather than on drift, which is what this gate is for.
+chk("75 RPM speed",                    234.0,  rpm_to_mms(75),              0.5, "mm/s")
+chk("75 RPM per tick",                 11.7,   rpm_to_mms(75) * TICK_S,     0.05, "mm")
+chk("65 RPM per tick",                 10.1,   v65 * TICK_S,                0.05, "mm")
+# the array spans 8 probes at 12 mm; centroid extremes and half-pitch resolution
+chk("array half width",                42.0,   3.5 * PITCH_MM,              0.1, "mm")
+chk("centroid step (half pitch)",      6.0,    PITCH_MM / 2.0,              0.01, "mm")
+
 # ---- 2.8 lap-time model  t(v) = L/v + v/a ----------------------------
 def lap(v):
     return L / v + v / A_LIM

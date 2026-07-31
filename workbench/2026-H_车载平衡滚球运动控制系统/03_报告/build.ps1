@@ -229,6 +229,32 @@ if ((Test-Path $py) -and (Test-Path $chk)) {
     Say "  [--] arithmetic self-check SKIPPED (repo .venv python not found)" "Yellow"
 }
 
+# 4c-6. official-rules gate. check_rules.py measures the PDF against the countable
+#     clauses of 参赛守则 clause 5 (body <= 8 pages, abstract <= 300 chars, >= 3 cm
+#     blank at the top of every page, page number bottom-right, A4 portrait, 宋体).
+#     Clause 6 makes these ELIGIBILITY rules: violating one costs the whole entry,
+#     so they are reported as blocking [X], not as advisory [!] like the TODO count.
+#     A TODO is expected mid-development; an over-length report is never acceptable.
+$rul = Join-Path $PSScriptRoot "check_rules.py"
+if ((Test-Path $py) -and (Test-Path $rul)) {
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $rulOut = & $py $rul $pdf 2>&1
+    $rulRc  = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+    if ($rulRc -eq 0) {
+        Say "  [OK] official rules (clause 5): body pages, abstract, margins, page numbers" "Green"
+    } else {
+        $why = ([regex]::Match(($rulOut | Out-String), "RESULT: FAIL -> (.+)")).Groups[1].Value.Trim()
+        Say "  [X] OFFICIAL RULES VIOLATED (clause 5 -> clause 6 = loss of eligibility):" "Red"
+        $rulOut | Select-String -Pattern "^\s*\[X\]" |
+            ForEach-Object { Say "      $($_.Line.Trim())" }
+        if ($why) { $script:RULEWHY = $why }
+    }
+} else {
+    Say "  [--] official-rules gate SKIPPED (repo .venv python or check_rules.py not found)" "Yellow"
+}
+
 # 4d. inventory : figure / table / equation counts (judges skim these first)
 $nfig = @(Select-String -Path $tex -Pattern '\\begin\{figure\}' -AllMatches | ForEach-Object { $_.Matches }).Count
 $ntab = @(Select-String -Path $tex -Pattern '\\begin\{(table|longtable)\}' -AllMatches | ForEach-Object { $_.Matches }).Count
@@ -254,6 +280,24 @@ if ($pandoc) {
 # ---- 6. persist the verdict, then clean intermediates ----
 # _gate.txt is the authoritative build verdict: read it instead of trusting the
 # console, because a nested powershell's stdout is not reliably captured here.
+#
+# The verdict used to be a hardcoded PASS, which was a real defect: on 2026-07-31 a
+# missing fancyhdr.sty produced '! Emergency stop.' and two LaTeX errors, and the
+# gate still printed RESULT: PASS. A headline that cannot say FAIL is not a gate.
+# Any gate above that printed [X] now blocks; [!] lines (TODO census, stray quotes)
+# stay advisory because they are expected while the report is being filled in.
+# Exactly two leading spaces = a top-level gate line; the six-space indented
+# detail lines under a failing gate must not be counted as separate gates.
+$blocking = @($script:GATE | Where-Object { $_ -match '^ {2}\[X\]' })
+if ($blocking.Count -gt 0) {
+    $tail = "RESULT: FAIL  ($($blocking.Count) blocking gate(s))"
+    if ($script:RULEWHY) { $tail += " -> $($script:RULEWHY)" }
+    $script:GATE += $tail
+    Set-Content -Path "_gate.txt" -Value $script:GATE -Encoding UTF8
+    Remove-Item *.aux,*.toc,*.out,*.log -ErrorAction SilentlyContinue
+    Write-Host "$tail  (verdict also written to _gate.txt)" -ForegroundColor Red
+    exit 1
+}
 $script:GATE += "RESULT: PASS"
 Set-Content -Path "_gate.txt" -Value $script:GATE -Encoding UTF8
 Remove-Item *.aux,*.toc,*.out,*.log -ErrorAction SilentlyContinue

@@ -45,6 +45,9 @@ param(
     [switch]$Stop,
     [switch]$DeployMain,       # write /sdcard/main.py so the board autostarts with no host attached
     [switch]$RemoveMain,       # undo -DeployMain
+    [switch]$PatchMain,        # like -DeployMain but the loader also overrides detector constants
+    [double]$Conf     = 0.25,  # CONFIDENCE_THRESHOLD override for -PatchMain (delivery default 0.50)
+    [int]$MissHold    = 3,     # MISS_HOLD_FRAMES override for -PatchMain (delivery default 1)
     [int]$Watch     = 0,
     [string]$Cmds   = "",
     [string]$Script = "/sdcard/steelball/fixed_pipe_480_v1/fixed_pipe_position_uart_stable_v4.py",
@@ -215,6 +218,80 @@ if ($RemoveMain) {
     if (($o -join ' ') -match 'Error') { L ("  " + ($o -join ' ')); Finish "FAIL - could not remove /sdcard/main.py" 1 }
     L "removed /sdcard/main.py - the board will boot to the REPL again."
     Finish "PASS - autostart removed" 0
+}
+
+if ($PatchMain) {
+    L ""
+    L "---- deploying a PATCHED /sdcard/main.py (autostart + detector overrides) ----"
+    L "WHY PATCH IN THE LOADER instead of editing the 21 KB delivery file:"
+    L "  The delivery file stays byte-identical, so it remains the single source of the algorithm and"
+    L "  reverting is just -DeployMain again. Editing the big file over the REPL would also mean pushing"
+    L "  21 KB through the console, which is slow and can half-write."
+    L "WHAT IS BEING OVERRIDDEN AND WHY (measured 2026-07-31, MCU side):"
+    L "  The vision layer reported id=-1 ('no ball') for 15..54 % of the frames while age_ms stayed at"
+    L "  ~1.6 ms, i.e. frames kept arriving and the DETECTOR was the thing failing. The miss rate tracked"
+    L "  the ball's oscillation amplitude almost monotonically (peak 25.6 mm -> 0 %, 26.4 -> 15 %,"
+    L "  52.1 -> 41 %, 71.9 -> 54 %), which closes a vicious loop: bigger swing -> more blind frames ->"
+    L "  worse control -> bigger swing. valid also requires missed_frames <= MISS_HOLD_FRAMES, so with"
+    L "  the shipped value of 1 just TWO marginal frames in a row are enough to declare 'no target'."
+    L ("  CONFIDENCE_THRESHOLD 0.50 -> " + $Conf + "   (recover marginal detections)")
+    L ("  MISS_HOLD_FRAMES     1    -> " + $MissHold + "      (bridge short gaps by holding the filtered value)")
+    L "COST, stated honestly: a held sample is a STALE position, so MissHold trades 'no data' for"
+    L "  'slightly old data'. At 24 fps, 3 frames is 125 ms. A lower confidence threshold trades misses"
+    L "  for the risk of false positives; the fixed pipe ROI has a single class and NMS + median3 + EMA"
+    L "  downstream, so an isolated bad box is filtered, but a PERSISTENT false box would not be."
+    L "  ⇒ Judge this by the MCU-side blind fraction AND by whether the position still tracks reality."
+    L ""
+    if (SoftReboot 20.0) { L "  soft reboot done (releases any leaked file handle from an earlier attempt)" }
+    else { L "  WARNING: no boot banner after Ctrl-D; if the write fails with EPERM, power-cycle and retry" }
+    # 🔴 MUST interrupt AFTER the soft reboot, not only before it. Once /sdcard/main.py exists the reboot
+    # AUTOSTARTS the vision script, so the REPL is busy again and every statement sent next is fed to the
+    # running program's stdin and silently ignored. Measured 2026-07-31: the write appeared to "succeed"
+    # while the captured "output" was really the script's own BALL_UART_V4 telemetry, and only the
+    # read-back check caught it (FAIL - patched main.py missing). That is exactly why the read-back exists.
+    L "  interrupting the auto-started script (main.py runs on reboot, so the prompt is busy again)..."
+    $pr = Interrupt 3.0
+    if (($pr -join ' ') -notmatch '>>>') {
+        L ("  " + ($pr -join ' ').Trim())
+        Finish "FAIL - no REPL prompt after Ctrl-C; cannot write while the script owns the console" 2
+    }
+    L "  prompt reclaimed"
+    [void](Eval "import os")
+    # Build the loader as ONE physical line: the friendly REPL auto-indents after a colon and would
+    # mangle a pasted multi-line block. Semicolons keep it single-line.
+    # The replacement targets include the spaces around '=' so they can only hit the definitions at the
+    # top of the file, not the later uses (`missed_frames <= MISS_HOLD_FRAMES`).
+    $oldConf = 'CONFIDENCE_THRESHOLD = 0.50'
+    $newConf = 'CONFIDENCE_THRESHOLD = ' + $Conf
+    $oldMiss = 'MISS_HOLD_FRAMES = 1'
+    $newMiss = 'MISS_HOLD_FRAMES = ' + $MissHold
+    # _n counts the substitutions and is printed by the loader itself, so a target string that stopped
+    # matching (because the delivery file changed) shows up as a LOUD 'patched 0/2' on the K230 console
+    # instead of silently running with the shipped defaults.
+    $body = '_s=open(''' + $Script + ''').read();' +
+            '_n=_s.count(''' + $oldConf + ''')+_s.count(''' + $oldMiss + ''');' +
+            '_s=_s.replace(''' + $oldConf + ''',''' + $newConf + ''').replace(''' + $oldMiss + ''',''' + $newMiss + ''');' +
+            'print(''MAIN_PATCH applied={} of 2''.format(_n));' +
+            'exec(_s)'
+    $stmt = 'f=open(''/sdcard/main.py'',''w''); f.write("' + $body.Replace('\','\\').Replace('"','\"') + '\n"); f.close()'
+    $o = Eval $stmt 6.0
+    $joined = ($o -join ' ')
+    if ($joined -match 'Error|Traceback') {
+        L ("  " + $joined)
+        Finish "FAIL - could not write /sdcard/main.py (is the card read-only?)" 1
+    }
+    L ("  write() returned: " + $joined.Trim() + "  (byte count)")
+    $rb = Eval "print(open('/sdcard/main.py').read())" 5.0
+    $rbs = ($rb -join ' ')
+    L ("  read back: " + $rbs.Trim())
+    if ($rbs -notmatch 'fixed_pipe_position_uart_stable_v4' -or $rbs -notmatch 'MAIN_PATCH') {
+        Finish "FAIL - patched main.py missing from the write-back check" 1
+    }
+    L ""
+    L "Next: power-cycle (or Ctrl-D) the K230 and confirm on its console that it prints"
+    L "  'MAIN_PATCH applied=2 of 2'  and then  'PIPE_BALL_UART_STABLE_V4_READY conf=<new value>'."
+    L "Then judge it on the MCU side:  tools\ball_run.ps1 -NoDrive   -> blind fraction must drop."
+    Finish "PASS - patched /sdcard/main.py written (restart + blind-fraction check still pending)" 0
 }
 
 if ($DeployMain) {

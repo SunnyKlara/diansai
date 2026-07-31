@@ -109,6 +109,13 @@ static int      g_cross_max = 0;    /* 本趟见过的最大在线通道数 */
  *    没这个数就只能重烧去猜是哪一种。 */
 static uint32_t g_cross_cnt = 0;
 static float    g_w_lp      = 0.0f; /* |w| 低通 —— 分段速度的曲率代理(为什么不用 |err| 见 config.h) */
+static float    g_dv_ramp   = 0.0f; /* 车级线速度的**已斜坡化**值(只限加速, 减速立即跟随)。
+                                     * 为什么要它: 2026-07-31 真机三次实测 MCU 复位都发生在**速度命令
+                                     * 阶跃的瞬间**(弯道 55->78 一步跳), 且门限随电池电压上移 ⇒ 是电流
+                                     * 冲击把 5V 轨拽垮(载板 5V = MP2315 约 2A, K230 与 MCU 5V 脚共轨)。
+                                     * ⚠ **只限加速**: 到达后 task 层置 v=0 要立刻刹住(停车偏差 ≤2cm),
+                                     * 若减速也限速率会把刹车距离拉长。急停 `z` 走 MODE_IDLE 分支,
+                                     * 根本不经过这里 ⇒ 不受影响。 */
 static int      g_vseg_now  = 0;    /* 本拍分段速度给出的巡航 RPM(遥测/排障) */
 /* 分段速度三个旋钮的**运行时副本**(开机取 config.h 默认, 命令 A/H/D 在线改)。
  * 理由同 g_line.kp/kd: 整定要"跑一趟→看数→改一个值→再跑一趟"迭代好几轮,
@@ -133,6 +140,11 @@ static int      g_line_v_cruise = 0; /* m11 巡航速度在线覆盖 RPM; 0 = �
 static int      g_task_disp = 0;    /* 任务层说"该刷屏了" */
 static int      g_beep_lv   = 0;    /* 蜂鸣器当前电平(没接线时也算, 便于遥测看见) */
 static uint32_t g_btn_virt_until = 0;  /* 虚拟按键按下到期时刻 ms(命令 K); 0 = 没在按 */
+#define BTN_VIRT_MS 300u               /* 虚拟按压时长。300 而非 60: task.c 的 btn_edge 要 raw=1
+                                        * **稳定 20ms** 且 task_step() 必须在窗口内被调用, 而主循环
+                                        * 刷 LCD 时一拍可达约 100ms ⇒ 60ms 经常一次都没被采样
+                                        * (2026-07-31 实测单发命中率约 50%)。300ms ⇒ 至少采样 3 拍。
+                                        * 仍远小于两次按压间隔 ⇒ 不会被当成第二次按压(=手动急停)。 */
 static float    g_ball_mm   = DISP_RUN_NO_BALL;  /* 球位 mm; 第4/5/6项接上相机后填, 现在恒无效 */
 #endif
 /* ==== 视觉链（m10 VSRV）====
@@ -1118,8 +1130,17 @@ static void run_cmd(const char *s, int n)
         /* K: 虚拟按键 —— 等价于"人按了一下启动键"。按键没接线时靠它把整条任务链验完
          * (IDLE->RUN->计时->到达->BRAKE->DONE), 也可在 RUN 中再发一次当急停。
          * 60ms > 消抖窗 20ms ⇒ 一条命令 = 一次干净按压, 不会连触发。 */
-        case 'K': g_btn_virt_until = g_st / ST_PER_MS + 60u;
-                  uart_dbg_puts("[task] 虚拟按键 K (60ms)\n");
+                          /* 300ms 而不是 60ms: task.c 的 btn_edge 要求 raw=1 **稳定 20ms** 且 task_step()
+                   * 必须在该窗口内被调用, 而主循环刷 LCD 时一拍可达约 100ms ⇒ 60ms 窗口经常
+                   * 一次都没被采样。2026-07-31 真机实测单发 `K` 命中率只有约 50%(K#1 只打回执
+                   * 无 START, K#2 才起跑)。300ms 保证至少被采样 3 拍。
+                   * ⚠ 仍远小于两次按压的间隔 ⇒ 不会把一次按压误判成两次(第二次=手动急停)。 */
+        case 'K': g_btn_virt_until = g_st / ST_PER_MS + BTN_VIRT_MS;
+                  /* ⚠ 打印**真实值**而不是写死数字: 2026-07-31 这里原本写死 "(60ms)", 我把时长改成
+                   * 300 却漏改这句文本 ⇒ 烧录成功后仍打 "(60ms)", 被我自己当成"没烧上"的证据、
+                   * 白折腾一轮（还把 DAP 拖死一次）。**凡是拿来当版本指纹的输出, 必须由变量生成。** */
+                  uart_dbg_puts("[task] 虚拟按键 K ("); uart_dbg_put_int((int)BTN_VIRT_MS);
+                  uart_dbg_puts("ms)\n");
                   return;
         /* G<0|1|2>: 循迹**现场标定** —— 这是循迹能不能用的命门, 不是可选项。
          *   G0 = 车放**白底**上采一次(全部离线)   G1 = 车放**线上**采一次   G2 = 回读标定状态
@@ -1828,6 +1849,50 @@ static int pos_inner_step(pid_t *pv, float v_tgt, float v_meas, int32_t pos_err)
     return pc;
 }
 
+/* ==== 球层服务：**独立于 g_mode**，每个球拍跑一次 ====================================
+ * 🔴 为什么必须抽出来（2026-07-31 发现的结构性缺陷）：原来这整段嵌在 `case MODE_BALL:` 里，
+ *    而 `g_mode` 是**单值** ⇒ `m11`(循迹) 与 `m12`(控球) 互斥 ⇒ **第 4/5/6 项（合计 60 分）
+ *    要求"边跑边把球稳住"，在结构上不可能完成**。这不是参数问题，调什么都没用。
+ *    原作者其实预见到了，本段注释里就写着"代码提前写好, 将来并进 m11 直接可用"。
+ * ⚠ 本函数**不碰 pwm**：车级驱动仍由各模式自己决定（MODE_BALL 强制 0 以满足要求 3 的
+ *    "小车静止"，MODE_LINE 走循迹）。职责分离，避免一个函数同时管两层。
+ * ⚠ `a_x` 前馈用**车级速度指令的微分**而不是 IMU（要的是"即将发生的加速度"，IMU 测的是
+ *    "已经发生的"、天生晚一拍）。m12 下 `g_dv` 恒 0 ⇒ ax=0；m11 下它自然变成真实值。 */
+static void ball_service(uint32_t now, float dt_ball_s)
+{
+    uf_target_t t;
+    ball_in_t   bin;
+    float th = 0.0f;
+    uint32_t ms = now / ST_PER_MS;
+    int have, fresh = 0;
+
+    t.id = 0; t.cx = 0; t.cy = 0; t.area = 0; t.stamp_ms = 0;
+    have = uf_get(&g_uf, ms, &t);
+    if (have) {
+        /* 只有 stamp 变了才算"新测量" —— 同一帧被多拍反复读到, 不能当新数据喂观测器
+         * (相机约 25fps 而本回路 50Hz ⇒ 约一半的拍走模型外推, 见 ball.h) */
+        if (!g_ball_stamp_init || t.stamp_ms != g_ball_stamp) {
+            fresh = 1; g_ball_stamp = t.stamp_ms; g_ball_stamp_init = 1;
+        }
+    }
+    bin.x_mm       = (float)t.cx / CFG_BALL_CX_PER_MM;
+    bin.meas_valid = fresh;
+    /* 从没收到过帧就给个大龄, 让 ball 判 NO_MEAS 并摊平摆杆 —— 不能拿 0 当"球在中心" */
+    bin.meas_age_s = g_uf.have_frame ? ((float)(ms - g_uf.last.stamp_ms) / 1000.0f) : 999.0f;
+    {
+        float mm_per_rev = ENC_CPR / ENC_COUNTS_PER_MM;
+        float v_mm_s = (float)g_dv / 60.0f * mm_per_rev;
+        float ax = (dt_ball_s > 0.0f) ? (v_mm_s - g_ball_v_prev) / dt_ball_s : 0.0f;
+        g_ball_v_prev = v_mm_s;
+        bin.ax_mm_s2 = (float)CFG_BALL_AX_SIGN * ax;
+    }
+    bin.pitch_deg = (float)CFG_BALL_PITCH_SIGN * g_att.pitch;
+    bin.dt_s      = dt_ball_s;
+
+    ball_step(&g_ball, &bin, &th);
+    ball_drive_servo(th);
+}
+
 int main(void)
 {
     SYSCFG_DL_init();
@@ -2030,6 +2095,7 @@ int main(void)
                 /* `g_w_lp` 也必须清 —— 上一趟结束时它可能停在弯道值(40+), 不清则新一趟
                  * 起步头 3~4 拍被判成弯道、按 V_SLOW 起步。起步永远是直线, 从 0 起算才对。 */
                 g_w_lp = 0.0f;
+                g_dv_ramp = 0.0f;   /* 每趟从 0 起算 ⇒ 起步也走斜坡(起步 0->巡航是最大的一次阶跃) */
                 g_mode = MODE_LINE; g_mode_at = now; g_cmd_at = now;
                 g_dv = 0; g_dw = 0; reset_all_pid();
                 g_disp = 2; g_disp_dirty = 1;
@@ -2062,7 +2128,10 @@ int main(void)
         /* Leaving m12 by any path (m command, z, timeout, bridge) must not carry I into the next
          * ball session. Apply the zero command once as well; changing g_mode alone stops ball_step(),
          * so without this the physical beam would remain at its last nonzero pulse. */
-        if (prev_mode == MODE_BALL && g_mode != MODE_BALL) {
+        /* ⚠ **MODE_BALL -> MODE_LINE 现在是合法的交接, 不是退出**（第 4/5 项的正常流程就是
+         * "先 m12 把球稳在中心, 再按键起跑进 m11 带着球跑一圈"）⇒ 这条路径**不许 abort**,
+         * 否则球层一进循迹就被清掉、摆杆摊平, 球立刻滚走。其它去向仍然要清。 */
+        if (prev_mode == MODE_BALL && g_mode != MODE_BALL && g_mode != MODE_LINE) {
             ball_abort(&g_ball);
             ball_drive_servo(0.0f);
         }
@@ -2185,6 +2254,13 @@ int main(void)
             }
         }
 
+        /* ⭐ 球层服务放在 switch **之前**、不受 g_mode 的 case 结构约束 ——
+         * 这是"边循迹边控球"（第 4/5/6 项）成立的前提，理由见 ball_service 的函数头。
+         * 只在这两个模式下服务: MODE_BALL(静止定点/轨迹) 与 MODE_LINE(跑圈时守住球)。
+         * 其它模式不服务 ⇒ 舵机不受影响, 与改动前行为一致。 */
+        if (ball_tick && (g_mode == MODE_BALL || g_mode == MODE_LINE))
+            ball_service(now, dt_ball_s);
+
         switch (g_mode) {
         case MODE_IDLE:
             pwm_out[0] = pwm_out[1] = 0;
@@ -2250,7 +2326,15 @@ int main(void)
                     while (m) { n_on += (m & 1); m >>= 1; }
                     g_cross_cur = n_on;
                     if (n_on > g_cross_max) g_cross_max = n_on;
-                    if (n_on >= g_cross_min) {      /* 门限走运行时副本(命令 N), 不直读 CFG_ */
+                    /* ⭐ 第二道判据: **车必须基本走直** 才允许判启停线。
+                     * 为什么必须加(2026-07-31 真机): 在一条**根本没画启停线**的赛道上,
+                     * 提速后 `on` 峰值达到 5、`xcnt` 一路涨到 3 ⇒ 纯"在线路数"没有区分度。
+                     * 机理: 车斜穿 18mm 黑线时阵列近乎与线平行, 一次就盖住 5 路(60mm) > 门限 4。
+                     * 为什么这道闸门不会挡住真的启停线: 官方启停线画在 A 点, 而 A 是直线段 AB
+                     * 的起点(题目图 1) ⇒ 压线时车必然直行, `|w_lp|` 很小; 而所有误触发都发生在
+                     * `wlp` 大的斜穿/过弯时刻(实测 ABORT 那次 wlp=44)。
+                     * 用上一拍的 g_w_lp: 它在本函数后面才更新, 差一拍对低通值无影响。 */
+                    if (n_on >= g_cross_min && g_w_lp <= (float)CFG_LINE_CROSS_W_MAX) {
                         if (g_cross_run < 1000) g_cross_run++;
                     } else {
                         g_cross_run = 0;
@@ -2300,8 +2384,19 @@ int main(void)
                     g_dv = 0;
                 }
                 g_vseg_now = g_dv;
-                if (g_dv != 0) drive_closed_loop(g_dv, g_dw, speed_rpm, pwm_out);
-                else           { pwm_out[0] = pwm_out[1] = 0; }
+                /* ==== 加速斜坡（削电流冲击，见 g_dv_ramp 的声明处为什么需要它）====
+                 * 只限**加速**方向; 减速立即跟随, 所以刹车距离与到位精度完全不变。
+                 * dt_spd_s 是固定 50ms 的速度窗 ⇒ 每拍最多涨 CFG_LINE_V_SLEW_RPM_S*0.05 rpm。 */
+                {
+                    float lim = (float)CFG_LINE_V_SLEW_RPM_S * dt_spd_s;
+                    float d   = (float)g_dv - g_dv_ramp;
+                    if (d > lim) d = lim;         /* 加速受限 */
+                    g_dv_ramp += d;               /* d<0 时原样加上 ⇒ 减速不受限 */
+                }
+                if (g_dv != 0 || g_dv_ramp != 0.0f)
+                    drive_closed_loop((int)g_dv_ramp, g_dw, speed_rpm, pwm_out);
+                else
+                    { pwm_out[0] = pwm_out[1] = 0; }
             }
             break; }
 #endif
@@ -2387,46 +2482,11 @@ int main(void)
          *   PC 发 `$V,1,<x_mm*100>,0,0*<异或>` 即可(tools/vision_test.ps1)。这正是"摆杆和相机
          *   都还没到位、软件先在板上验完"的那条路 —— 摆杆一到位只剩装 + 标定 + 整定。
          * ⚠ 本模式**强制 pwm=0**: 要求3 明文"小车在静止状态时"。 */
-        case MODE_BALL: {
-            if (ball_tick) {
-                uf_target_t t;
-                ball_in_t   bin;
-                float th = 0.0f;
-                uint32_t ms = now / ST_PER_MS;
-                int have, fresh = 0;
-
-                t.id = 0; t.cx = 0; t.cy = 0; t.area = 0; t.stamp_ms = 0;
-                have = uf_get(&g_uf, ms, &t);
-                if (have) {
-                    /* 只有 stamp 变了才算"新测量" —— 同一帧被多拍反复读到, 不能当新数据喂观测器
-                     * (相机 30fps 而本回路 50Hz ⇒ 约三分之一的拍走模型外推, 见 ball.h) */
-                    if (!g_ball_stamp_init || t.stamp_ms != g_ball_stamp) {
-                        fresh = 1; g_ball_stamp = t.stamp_ms; g_ball_stamp_init = 1;
-                    }
-                }
-                bin.x_mm       = (float)t.cx / CFG_BALL_CX_PER_MM;
-                bin.meas_valid = fresh;
-                /* 从没收到过帧就给个大龄, 让 ball 判 NO_MEAS 并摊平摆杆 —— 不能拿 0 当"球在中心" */
-                bin.meas_age_s = g_uf.have_frame ? ((float)(ms - g_uf.last.stamp_ms) / 1000.0f)
-                                                 : 999.0f;
-                /* a_x 用**车级速度指令的微分**而不是 IMU: 前馈要的是"即将发生的加速度",
-                 * 而 IMU 测的是"已经发生的", 后者天生晚一拍(取舍写在 ball.h)。
-                 * m12 下车不动 ⇒ g_dv 恒 0 ⇒ a_x=0; 代码提前写好, 将来并进 m11 直接可用。 */
-                {
-                    float mm_per_rev = ENC_CPR / ENC_COUNTS_PER_MM;
-                    float v_mm_s = (float)g_dv / 60.0f * mm_per_rev;
-                    float ax = (dt_ball_s > 0.0f) ? (v_mm_s - g_ball_v_prev) / dt_ball_s : 0.0f;
-                    g_ball_v_prev = v_mm_s;
-                    bin.ax_mm_s2 = (float)CFG_BALL_AX_SIGN * ax;
-                }
-                bin.pitch_deg = (float)CFG_BALL_PITCH_SIGN * g_att.pitch;
-                bin.dt_s      = dt_ball_s;
-
-                ball_step(&g_ball, &bin, &th);
-                ball_drive_servo(th);
-                pwm_out[0] = pwm_out[1] = 0;
-            }
-            break; }
+        /* 球层本身已在 switch **之前**统一服务过了（见 ball_service 的调用点）⇒ 这里只剩
+         * "要求 3 明文规定小车静止"这一条模式专属约束。 */
+        case MODE_BALL:
+            pwm_out[0] = pwm_out[1] = 0;
+            break;
 
         case MODE_CURRENT: {            /* g_target = 目标电流 mA(带符号=方向) */
             uint16_t r0 = 0, r1 = 0;
