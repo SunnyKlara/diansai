@@ -190,7 +190,23 @@ while ($sw.Elapsed.TotalSeconds -lt $Sec) {
         try { $kbuf += $k.ReadExisting() } catch {}
         Start-Sleep -Milliseconds 25
     }
-    foreach ($ln in ($kbuf -split "`n")) {
+    # Parse COMPLETE lines only and carry the in-flight tail into the next window.
+    # The old code split the buffer and then did $kbuf = "", which threw the half-arrived line away.
+    # That is worse than losing a sample: a truncated "tx=123" (really tx=12345) still matches
+    # tx=(\d+), so a wrong-but-plausible number gets parsed. On the first window it lands in $firstTx
+    # and inflates the growth; on the last window it lands in $lastTx, where it can make
+    # ($lastTx -gt $firstTx) false and report FAIL for a camera link that is actually up.
+    # Same failure family as the 20% fake packet loss fixed in e25eb46.
+    $cut = $kbuf.LastIndexOf("`n")
+    if ($cut -ge 0) {
+        $complete = $kbuf.Substring(0, $cut)
+        $kbuf = $kbuf.Substring($cut + 1)
+    } else {
+        $complete = ""
+        # No newline yet: keep waiting, but never let a silent/binary console grow this without bound.
+        if ($kbuf.Length -gt 8192) { $kbuf = $kbuf.Substring($kbuf.Length - 1024) }
+    }
+    foreach ($ln in ($complete -split "`n")) {
         if ($ln -match 'tx=(?<t>\d+)') {
             $lastTx = [int]$Matches['t']
             if ($firstTx -lt 0) { $firstTx = $lastTx }
@@ -198,7 +214,6 @@ while ($sw.Elapsed.TotalSeconds -lt $Sec) {
         if ($ln -match 'uart_hz=(?<h>[\d.]+)')  { $lastHz  = [double]$Matches['h'] }
         if ($ln -match 'fps=(?<f>[\d.]+)')      { $lastFps = [double]$Matches['f'] }
     }
-    $kbuf = ""
 
     $cur = McuPb16
     if (-not $cur) { L ("{0,5:N1}s  MCU no reply" -f $sw.Elapsed.TotalSeconds); continue }
