@@ -2074,7 +2074,14 @@ int main(void)
              * 虚拟按下持续 60ms > 消抖窗 20ms, 然后自动松开 ⇒ 一条命令 = 一次干净的按压。 */
             ti.btn = 0;
 #if CFG_TASK_HW_EN
-            if (!rd(GPIO_TASK_PORT, GPIO_TASK_BTN_PIN)) ti.btn = 1;
+            /* 🔴 2026-08-01 00:0x 修: 原来写的是 `rd(...)`, 而那个辅助函数被 `#if ENC_PROBE`
+             * 包着(编码器探针调试代码, 正常构建关闭) ⇒ 打开 CFG_TASK_HW_EN 后链接立刻报
+             * `undefined reference to 'rd'`。**这是一个从未被编译过的分支里的死 bug** ——
+             * HW_EN 一直是 0, 所以这行代码从写下那天起就没进过编译器。
+             * ⇒ 教训: `#if` 关着的代码等于**没写**, 别假设它能编过; 打开开关时要当新代码审。
+             * 直接调 driverlib(同 linesens.c 读 8 路的写法), 不依赖任何调试期辅助函数。
+             * 低有效: 内部上拉 + 按键接 GND ⇒ 读 0 = 按下 ⇒ 故取反。 */
+            if (DL_GPIO_readPins(GPIO_TASK_PORT, GPIO_TASK_BTN_PIN) == 0) ti.btn = 1;
 #endif
             if (g_btn_virt_until && (int32_t)(ms - g_btn_virt_until) < 0) ti.btn = 1;
             ti.line_lost = (g_line_st == LINE_LOST) ? 1 : 0;

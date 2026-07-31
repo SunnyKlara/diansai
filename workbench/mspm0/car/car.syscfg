@@ -161,6 +161,37 @@ GPIO3.associatedPins[0].direction    = "OUTPUT";
 GPIO3.associatedPins[0].initialValue = "SET";
 GPIO3.associatedPins[0].pin.$assign  = "PB6";
 
+/* ---- 第2项任务层硬件: 启动按键 + 蜂鸣器 (BTN=PA22, BUZZER=PA30) ----
+ *  🔴 **按键是题目硬要求, 不是可选件**: 要求 2/4/5/6 全部明文"按键启动"(合计 76 分),
+ *     说明 5 更明文"小车必须有启动按键和显示装置"。此前只有串口虚拟按键 `K`, 那需要笔记本
+ *     连着车 —— 既不是"按键启动", 也踩说明 4"不得人为干涉、遥控小车运动"。
+ *  按键接法: **内部上拉输入, 另一端接 GND ⇒ 读 0 = 按下**(car.c 那里取反)。消抖在 task.c,
+ *     窗口 TASK_BTN_DEBOUNCE_MS=20ms。⭐ **上拉的副作用是好的**: 按键没焊上时读 1 = 未按下
+ *     ⇒ 可以先烧固件、后焊按键, 中间状态完全无害。
+ *  选脚依据(SSOT 的四重闸):
+ *    ① 引出: PA22 = 载板 §10.1 分给蜂鸣器的脚 ⇒ 已引到排针(这就是它被引出的证明)
+ *    ② 载板未占: 蜂鸣器**不是题目要求**(说明 5 只要按键+显示) ⇒ 那一路本就不会接线;
+ *       §10.1 另有一行"按键/其余 LED = 任意空 A/B 丝印"本就允许这么选
+ *    ③ syscfg 不冲突: PA22/PA30 在本文件中原先零赋值(PA22 只出现在文件头注释里)
+ *    ④ 不是 BSL/启动脚: BSL 是 PA10/PA11(UART0) 与 PA0/PA1(I2C0); PB1/PA28 已实证
+ *       一接上就停在 BootROM ⇒ 永久避开。PA22/PA30 都不在其中。
+ *  ⚠ **两个脚必须同端口**: car.c 用的是共享宏 `GPIO_TASK_PORT` + `GPIO_TASK_BTN_PIN`
+ *     / `GPIO_TASK_BUZZER_PIN` ⇒ 原 config.h 里建议的 `BUZZER=PB24` 跨了端口、会编译不过,
+ *     故蜂鸣器改到 **PA30**(纯占位、永不接线, 只为让宏存在)。
+ *  ⬜ 待真机验证: 焊上按键后按一下, `[task]` 应从 IDLE 进 RUN(与命令 `K` 等效)。 */
+const GPIO5 = GPIO.addInstance();
+GPIO5.$name                              = "GPIO_TASK";
+GPIO5.associatedPins.create(2);
+GPIO5.associatedPins[0].$name            = "BTN";
+GPIO5.associatedPins[0].direction        = "INPUT";
+GPIO5.associatedPins[0].internalResistor = "PULL_UP";
+GPIO5.associatedPins[0].pin.$assign      = "PA22";
+GPIO5.associatedPins[1].$name            = "BUZZER";
+GPIO5.associatedPins[1].direction        = "OUTPUT";
+/* 合法值是 "CLEARED" 不是 "CLEAR" —— SysConfig 会直接报 error 并拒绝生成(实测)。 */
+GPIO5.associatedPins[1].initialValue     = "CLEARED";
+GPIO5.associatedPins[1].pin.$assign      = "PA30";
+
 const Board = scripting.addModule("/ti/driverlib/Board", {}, false);
 
 /* ---- 硬件 SPI1: SCK=PB9, MOSI=PB8 (LCD + IMU 共享总线) ----
