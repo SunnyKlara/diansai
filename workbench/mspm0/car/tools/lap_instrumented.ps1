@@ -30,6 +30,18 @@ param(
     # measured, `t65` in IDLE replied "[ctl] mode=IDLE tgt=65" - it set the speed-loop target, and
     # the line cruise/gains were never touched, so the whole run used the old values silently.
     [string]$LineCmds = "",
+    # Run with ZERO script-induced serial traffic: telemetry off (f0) and no `?` polling during the
+    # lap; only a single `?` afterwards for the post-mortem.
+    #
+    # WHY THIS EXISTS: the normal mode streams 10 Hz telemetry AND polls `?` every 600 ms, and every
+    # one of those bytes goes out BOTH sinks (sinks=3) - so the car-side ESP-01S is transmitting hard
+    # for the whole lap. The carrier-board design doc's own failure table lists, as its first entry,
+    # "MCU resets while the ESP transmits <- 3V3 cannot supply the 300 mA spike, missing buffer cap".
+    # That is the same board and the same mechanism as the BOR_SUPPLY resets being investigated, so
+    # the measurement setup itself is a suspect. This switch removes that variable.
+    # The post-mortem still yields the verdict that matters: the task layer's own state/time/xcnt/
+    # lostSeg survive the run, and a reset is visible as run#0 (counters restart).
+    [switch]$QuietRun,
     [string]$OutDir = "_logs\track"
 )
 $gateMm = 0.82 * $LoopMm
@@ -39,6 +51,13 @@ if (-not (Test-Path $dOut)) { New-Item -ItemType Directory -Path $dOut -Force | 
 $stamp = Get-Date -Format "HHmmss"
 $csv = Join-Path $dOut ("lap_$stamp.csv")
 $rep = Join-Path $dOut ("lap_$stamp.txt")
+# Raw capture of EVERY line, not just the [ctl] stream. WHY: when the MCU resets mid-run it prints
+# `[rst] cause=...` on the next boot - the firmware's own verdict on why it reset (BOR_SUPPLY /
+# EXTERNAL_NRST / CPU_LOCKUP / WWDT). Parsing only [ctl] lines threw that line away, which is
+# exactly the one measurement worth having. SWD cannot read RSTCAUSE (openocd resets the chip on
+# every init and overwrites it), so this print is the only channel.
+$raw = Join-Path $dOut ("lap_${stamp}_raw.txt")
+$rawLines = New-Object System.Collections.ArrayList
 $lines = New-Object System.Collections.ArrayList
 function L { param($s) [void]$lines.Add([string]$s); Write-Output $s }
 
@@ -52,7 +71,8 @@ L ("==== lap_instrumented  port=$Port  " + (Get-Date -Format "HH:mm:ss") + " ===
 L ("arrival gate = {0:N0} mm (0.82 x LoopMm {1:N0})" -f $gateMm, $LoopMm)
 
 Slow "z";           [void](Drain 400)
-Slow ("f" + $Fms);  [void](Drain 400)
+if ($QuietRun) { Slow "f0"; [void](Drain 400); L "QuietRun: telemetry OFF, no polling during the lap (ESP stays silent)" }
+else { Slow ("f" + $Fms);  [void](Drain 400) }
 if ($PreCmds.Trim()) {
     foreach ($cmd in ($PreCmds -split ',')) {
         $c = $cmd.Trim(); if (-not $c) { continue }
@@ -118,7 +138,7 @@ while (((Get-Date) - $t0).TotalSeconds -lt $MaxS) {
     # arrival is indistinguishable between "not enough probes on black" and "car was not straight
     # enough at that instant". xcnt and the on= max are cumulative, so a 600 ms poll cannot miss
     # them; w_lp is low-passed and moves slowly, so it is well sampled at this rate too.
-    if ((Get-Date) -ge $nextAsk) {
+    if (-not $QuietRun -and (Get-Date) -ge $nextAsk) {
         $nextAsk = (Get-Date).AddMilliseconds(600)
         $script:sp.Write("?`n")
     }
@@ -136,6 +156,7 @@ while (((Get-Date) - $t0).TotalSeconds -lt $MaxS) {
         $i = $buf.IndexOf("`n")
         $ln = $buf.Substring(0, $i).Trim()
         $buf = $buf.Substring($i + 1)
+        if ($ln) { [void]$rawLines.Add(("{0,6:N2} {1}" -f ((Get-Date) - $t0).TotalSeconds, $ln)) }
         if ($ln -notmatch '\| C:(-?\d+),(-?\d+)') { continue }
         $c1 = [int]$Matches[1]; $c2 = [int]$Matches[2]
         $up = if ($ln -match 't(\d+)$') { [int]$Matches[1] } else { -1 }
@@ -174,6 +195,18 @@ $sp.Close()
 $rows | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $csv
 L ""
 L "---- stream ----"
+if ($QuietRun) {
+    L "  (QuietRun: no stream by design - verdict comes from the post-mortem below)"
+    $rstQ = @($rawLines | Where-Object { $_ -match '\[rst\]' })
+    if ($rstQ.Count) { L "  firmware reset verdict:"; foreach ($r in $rstQ) { L ("    " + $r) } }
+    else { L "  no [rst] line seen => no reset happened during the lap" }
+    foreach ($ln in ($post -split "`n")) { if ($ln -match '\[task\]') { L ("post: " + $ln.Trim()) } }
+    L "  read the post line: state DONE/ABORT + t= is the judged time; run#0 means it REBOOTED."
+    [IO.File]::WriteAllLines($raw, $rawLines)
+    L ("raw: " + $raw)
+    [IO.File]::WriteAllLines($rep, $lines)
+    exit 0
+}
 L ("  samples        : {0}   (expect ~{1} at {2} ms)" -f $rows.Count, [int]($MaxS * 1000 / $Fms), $Fms)
 if ($rows.Count -lt 2) { L "  TOO FEW SAMPLES - link died or telemetry off"; [IO.File]::WriteAllLines($rep, $lines); exit 3 }
 $last = $rows[$rows.Count - 1]
@@ -217,5 +250,15 @@ if ($marks.Count) {
 else { L "  no [task] polls captured" }
 L ""
 foreach ($ln in ($post -split "`n")) { if ($ln -match '\[task\]') { L ("post: " + $ln.Trim()) } }
+L ""
+L "---- firmware's own reset verdict ([rst] cause=, printed on the boot AFTER a reset) ----"
+$rstLines = @($rawLines | Where-Object { $_ -match '\[rst\]' })
+if ($rstLines.Count) { foreach ($r in $rstLines) { L ("  " + $r) } }
+else { L "  none captured (no reset during this run, or the boot banner landed outside the window)" }
+# boot markers are worth surfacing too: they prove a restart happened even if [rst] scrolled past
+$bootLines = @($rawLines | Where-Object { $_ -match 'boot1 syscfg' })
+if ($bootLines.Count) { L ("  restarts seen in-window: {0}  first at {1}" -f $bootLines.Count, ($bootLines[0] -split ' ')[0]) }
+[IO.File]::WriteAllLines($raw, $rawLines)
 L ("csv: " + $csv)
+L ("raw: " + $raw)
 [IO.File]::WriteAllLines($rep, $lines)

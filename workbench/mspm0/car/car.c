@@ -1907,7 +1907,17 @@ static void ball_service(uint32_t now, float dt_ball_s)
     bin.dt_s      = dt_ball_s;
 
     ball_step(&g_ball, &bin, &th);
-    ball_drive_servo(th);
+    /* 🔴 **没有有效测量时让舵机 limp（停脉冲），而不是驱动到中位**（2026-08-01 真机逼出来的）
+     * `ball.h:108` 对 NO_MEAS 写的是"摊平摆杆"，但原实现是 `ball_drive_servo(0)` ⇒ 那会写出
+     *   **中位脉宽**，舵机于是**带电保持**、持续吃电流；"摊平"和"不出力"被当成一回事了。
+     * 代价是实测到的：`m11` 一启动，`[srv] us` 就从 `0(limp)` 变成 `1154`，而此时球层是
+     *   `st=BLOCKED fail=NO_MEAS`（相机已拆去做图传）⇒ **明知反馈无效，MG995 仍全程顶着出力**。
+     *   MG995 是 11kg·cm 模拟舵机（堵转 1~2A 级），与两个电机共用同一条电池母线 ⇒ 它是
+     *   "跑动中 `BOR_SUPPLY` 掉压复位"里一个**纯属多余**的电流负载。
+     * 旁证（同一次读数）：`x*10=38757` 即球位 3875mm、管长只有 250mm ⇒ 拿垃圾值在算控制量。
+     * ⇒ 语义上这也才是对的：**没有测量就不该给执行器上力**。`待真机验证`。 */
+    if (g_ball.fail == BALL_F_NO_MEAS) servo_write_us(0);
+    else                               ball_drive_servo(th);
 }
 
 int main(void)
