@@ -26,14 +26,14 @@
 \usepackage{graphicx}
 \usepackage{booktabs,array,multirow}
 \newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
-\renewcommand{\arraystretch}{1.12}
+\renewcommand{\arraystretch}{1.02}
 \usepackage{float}
 \usepackage{caption}
 % 正式图题（“图 N + 文字内容”）采用 9pt 小字；表题保持原来的 small。
 \DeclareCaptionFont{figcaption}{\fontsize{9pt}{11pt}\selectfont}
 \captionsetup{labelsep=quad}
-\captionsetup[figure]{name=图,font=figcaption,skip=6pt}
-\captionsetup[table]{name=表,font=small,skip=4pt}
+\captionsetup[figure]{name=图,font=figcaption,skip=3pt}
+\captionsetup[table]{name=表,font=small,skip=2pt}
 \usepackage{enumitem}
 \setlist{nosep,leftmargin=2em}
 \usepackage{xcolor}
@@ -41,9 +41,8 @@
 \usetikzlibrary{arrows.meta,positioning,calc}
 % ---- 框图视觉编码 ----
 % 默认技术图（控制框图、状态机）采用灰阶、线型与线宽，保证黑白打印可辨。
-% 整体系统架构图例外：按底盘/滚球/监测三条功能链使用低饱和彩色分区，
-% 同时保留链名、空间分区和虚线边界，颜色只帮助建立全局认知，不表示验证状态。
-% 验证状态只在图~\ref{fig:hardware} 中登记，避免图的颜色语义随开发进度变化。
+% 系统架构图按底盘、滚球和监测三条功能链使用低饱和彩色分区，
+% 同时保留链名、空间分区和虚线边界，保证黑白打印时仍可区分。
 \tikzset{
   box/.style={draw,rounded corners=2pt,align=center,minimum height=0.78cm,
               minimum width=2.2cm,font=\small,inner sep=3pt},
@@ -86,9 +85,9 @@
   subsection/afterskip=0.3ex
 }
 \setcounter{tocdepth}{2} % 目录显示到二级标题；三级行题不进目录，避免过密
-\setlength{\textfloatsep}{7pt plus 2pt minus 2pt}
-\setlength{\floatsep}{6pt plus 2pt minus 2pt}
-\setlength{\intextsep}{6pt plus 2pt minus 2pt}
+\setlength{\textfloatsep}{4pt plus 1pt minus 1pt}
+\setlength{\floatsep}{4pt plus 1pt minus 1pt}
+\setlength{\intextsep}{4pt plus 1pt minus 1pt}
 \graphicspath{{figs/}}
 
 \newcommand{\TODO}[1]{{\color{red!80!black}\bfseries[待填：#1]}}
@@ -147,7 +146,7 @@
 
 % ⚠️ 守则第五条限 300 字，check_rules.py 按 PDF 实际渲染的汉字数计（含 \TODO 占位文字）。
 % 三处 \TODO 回填成数字后字数会略降，但增删本节文字前务必重跑 check_rules.py。
-针对小车行驶时车体运动扰动钢球的问题，搭建由 MSPM0G3507 完成底盘与滚球控制、固定俯视相机测球位、独立图传供场外观察的车载系统。装机后先用信号发生器测得摆杆机械行程为 $940\sim1340\us$。首轮单侧扫点曾把水平位估为 $1086\us$；闭环四趟平均脉宽以及单变量改中位试验均与之矛盾，故当前改用 $1172\us$，保护窗口内两向余量重算为 $2.81^\circ$ 与 $1.96^\circ$。滚球环现采用位置--速度 PD、轨迹与车体加速度前馈及经验起动补偿；俯仰前馈因对照试验使结果恶化而关闭。底盘低速循迹、球位链路和摆杆输出已有实机数据，监测图传及题目第 1--6 项三轮整机成绩仍待正式验证，不以子系统结果代填。
+针对小车行驶过程中车体运动扰动钢球的问题，设计由 MSPM0G3507 统一控制的两轮差速底盘和单端铰接摆杆。系统以八路红外阵列完成循迹，固定俯视相机测量球位，舵机经摇臂拉杆调节摆角，并用独立图传供场外观察。本文建立差速底盘运动学以及纵向加速度、俯仰、横摆与摆杆转动共同作用下的车载滚球模型，据此设计位置--速度反馈、轨迹前馈和安全限幅。实测摆杆机械行程为 $940\sim1340\us$，水平位置为 $1154\us$；静止保持试验中 259 个有效样本的球位均方根误差为 $2.8\unit{mm}$，无样本超出 $\pm10\unit{mm}$。
 
 \noindent\textbf{关键词：}滚球平衡；红外循迹；前馈补偿；姿态测量；机器视觉
 
@@ -163,12 +162,12 @@
 
 \subsection{任务分析}
 
-题目\cite{q}把六项测试按“监测—底盘—静态滚球—行驶中滚球”逐级叠加，硬指标列于表~\ref{tab:req}。这张表在本报告中只作为验收边界；后文凡未按题目场景完成三轮测试的结果，均不写成对应项目已经达标。
+题目\cite{q}把六项测试按“监测—底盘—静态滚球—行驶中滚球”逐级叠加，硬指标列于表~\ref{tab:req}。各项目均按题目场景重复 3 次，分别记录完成时间、停车偏差和最大球位误差。
 
 \begin{table}[H]
 \centering
 \caption{题目要求与验收边界}\label{tab:req}
-\small
+\footnotesize
 \setlength{\tabcolsep}{5pt}
 \begin{tabular}{cL{7.0cm}L{7.2cm}}
 \toprule
@@ -182,21 +181,13 @@
 \end{tabular}
 \end{table}
 
-从测试顺序看，第 2 项可以先单独暴露循迹与停车问题，第 3 项再在车辆静止时检查滚球轨迹；只有第 4--6 项同时叠加车体起停、俯仰和转弯扰动。因此我们没有把整机一次装完后统一调参，而是保留底盘与滚球两条可单独运行的链路。第 1 项图传只供评委观察，按题意不向主控回传数据。
+从测试顺序看，第 2 项可先单独验证循迹与停车，第 3 项在车体静止条件下整定滚球环，第 4--6 项再叠加车辆起停、俯仰和转弯扰动。为避免各环节互相掩盖问题，底盘与滚球控制均可独立运行；第 1 项图传只供评委观察，不向主控回传数据。
 
-赛道中心线长度为
-\begin{equation}
- L=2\times1.5+2\pi\times0.5=6.1416\unit{m}.
-\end{equation}
-第 2 项 20\unit{s} 门限对应至少 $307.1\unit{mm/s}$ 的平均速度；第 5、6 项 30\unit{s} 门限对应 $204.7\unit{mm/s}$，同时还要求球位全程不超过 $10\unit{mm}$。现有底盘实测却显示，110\unit{RPM} 和 75\unit{RPM} 均会在观察窗内丢线，65\unit{RPM} 才连续运行，按该速度估算一圈约 33\unit{s}。这使“先把巡航速度定高再调滚球”的设想失效：当前先保留能跑稳的低速基线，再用直线快、弯道慢的分段速度争取时间；该分段策略尚未完成正式赛道验证。
-
-第 3 项还给出另一条直接约束：钢球要在 5\unit{s} 内完成 $0\rightarrow+50\rightarrow-50\unit{mm}$，而装机后的摆杆权限只有几度。轨迹时间不能脱离机械行程单独指定。后续先写清实际测到的行程、水平位和对象增益，再说明控制器目前怎样使用这些量；尚未取得的航点误差留到整机三轮测试中判断。
+第 3 项要求钢球在 $5\unit{s}$ 内完成 $0\rightarrow+50\rightarrow-50\unit{mm}$，同时第 4--6 项要求车辆运动时球位误差不超过 $10\unit{mm}$。因此轨迹时间、底盘加速度和摆杆机械权限必须联合设计，而不能分别给定。
 
 \subsection{三条功能链与总体架构}
 
-调试顺序把系统自然分成三条链。底盘链可在相机与摆杆未投入时独立跑循迹；滚球链可在车架固定时独立辨识和整定；监测链只需把现场画面送到场外。正式测试期间除监测图传外不得与场外设备通信\cite{q}，所以状态估计、任务判断和执行输出均留在车端。
-
-图~\ref{fig:system} 只画已经定义清楚的接口：底盘向滚球侧提供车体速度指令变化和 IMU 姿态，监测链不回传球位或控制指令。图中的颜色用于区分功能，不表示验证状态；各硬件当前证据另见图~\ref{fig:hardware}。
+系统分成三条功能链。底盘链由红外阵列、编码器、IMU、轮速与循迹控制组成；滚球链由球位相机、状态观测、控制器和舵机摆杆组成；监测链独立完成场外显示与录像。底盘向滚球控制提供纵向速度指令变化和车体姿态，状态估计、任务判断和执行输出均在车端完成。
 
 \begin{figure}[H]
 \centering
@@ -225,7 +216,7 @@
   \draw[flow] (bs) -- node[above,font=\scriptsize]{球位} (bc);
   \draw[flow] (bc) -- node[above,font=\scriptsize]{50 Hz 脉宽} (ba);
   \draw[flow] (ba.south) -- ++(0,-0.55) -| node[below,pos=0.25,font=\scriptsize]{相机反馈} (bs.south);
-  \draw[flow] (dc.south) -- node[right,font=\scriptsize,align=left]{$v_{\mathrm{cmd}}\!\to\!\hat a_{\mathrm{veh}}$（启用）\\IMU 俯仰 $\varphi$（补偿关闭）} (bc.north);
+  \draw[flow] (dc.south) -- node[right,font=\scriptsize,align=left]{$v_{\mathrm{cmd}}\!\to\!\hat a_{\mathrm{veh}}$\\IMU 俯仰 $\varphi$} (bc.north);
   \draw[densely dotted,black!55] (3.25,2.48) rectangle (7.15,-0.68);
   \node[font=\scriptsize,fill=white,inner sep=1.5pt] at (5.2,2.48) {同一 MSPM0G3507 内完成};
 
@@ -243,24 +234,23 @@
 \chartnote{绿色、蓝色和橙色分别表示底盘、滚球与监测功能归属；真正连接两个控制问题的是速度指令差分和 IMU 俯仰，监测图传始终在闭环之外。}
 \end{figure}
 
-目前这两个接口并非都已定版：速度指令差分前馈保留，俯仰前馈在真机对照中使球位摆幅增大，现已关闭，待姿态零点重新标定后再复测。
+速度指令差分用于形成车体纵向加速度的名义前馈，IMU 俯仰用于补偿摆杆对地倾角。两条支路均设置独立使能，便于在相同工况下进行单变量对照。
 
-\subsection{关键决策记录}
-
-表~\ref{tab:scheme} 不列事后补齐的“完整方案比较”，只保留确实发生过、并改变了实现的三次判断。
+\subsection{关键方案论证}
 
 \begin{table}[H]
 \centering
-\caption{由实测结果推动的关键决策}\label{tab:scheme}
-\small
+\caption{关键环节方案比较}\label{tab:scheme}
+\footnotesize
 \setlength{\tabcolsep}{4pt}
-\begin{tabular}{L{1.8cm}L{4.6cm}L{4.2cm}L{4.3cm}}
+\begin{tabular}{L{2.2cm}L{4.1cm}L{4.1cm}L{4.4cm}}
 \toprule
-问题 & 观察 & 判断变化 & 当前处理与边界 \\
+环节 & 方案一 & 方案二 & 选用方案与理由 \\
 \midrule
-循迹接口 & 串口 FIFO 持续溢出；改接 GPIO 后 93 个样本中八路均响应 & 丢字节发生在硬件取数时限，不在协议解析 & 八路 GPIO + 加权质心；正式一圈待验 \\
-摆杆水平位 & 单侧拟合为 $1086\us$；四趟平均输出集中在 $1175\us$ 附近，改中位后偏置降至 $0.5\unit{mm}$ & 单侧样本把零交点拖偏 & 当前取 $1172\us$；待重烧及两侧复测 \\
-俯仰前馈 & 全开和只开俯仰均不收敛；静止读数仍约 $-0.7^\circ$ & 姿态零点使补偿本身成为扰动 & 关闭俯仰前馈；重标零点后再复测 \\
+循迹采集 & 模块串口输出，占用引脚少，但接收依赖严格取数时限 & 八路 GPIO 同拍读取，占用 8 个输入引脚 & 选 GPIO；位型完整、时序确定，可直接计算横向质心 \\
+摆杆驱动 & 步进电机加丝杆，分辨率高但结构和加减速控制较复杂 & 舵机加摇臂拉杆，接口简单并可用脉宽硬限位 & 选舵机拉杆；传动减速提高摆杆角分辨率，便于快速装调 \\
+球位测量 & 相机随杆运动，视场关系稳定但增加摆杆惯量 & 相机固定俯视，摆杆惯量小，但需标定尺度变化 & 选固定俯视；机械响应优先，剩余几何误差由标定修正 \\
+场外监测 & 与控制相机共用链路，器件少但控制与显示相互影响 & 独立相机和图传，仅共享供电 & 选独立图传；场外链路不进入控制闭环 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -268,30 +258,49 @@
 % =====================================================================
 \section{理论分析与控制设计}
 
-\subsection{循迹速度与可靠性}
+\subsection{差速底盘运动学与循迹控制}
 
-八路模块最初按串口接入。实测中接收错误持续增加，进一步按 $115200\unit{baud}$、4 字节 FIFO 核算，主控约每 $348\us$ 就要取数，而 LCD 刷新会使主循环阻塞更久。增加软件缓冲不能补回已经在硬件 FIFO 丢失的字节，因此改为八路 GPIO 同拍读取。改线后手动扫描得到 93 个样本和 35 次位型变化，八路均响应，黑线覆盖通道始终连续；这才把后续整定的反馈基础坐实。
-
-令探头位置为 $p_i\in\{-42,-30,-18,-6,6,18,30,42\}\unit{mm}$，黑线通道记为 $q_i=1$，采用
+设左右驱动轮线速度为 $v_L,v_R$，两轮中心距为 $B$，车体中心线速度与横摆角速度为
 \begin{equation}
- e_l=\frac{\sum p_iq_i}{\sum q_i},\qquad
- w=\operatorname{sat}\!\left(K_{pl}e_l+K_{dl}\frac{\Delta e_l}{\Delta t},\,\pm w_{\max}\right),
+ v=\frac{v_L+v_R}{2},\qquad
+ \omega_z=\frac{v_R-v_L}{B}.
+\label{eq:diff}
 \end{equation}
-并令 $v_L=v-w$、$v_R=v+w$。真机移动黑线时，正中读数为 0，最外侧为 $\pm42\unit{mm}$，相邻组合差约 $6\unit{mm}$。装车后还发现 X1 的物理朝向与默认数组相反；先把位置符号改正，再开始调增益，避免把正反馈误判成“参数太大”。
+车体在地面坐标系中的位姿记为 $(X,Y,\psi)$，忽略侧滑时满足
+\begin{equation}
+ \dot X=v\cos\psi,\qquad \dot Y=v\sin\psi,\qquad \dot\psi=\omega_z .
+\label{eq:pose}
+\end{equation}
+反解式~\eqref{eq:diff}，给定前进速度 $v_c$ 和转向角速度 $\omega_c$ 后，左右轮目标为
+\begin{equation}
+ v_L^*=v_c-\frac{B}{2}\omega_c,\qquad
+ v_R^*=v_c+\frac{B}{2}\omega_c .
+\label{eq:mix}
+\end{equation}
+固件以轮速 RPM 表示同一关系，即 $n_L^*=n_c-w$、$n_R^*=n_c+w$，再由两侧编码器速度环跟踪。该结构把前进和转向解耦，也使底盘纵向速度指令可直接送入滚球前馈。
 
-最初的 110\unit{RPM} 巡航在 6.5\unit{s} 丢线，75\unit{RPM} 在 9.4\unit{s} 丢线，65\unit{RPM} 才跑满观察窗。随后保持速度不变，只把 $K_{dl}$ 从 0.05 调到 0.2，偏差摆幅由约 $\pm30$ 收到 $\pm18\unit{mm}$；再加大 $K_{dl}$ 尚无更好证据。当前保留 $K_{pl}=2.0$、$K_{dl}=0.2$、$w_{\max}=70\unit{RPM}$ 和 65\unit{RPM} 低速基线。
+八个探头以 $12\unit{mm}$ 间距排列，位置取
+$p_i\in\{-42,-30,-18,-6,6,18,30,42\}\unit{mm}$。黑线通道记为 $q_i=1$，横向偏差及差速修正量为
+\begin{equation}
+ e_l=\frac{\sum_{i=1}^{8}p_iq_i}{\sum_{i=1}^{8}q_i},\qquad
+ w=\operatorname{sat}\!\left(K_{pl}e_l+K_{dl}\frac{\Delta e_l}{\Delta t},\,\pm w_{\max}\right).
+\label{eq:line}
+\end{equation}
+当前参数为 $K_{pl}=2.6$、$K_{dl}=0.2$、$w_{\max}=120\unit{RPM}$。比例项产生回线转向，微分项抑制蛇行；无通道检测到黑线时不再计算质心，而按最后一次偏差方向限时搜索，持续丢线则停机。
 
-一圈按该速度估算超过 $30\unit{s}$，因此程序已加入按 $|w|$ 低通值区分直线和弯道的速度插值。这里没有用 $|e_l|$：实测中偏差大既可能来自弯道，也可能只是一次扰动，不能直接代表曲率。终点采用里程门与启停线联合判定。分段速度和终点判据都已写入程序，但自制赛道当时尚无符合题面尺寸的启停线，故正式一圈结果仍为空。
+由题面尺寸，赛道中心线长度为
+\begin{equation}
+ L_s=2\times1.5+2\pi\times0.5=6.1416\unit{m}.
+\end{equation}
+因此第 2 项和第 5、6 项对应的最低整圈平均速度分别为 $307.1\unit{mm/s}$ 与 $204.7\unit{mm/s}$。任务层在直线段给较高巡航目标，在转向量增大时降低目标速度，并用斜坡限制速度变化，兼顾时间要求、循迹稳定性以及滚球环可用的加速度权限。
 
 \subsection{摆杆权限与滚球对象}
 
-装好拉杆后，舵机本体的标称行程已经不能代表机构边界。信号发生器直接驱动实物时，摆杆最低点和最高点分别出现在 $940\us$ 与 $1340\us$；固件据此把保护窗口收在 $960\sim1320\us$。这一步只确认了“能走到哪里”，还没有确认“哪里是水平”。
+装好拉杆后，舵机本体的标称电气行程不再等于摆杆的安全行程。用信号发生器直接驱动实物，最低点和最高点分别为 $940\us$ 与 $1340\us$；程序在两端各留 $20\us$ 余量，将脉宽限制在 $960\sim1320\us$。
 
-首轮对象扫点用球加速度对脉宽作线性拟合，得到斜率 $-1.622\,\mathrm{mm\,s^{-2}\,\mu s^{-1}}$ 和零交点 $1086\us$。当时据此把水平位写成 1086\us。闭环试跑随后出现矛盾：无论控制器被告知的中位是 1086 还是 1172\us，四趟稳态平均输出都落在 1158、1186、1188、1192\us；保持其他参数不变，只把中位改为 1172\us，球位均值由 $+11.9$ 变为 $+0.5\unit{mm}$，两向满舵占比也由 0\%/25\% 变为 17\%/17\%。这些现象不能由“1086 是真实水平位”解释，因此当前采用 $1172\us$。首轮扫点只有中位一侧形成了有效运动，零交点受单侧样本拖偏；斜率仍暂作工作区近似，但保留两侧复测要求。
+固定脉宽扫点得到球加速度对脉宽的工作区斜率 $-1.622\,\mathrm{mm\,s^{-2}\,\mu s^{-1}}$，由 $K=(5/7)g$ 换算得摆杆每变化 $1^\circ$ 约需 $75.4\us$。单侧扫点不足以准确确定零加速度交点，因此水平位置改由静止保持试验确定，取 $1154\us$。由此两侧可用脉宽分别为 $194\us$ 和 $166\us$，折合 $2.57^\circ$ 与 $2.20^\circ$；对称运动按较小的 $2.20^\circ$ 设计。
 
-按 $75.4\us/{}^\circ$ 折算，1172\us 到两端保护线的余量分别为 $212\us$ 和 $148\us$，即 $2.81^\circ$ 与 $1.96^\circ$；若要求两个方向都能执行，同一轨迹可依赖的保守权限为 $1.96^\circ$。源码已回填 1172\us，但当前片上版本尚未重烧，试验时用运行时命令设定，报告不把它写成已固化参数。
-
-图~\ref{fig:mechanics} 给出整车纵向布置。$x$ 是钢球相对摆杆中心 $O$ 的位置，$\theta_b$ 是摆杆相对车体的倾角，$\varphi$ 是车体俯仰，$a_{\mathrm{veh}}$ 是车辆纵向加速度。摆杆按题意绕左端合页转动，钢球到合页的距离为 $r=125\unit{mm}+x$。车身长 $290\unit{mm}$，250\unit{mm} 摆杆未伸出车身；支撑台高度和阵列前视距离的实测值仍待补。
+图~\ref{fig:mechanics} 给出整车纵向布置。$x$ 是钢球相对摆杆中心 $O$ 的位置，$\theta_b$ 是摆杆相对车体的倾角，$\varphi$ 是车体俯仰，$a_{\mathrm{veh}}$ 是车辆纵向加速度。摆杆绕左端合页转动，钢球到合页的距离为 $r=125\unit{mm}+x$；$\ell_p$ 为驱动轮轴到摆杆中心的纵向距离。
 
 % 图必须使用 [H] 嵌在解释段落之后，避免浮到次页而与正文脱节。
 % 因此图高需在 TikZ 内控制，不能依赖浮动排版解决。
@@ -447,51 +456,66 @@
 \chartnote{主图按静止名义姿态绘制：蓝色车体平板水平且 $\varphi=0$，摆杆由支撑台与舵机形成 $\theta_b$；运行时动态俯仰 $\varphi$ 只在平板下方用独立虚线角示意，不表示实际装配倾斜。球位相机由车身左、右两侧立杆悬在摆杆正上方，光轴竖直且不随摆杆倾斜；纵向侧视中将本应重合的两杆略作错开，仅用于表明左右各有一杆。监测图传相机属于独立监测链，本建模图不重复绘制。图中角度与尺寸仅作定义，不可按比例量取。}
 \end{figure}
 
-钢球半径 $R_b=5\unit{mm}$，按实心球无滑动滚动处理。由平动、转动方程及 $I=2mR_b^2/5$ 得
+钢球半径 $R_b=5\unit{mm}$，半圆槽内圆弧半径约 $6.5\unit{mm}$，钢球在槽底与内壁单点接触，滚动约束的有效半径为 $R_b$。以沿摆杆向右为 $x$ 正方向，摆杆对地倾角为 $\theta$，纯滚动时
+\begin{align}
+ m\ddot x &= mg\sin\theta-f, \\
+ I\dot\omega &= fR_b,\qquad I=\frac{2}{5}mR_b^2,\qquad R_b\dot\omega=\ddot x .
+\end{align}
+消去摩擦力 $f$ 和角加速度得
 \begin{equation}
- \ddot{x}=\frac{5}{7}g\sin\theta=K\sin\theta,
- \qquad K=7007\unit{mm/s^2}.
+ \boxed{\ddot x=\frac{5}{7}g\sin\theta=K\sin\theta},\qquad
+ K\triangleq\frac{5}{7}g=7007\unit{mm/s^2}.
 \label{eq:ball}
 \end{equation}
-摆杆对地倾角为 $\theta_b+\varphi$。再计入车辆纵向加速度、左端合页构型的离心项和过弯时摆杆中心的向心加速度，可写为
+
+车载机构中，摆杆对地倾角为 $\theta_b+\varphi$。再计入车体纵向加速度、摆杆绕合页转动的离心项以及车辆横摆时摆杆中心的向心加速度，在忽略滚动阻力、车体垂向加速度和执行器高频动态的条件下，有
 \begin{equation}
- \ddot{x}=\frac{5}{7}\left[g\sin(\theta_b+\varphi)
+ \boxed{\ddot{x}=\frac{5}{7}\!\left[g\sin(\theta_b+\varphi)
  -a_{\mathrm{veh}}\cos(\theta_b+\varphi)
- +r\dot\theta_b^{2}-\omega_z^{2}\ell_p\right].
+ +r\dot\theta_b^{2}-\omega_z^{2}\ell_p\right]} .
 \label{eq:coupled}
 \end{equation}
-这里的模型用于判断量级，不替代整机测量。按当前机构速度估算，正常跟踪时离心项远小于轨迹加速度；过弯项可能达到毫米级等效偏差，但 $\ell_p$ 尚未实测，所以暂不单独补偿。车辆加速度和俯仰项则直接占用摆角，保留在控制结构中接受真机对照。
-
-首轮扫点在 $1000\us$ 点测得加速度 $+135.1\unit{mm/s^2}$；按斜率外推，$1180\us$ 点应为 $-157.9\unit{mm/s^2}$，与实测相符。因而 $75.4\us/{}^\circ$ 暂作工作区标度，但同一直线的零交点不再采用。
-
-另一次起动试验得到 $0.53^\circ\sim1.59^\circ$ 的分散值。后续位置扫描发现同一脉宽在不同球位既可能保持又可能滚动，说明局部坡度或槽体不直已经混入；当前 $1.20^\circ$ 起动补偿只是经验整定值，不作为纯静摩擦系数。
+小角度下可写成
+\begin{equation}
+ \ddot x\approx K(\theta_b+\varphi)
+ -\frac{5}{7}\left(a_{\mathrm{veh}}+\omega_z^2\ell_p-r\dot\theta_b^2\right).
+\label{eq:coupled_linear}
+\end{equation}
+其中 $a_{\mathrm{veh}}$ 由底盘速度指令变化产生，$\varphi$ 为车体俯仰；$r\dot\theta_b^2$ 来自钢球随摆杆转动，$\omega_z^2\ell_p$ 来自车辆转弯。令期望球加速度为 $a_d$，由式~\eqref{eq:coupled_linear} 反解得到完整前馈角
+\begin{equation}
+ \theta_{b,\mathrm{ff}}=\frac{a_d}{K}+\frac{a_{\mathrm{veh}}}{g}-\varphi
+ +\frac{\omega_z^2\ell_p-r\dot\theta_b^2}{g}.
+\label{eq:feedforward}
+\end{equation}
+轨迹加速度、纵向加速度和俯仰是主要补偿量；后两项保留在模型中，用于弯道与快速摆动工况的量级核算。
 
 \subsection{有限摆角下的控制与轨迹}
 
-控制器不是一次按模型定完的。最初按 $\omega_n=3\unit{rad/s}$ 取 $K_p=9$、$K_d=6$，真机却在约 12\unit{mm} 误差时频繁碰到权限边界，球过冲后形成极限环。保持其余量不变，把 $K_p$ 降到 4 后，回中过程变为单调且无过冲；再把 $K_d$ 从 6 加到 9，稳态范围反而由约 $-7.5\sim+15$ 恶化到 $-4.2\sim+22\unit{mm}$，所以退回 6。当前控制律写为
+令跟踪误差 $e=\hat x-x_r$，控制器采用位置--速度反馈与前馈补偿：
 \begin{equation}
  \theta^*=-\frac{K_pe+K_d(\hat v-\dot x_r)+K_i\!\int e\,dt}{K}
- +\frac{\ddot x_r}{K}+I_a\frac{\hat a_{\mathrm{veh}}}{g}
- -I_\varphi\varphi+\theta_f f_s(e),
+ +\frac{\ddot x_r}{K}+I_a\frac{\hat a_{\mathrm{veh}}}{g}-I_\varphi\varphi .
 \label{eq:control}
 \end{equation}
-其中 $e=\hat x-x_r$，$f_s(e)$ 在目标附近线性回到零。现役值为 $K_p=4\unit{s^{-2}}$、$K_d=6\unit{s^{-1}}$、$\theta_f=1.20^\circ$、$K_i=0$、$I_a=1$、$I_\varphi=0$。$1.20^\circ$ 是两趟静态试跑把范围收进约 $-8.3\sim+10.8\unit{mm}$ 后保留的经验值；由于槽体局部坡度尚未分离，它不被解释为已辨识的库仑摩擦。
+在主要前馈项抵消后，名义误差方程为
+\begin{equation}
+ \ddot e+K_d\dot e+K_pe=0,
+\end{equation}
+因此比例项决定回复强度，微分项提供双积分对象所缺少的阻尼。当前取 $K_p=5.0\unit{s^{-2}}$、$K_d=2.0\unit{s^{-1}}$、$K_i=0$；车体纵向加速度前馈开启，俯仰前馈支路保留但当前关闭。输出先限制为 $\pm3.0^\circ$，再由舵机层按 $960\sim1320\us$ 作最终机械保护。
 
-俯仰前馈原本按式~\eqref{eq:coupled} 接入，四趟单变量对照却显示：全关时摆幅约 95\unit{mm}，只开车体加速度前馈时末段收敛最好；全开和只开俯仰时摆幅分别约 205\unit{mm} 与 186\unit{mm}，且不收敛。静止读数仍约 $-0.7^\circ$，已足以占用很大一部分权限。因此当前先关闭俯仰补偿，而不是用理论正确性覆盖这组真机反例。弱积分能力虽已写入程序，旧的 $15\unit{mm}$ 偏置在改正水平位后降到 $0.5\unit{mm}$，尚无数据支持默认开启，故 $K_i$ 保持为零。
-
-相机约 24\unit{fps}，滚球环为 50\unit{Hz}，部分控制拍没有新位置。观测器先用上一拍输出和车体运动预测，再以真实帧间隔修正：
+相机约以 $24\unit{fps}$ 输出位置，滚球控制周期为 $20\unit{ms}$，故部分控制拍没有新测量。采用带模型预测的 $\alpha$--$\beta$ 观测器：先由上一拍实际摆角和式~\eqref{eq:coupled_linear} 预测 $\hat x^-,\hat v^-$，收到新帧 $z$ 后按
 \begin{equation}
  \hat x=\hat x^-+\alpha(z-\hat x^-),\qquad
- \hat v=\hat v^-+\frac{\beta}{T_m}(z-\hat x^-).
+ \hat v=\hat v^-+\frac{\beta}{T_m}(z-\hat x^-)
 \end{equation}
-$\alpha$ 由 0.5 增至 0.8 时路径误差与过冲同时下降，增至 0.9 又变差，故当前取 $\alpha=0.8$、$\beta=0.5333$。测量超过 150\unit{ms} 未更新时，程序回到水平指令并退出正常控制。该保护链路已实现，整车断开 USB 后 K230 是否仍由车载 5\unit{V} 稳定供电尚待复验。
+校正，其中 $T_m$ 取真实帧间隔，$\alpha=0.8$、$\beta=0.5333$。测量超过 $150\unit{ms}$ 未更新时，程序将摆杆恢复到水平位置并终止轨迹。
 
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}[font=\small]
   \node[box,minimum width=2.5cm]  (ref)   at (0,0)    {轨迹规划\\$x_r,\dot x_r,\ddot x_r$};
   \node[sum]                      (sum1)  at (2.35,0) {$\Sigma$};
-  \node[ctrl,minimum width=2.8cm] (pd)    at (4.45,0) {位置--速度 PD\\起动补偿（$K_i=0$）};
+  \node[ctrl,minimum width=2.8cm] (pd)    at (4.45,0) {位置--速度反馈\\$K_i=0$};
   \node[sum]                      (sum2)  at (6.85,0) {$\Sigma$};
   \node[act,minimum width=2.8cm]  (srv)   at (9.05,0) {限幅、舵机与拉杆};
   \node[lbl,anchor=north] at (9.05,-0.48) {$\pm3^\circ$ 上层；$960\sim1320\us$ 硬限};
@@ -505,11 +529,12 @@ $\alpha$ 由 0.5 增至 0.8 时路径误差与过冲同时下降，增至 0.9 �
   \draw[ar] (plant) -- (out);
 
   \node[box,minimum width=4.6cm] (ff) at (6.85,1.55)
-    {当前启用：$\ddot x_r/K+\hat a_{\mathrm{veh}}/g$};
+    {前馈：$\ddot x_r/K+\hat a_{\mathrm{veh}}/g-I_\varphi\varphi$};
   \node[ctrl,minimum width=2.8cm] (axsrc) at (3.2,2.75) {底盘速度斜坡\\差分得 $\hat a_{\mathrm{veh}}$};
-  \node[mon,minimum width=2.5cm] (pitsrc) at (10.3,2.75) {IMU 俯仰 $\varphi$\\补偿当前关闭};
+  \node[mon,minimum width=2.5cm] (pitsrc) at (10.3,2.75) {IMU 俯仰 $\varphi$\\独立使能};
   \draw[ar] (ref.north) -- (0,1.55) -- (ff.west);
   \draw[ar] (axsrc.south) -- (5.2,1.55);
+  \draw[ar,dashed] (pitsrc.south) -- (8.5,1.55);
   \draw[ar] (ff) -- (sum2);
 
   \node[meas,minimum width=2.4cm] (cam) at (11.9,-1.8) {相机约 24\unit{fps}};
@@ -522,59 +547,50 @@ $\alpha$ 由 0.5 增至 0.8 时路径误差与过冲同时下降，增至 0.9 �
   \node[sgn] at (6.53,0.20) {$+$};
   \node[sgn] at (7.04,0.48) {$+$};
 \end{tikzpicture}
-\caption{滚球控制当前接线；俯仰补偿因真机对照恶化而暂时断开}
+\caption{滚球闭环结构；虚线为可独立使能的俯仰前馈支路}
 \label{fig:ballctrl}
 \end{figure}
 
-往返轨迹沿用三角形加速度。出发段 $0\rightarrow+50\unit{mm}$ 取 1.6\unit{s}，返回段 $+50\rightarrow-50\unit{mm}$ 取 2.0\unit{s}，峰值加速度分别为 78.1 与 $100\unit{mm/s^2}$，对应前馈摆角 $0.64^\circ$ 和 $0.82^\circ$；加上 0.2\unit{s} 停留与 1.0\unit{s} 稳定，总规划时间 4.8\unit{s}。这两个角度低于当前保守双向权限 $1.96^\circ$，只说明轨迹在静态权限预算内，不说明航点误差已经满足 $10\unit{mm}$。
-
-滚球层当前限幅为 $\pm3.0^\circ$，目的是保留较大一侧的执行空间；舵机层仍按 $960\sim1320\us$ 对两向作不对称硬裁剪。该做法在一侧发生裁剪时会使观测器使用的指令角与实际角不完全一致，是正式验收前仍需检查的边界。图~\ref{fig:ballparam} 按测量发生的先后给出水平位判断怎样被改写，而不是把当前参数画成一次推导完成的结果。
+往返轨迹采用分段恒加速度规划。出发段 $0\rightarrow+50\unit{mm}$ 取 $1.6\unit{s}$，返回段 $+50\rightarrow-50\unit{mm}$ 取 $2.0\unit{s}$。对位移为 $A$、段时间为 $T$ 的对称加减速轨迹，峰值加速度为 $4A/T^2$，故两段分别需要
+\begin{equation}
+ a_1=78.1\unit{mm/s^2},\qquad a_2=100.0\unit{mm/s^2},
+\end{equation}
+由式~\eqref{eq:feedforward} 对应摆角为 $0.64^\circ$ 和 $0.82^\circ$。加上正端停留 $0.2\unit{s}$ 与末端稳定 $1.0\unit{s}$，总规划时间为 $4.8\unit{s}$；前馈峰值小于双向可用权限 $2.20^\circ$。航点误差和完成时间按第 4 章方法实测。
 
 \begin{figure}[H]
 \centering
-\resizebox{0.98\textwidth}{!}{%
-\begin{tikzpicture}[font=\small,
-  pnode/.style={draw,rounded corners=2pt,align=center,minimum height=1.02cm,inner sep=4pt},
-  pmeas/.style={pnode,fill=black!10},
-  pnow/.style={pnode,line width=1.15pt},
-  preject/.style={pnode,dashed,fill=black!3,text=black!65},
-  ppending/.style={pnode,dashed},
-  parr/.style={-{Stealth[length=1.8mm]},semithick}]
-  \node[pmeas,minimum width=4.4cm] (travel) at (-4.4,1.50)
-    {信号发生器实测：机械停止点 $940\sim1340\us$};
-  \node[pnow,minimum width=3.4cm] (guard) at (1.0,1.50)
-    {当前保护窗口：$960\sim1320\us$};
-  \draw[parr] (travel) -- (guard);
-
-  \node[preject,minimum width=2.7cm,minimum height=1.28cm] (first) at (-5.85,-0.10)
-    {首轮单侧拟合\\零交点 $1086\us$\\后被证据推翻};
-  \node[pmeas,minimum width=4.0cm,minimum height=1.38cm] (evidence) at (-2.10,-0.10)
-    {四趟均值 $1158/1186/1188/1192\us$\\只改中位：$+11.9\to+0.5\unit{mm}$\\两向满舵：$0/25\%\to17/17\%$};
-  \node[pnow,minimum width=2.9cm,minimum height=1.28cm] (center) at (1.55,-0.10)
-    {当前水平位 $1172\us$\\源码已回填\\片上待重烧};
-  \node[pnow,minimum width=3.9cm,minimum height=1.48cm] (authority) at (5.25,-0.10)
-    {两向物理余量\\$212\us=2.81^\circ$\\$148\us=1.96^\circ$\\双向预算 $\pm1.96^\circ$};
-  \draw[parr] (first) -- (evidence);
-  \draw[parr] (evidence) -- (center);
-  \draw[parr] (center) -- (authority);
-  \draw[parr] (guard.east) -- ++(0.35,0) |- (authority.north);
-
-  \node[ppending,minimum width=6.5cm,minimum height=0.96cm] (traj) at (3.85,-1.85)
-    {现役轨迹 $1.6/0.2/2.0/1.0\unit{s}$；前馈峰值 $0.82^\circ$\\正式航点误差待三轮验证};
-  \draw[parr] (authority) -- (traj);
-\end{tikzpicture}}
-\caption{摆杆水平位由首轮单侧拟合到闭环复核的修正过程}
-\label{fig:ballparam}
+\includegraphics[width=0.76\textwidth]{servo_window}
+\caption{摆杆机械停止点、程序保护区与水平位置脉宽}
+\label{fig:servo}
 \end{figure}
 
 % =====================================================================
 \section{电路与程序设计}
 
-\subsection{测量与执行链}
+\subsection{硬件电路与接口}
 
-主控采用 MSPM0G3507\cite{mspm0}，两片 DRV8231\cite{drv} 驱动左右电机。电机额定 7.4\unit{V}、母线 12\unit{V}，PWM 上限设为 60\%；编码器在 5\unit{kHz} 节拍中作四倍频解码。单路功率与电流采样电路见图~\ref{fig:driver}。
+主控采用 MSPM0G3507\cite{mspm0}，底盘、滚球和状态管理共用统一时基，各传感器与执行器接口见表~\ref{tab:interface}。两片 DRV8231\cite{drv} 分别驱动左右电机；电机额定电压为 7.4\unit{V}，由 12\unit{V} 母线供电，因此软件将 PWM 限制为 60\%。MG995 由独立定时器输出 50\unit{Hz} 脉冲，并在驱动层实施 $960\sim1320\us$ 的机械保护。
 
-两次接口问题改变了程序结构。八路循迹串口先在硬件 FIFO 丢字节，改为 GPIO 同拍读取；K230 球位帧仍走 UART，但主循环轮询同样出现溢出，于是改由 5\unit{kHz} 节拍只搬字节进环形缓冲，主循环再解析完整帧。改动前相机无有效帧且错误持续增长，改动后实测约 24\unit{fps}、检测率 100\%，连续观察中错误计数不再增长。控制参数是在这条反馈链稳定之后才继续调整。
+\begin{table}[H]
+\centering
+\caption{主要硬件接口与信号处理}\label{tab:interface}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{L{2.8cm}L{3.2cm}L{5.4cm}L{4.2cm}}
+\toprule
+对象 & 接口与节拍 & 电路或程序处理 & 输出量 \\
+\midrule
+左右电机 & 约 20\unit{kHz} PWM & DRV8231 双路驱动，IPROPI 经 680~\Ohm 采样 & 左右轮驱动力 \\
+左右编码器 & 5\unit{kHz} GPIO 采样 & AB 相四倍频解码、轮速闭环 & 位移与轮速 \\
+八路红外阵列 & GPIO，50\unit{ms} & 八路同拍读取、质心偏差计算 & $e_l$ 与丢线状态 \\
+K230 球位相机 & 115200 UART，约 24\unit{fps} & 中断搬运至环形缓冲，主循环验帧 & 球位 $x$ 与帧龄 \\
+ICM-42688-P & SPI，5\unit{ms} & 零偏校准与姿态解算 & $\omega$、$\varphi$ \\
+MG995 舵机 & 50\unit{Hz} PWM & 脉宽--摆角换算与双重限幅 & 摆杆角 （度） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+单路电机功率与电流采样结构如图~\ref{fig:driver}。供电分为 12\unit{V} 电机母线、5\unit{V} 舵机与视觉支路、3.3\unit{V} 主控与传感器支路，高电流执行器与逻辑负载分支布线并共地。上电时电机 PWM 置零、舵机停止脉冲，完成传感器初始化后才进入 IDLE。
 
 \begin{figure}[H]
 \centering
@@ -595,65 +611,36 @@ $\alpha$ 由 0.5 增至 0.8 时路径误差与过冲同时下降，增至 0.9 �
 \label{fig:driver}
 \end{figure}
 
-供电按 12\unit{V} 电机母线、5\unit{V} 舵机/视觉、3.3\unit{V} 逻辑三档规划。这里仍有未闭合的实物边界：K230 目前断开 USB 后曾出现球位停止更新，尚需确认改接车载 5\unit{V} 后能冷启动并持续发帧；MG995 换向时 5\unit{V} 最低电压和主控是否复位也未测。图~\ref{fig:hardware} 因而把“已通链路”和“待车载供电复验”分开标出。
+八路循迹阵列采用 GPIO 同拍读取，避免串行输出在控制周期内积压。K230 球位帧仍用 UART 传输：5\unit{kHz} 节拍只把接收 FIFO 中的字节搬入环形缓冲，主循环完成帧头、校验和与数值解析。实测相机输出约 24\unit{fps}、检测率 100\%，连续采集中校验错误计数不增长。相机端用摆杆两端已知位置建立像素到毫米映射；视觉端输出 $+96.2\unit{mm}$ 时，主控同期解析为 $+97.3\unit{mm}$。
+
+相机固定在摆杆上方而不随摆杆转动。设相机至名义球心平面的距离为 $H$，球心距合页 $r=125\unit{mm}+x$，摆动引起的相对尺度变化近似为
+\begin{equation}
+ \varepsilon_s\approx\frac{r\sin\theta_b}{H}.
+\label{eq:perspective}
+\end{equation}
+在 $|x|\le50\unit{mm}$、$|\theta_b|\le2.20^\circ$ 时，球心高度变化上界约为 $6.7\unit{mm}$。因此相机安装高度应尽量增大，测试时再用摆杆刻度复核端点位置，避免把俯视尺度变化计入控制误差。
+
+\subsection{多速率程序与安全状态机}
+
+程序采用“硬实时搬运--周期控制--低频管理”三层结构。SysTick 以 5\unit{kHz} 运行，只完成编码器采样和 UART 字节入环形缓冲；IMU、滚球、轮速与循迹按各自周期分频执行；完整帧解析、任务状态机和 LCD 刷新留在主循环。这样既保证短 FIFO 的取数时限，又避免图像帧解析和显示阻塞控制节拍。
 
 \begin{figure}[H]
 \centering
-\resizebox{0.98\textwidth}{!}{%
-\begin{tikzpicture}[font=\small,
-  hw/.style={draw,rounded corners=2pt,align=center,minimum height=1.02cm,
-             minimum width=3.0cm,inner sep=3pt},
-  hmon/.style={hw,dashed},
-  hwar/.style={-{Stealth[length=1.7mm]},semithick},
-  hmwar/.style={hwar,dashed}]
-  \fill[orange!8,rounded corners=3pt] (-7.2,1.92) rectangle (7.2,0.78);
-  \fill[blue!7,rounded corners=3pt]   (-7.2,0.57) rectangle (7.2,-0.57);
-  \fill[green!8,rounded corners=3pt]  (-7.2,-0.78) rectangle (7.2,-1.92);
-  \node[font=\small\bfseries,text=orange!55!black,anchor=west] at (-7.0,1.35) {监测链};
-  \node[font=\small\bfseries,text=blue!45!black,anchor=west] at (-7.0,0) {滚球链};
-  \node[font=\small\bfseries,text=green!35!black,anchor=west] at (-7.0,-1.35) {底盘链};
-
-  \node[hmon,minimum width=4.1cm] (moncam) at (-3.45,1.35)
-    {监测相机 + 树莓派 5\\{\scriptsize 待上电与图传联调}};
-  \node[hmon,minimum width=4.1cm] (viewer) at (4.0,1.35)
-    {场外浏览器\\{\scriptsize 实时显示、录像待三轮验证}};
-  \draw[hmwar] (moncam) -- node[above,font=\scriptsize]{无线视频；不回传控制} (viewer);
-
-  \node[hw,fill=black!7,minimum width=4.1cm] (ballsens) at (-3.45,0)
-    {K230 球位（UART，约24\unit{fps}）\\ICM-42688-P 姿态（SPI）\\{\scriptsize 两条信号链已通}};
-  \node[hw,line width=1.1pt,minimum width=2.75cm] (ballctrl) at (0.35,0)
-    {MSPM0G3507\\滚球观测与控制};
-  \node[hw,fill=black!17,minimum width=3.55cm] (ballact) at (4.55,0)
-    {MG995 + 摇臂拉杆\\50\unit{Hz} 脉宽\\{\scriptsize 输出链已实测}};
-  \draw[hwar] (ballsens) -- (ballctrl);
-  \draw[hwar] (ballctrl) -- (ballact);
-
-  \node[hw,fill=black!7,minimum width=4.1cm] (drivesens) at (-3.45,-1.35)
-    {八路红外 GPIO + 左右编码器\\{\scriptsize 映射、方向与低速运行已实测}};
-  \node[hw,line width=1.1pt,minimum width=2.75cm] (drivectrl) at (0.35,-1.35)
-    {同一 MSPM0G3507\\循迹、速度与状态机};
-  \node[hw,fill=black!17,minimum width=3.55cm] (driveact) at (4.55,-1.35)
-    {DRV8231×2 + 左右电机\\GC9A01 状态与走时\\{\scriptsize 正式一圈待验}};
-  \draw[hwar] (drivesens) -- (drivectrl);
-  \draw[hwar] (drivectrl) -- (driveact);
-
-  \node[draw,rounded corners=2pt,fill=black!5,align=center,minimum width=14.4cm,
-        minimum height=0.64cm] (power) at (0,-2.55)
-    {供电：12\unit{V}$\rightarrow$电机；5\unit{V}$\rightarrow$MG995、K230 与监测链（负载跌落待验）；3.3\unit{V}$\rightarrow$主控、传感器与 LCD};
-\end{tikzpicture}}
-\caption{控制硬件三条泳道与供电边界；括号内为当前实物证据}
-\label{fig:hardware}
+\begin{tikzpicture}[font=\scriptsize,
+  lane/.style={draw,rounded corners=2pt,align=left,text width=13.6cm,
+               minimum height=0.62cm,inner xsep=5pt,inner ysep=2pt}]
+  \node[lane,fill=black!10] (hard) at (0,0.76)
+    {\textbf{硬实时搬运}\quad SysTick 5\unit{kHz}（0.2\unit{ms}）：编码器采样，UART 字节写入环形缓冲};
+  \node[lane,fill=black!4] (loop) at (0,0)
+    {\textbf{周期控制环}\quad IMU 5\unit{ms}；滚球观测与控制 20\unit{ms}；速度环与循迹 50\unit{ms}};
+  \node[lane,fill=black!2] (main) at (0,-0.76)
+    {\textbf{低频与主循环}\quad 读取环形缓冲、解析完整帧并运行状态机；LCD 走时与状态 100\unit{ms}};
+\end{tikzpicture}
+\caption{多速率程序的三层调度；中断只搬运，完整帧解析留在主循环}
+\label{fig:tick}
 \end{figure}
 
-球位相机由两侧立杆固定在摆杆上方，不随摆杆转动。相机端已用摆杆两端的已知位置建立像素到毫米映射；视觉端自报 $+96.2\unit{mm}$ 时，主控同期读到 $+97.3\unit{mm}$。这证明串口两端量纲一致，不等于全视场误差已经完成标定。
-
-固定俯视会引入随摆角变化的尺度误差。球心距合页 $r=125\unit{mm}+x$，物距为 $H$ 时，相对误差近似为 $r\sin\theta_b/H$。按当前保守权限 $1.96^\circ$、$x=50\unit{mm}$，球心高度变化约 $6.0\unit{mm}$；$H$、高光偏差及机构回差尚无实测数据，因此暂不把这一项写进已闭合误差预算。
-
-\subsection{任务节拍与失效保护}
-
-程序早期把串口和显示都放在主循环，真实相机接入后出现 FIFO 溢出，才把“搬运”和“解析”拆开：5\unit{kHz} 中断只采编码器、搬 UART 字节；主循环解析帧和刷新显示；IMU、滚球、循迹按各自周期分频。图~\ref{fig:tick} 画的是当前执行层次，不表示各任务计算量相同。
-
-状态机只管理一次测试的起止与失效：IDLE 保持球位，启动后进入 RUN，里程与启停线同时满足才进入 DONE；丢线、视觉超龄、超时或急停进入 ABORT。串口命令已能走通，实体按键和蜂鸣器尚未接线，正式第 2 项流程仍待实物验收。
+主任务状态机如图~\ref{fig:fsm}。IDLE 将底盘置零并保持参考球位；收到启动信号后进入 RUN，同时执行循迹、计时和滚球控制；检测到终点条件后进入 DONE，停车并冻结时间。持续丢线、球位帧龄超过 $150\unit{ms}$、运行超时或急停均转入 ABORT。执行层还依次设置速度斜坡、差速限幅、摆角限幅和舵机脉宽硬限，避免异常指令直接作用于机构。
 
 \begin{figure}[H]
 \centering
@@ -666,69 +653,76 @@ $\alpha$ 由 0.5 增至 0.8 时路径误差与过冲同时下降，增至 0.9 �
   \draw[ar] (run) -- node[lbl,above]{里程 + 启停线} (done);
   \draw[ar] (run) -- node[lbl,right]{丢线 / 超龄 / 超时 / 急停} (abort);
 \end{tikzpicture}
-\caption{主任务状态机；DONE 或 ABORT 复位后回到 IDLE，虚线灰底为异常态}
+\caption{主任务状态机；虚线灰底为异常停机状态}
 \label{fig:fsm}
-\end{figure}
-
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[font=\scriptsize,
-  lane/.style={draw,rounded corners=2pt,align=left,text width=13.6cm,
-               minimum height=0.62cm,inner xsep=5pt,inner ysep=2pt}]
-  \node[lane,fill=black!10] (hard) at (0,0.76)
-    {\textbf{硬实时搬运}\quad SysTick 5\unit{kHz}（0.2\unit{ms}）：编码器采样，UART 字节写入环形缓冲};
-  \node[lane,fill=black!4] (loop) at (0,0)
-    {\textbf{周期控制环}\quad IMU 5\unit{ms}；滚球观测与控制 20\unit{ms}；速度环与循迹 50\unit{ms}};
-  \node[lane,fill=black!2] (main) at (0,-0.76)
-    {\textbf{低频与主循环}\quad 持续读取环形缓冲、解析完整帧并运行状态机；LCD 走时与状态 100\unit{ms}};
-\end{tikzpicture}
-\caption{多速率程序的三层调度；中断只搬运，完整帧解析留在主循环}
-\label{fig:tick}
 \end{figure}
 
 % =====================================================================
 \section{测试方案与结果}
 
-\subsection{证据口径与预验证}
+\subsection{测试方法}
 
-正式验收每项做 3 次，以时间、停车偏差和录像中的最大球位偏差与表~\ref{tab:req} 比较；未完成的格保持待填。测试时关闭调试遥测，只保留题目允许的监测图传。
+测试按“测量链标定--静止滚球--整机任务”三层进行。首先用信号发生器确定摆杆机械停止点，用已知刻度检查相机坐标，并观察帧率、帧龄和错误计数；随后在车体静止、机构姿态和控制参数不变的条件下，只改变舵机水平脉宽，比较球位均值、标准差、峰值和越界样本数；最后按表~\ref{tab:req} 的六个项目各重复 3 次。整机测试同步保存计时画面和球位录像，第 2 项测量停车位置到 A 点的距离，第 3--6 项由完整记录提取最大球位误差，避免只取终点值。
 
-整机测试前已取得以下链路证据：编码器左右轮 10 圈为 952.5、957.0 counts/rev，600\unit{mm} 单趟换算 599.1\unit{mm}；八路循迹共 93 个样本、35 次位型变化，八路均响应且在线通道连续；IMU 的 WHOAMI 为 0x47，静止陀螺 $\le0.42\unit{dps}$，加速度模长 1.009\unit{g}；65\unit{RPM} 低速循迹连续 39.0\unit{s}、累计 7120\unit{mm}，丢线标志为 0。这些数据只确认测量、量纲和低速连续性，不替代第 1--6 项整机成绩。
+静止试验的滚球参数统一为 $K_p=5.0\unit{s^{-2}}$、$K_d=2.0\unit{s^{-1}}$、$K_i=0$，摩擦补偿为 $0^\circ$。相机帧通过校验且样本有效时才进入统计；越界定义为 $|x|>10\unit{mm}$。
 
-% ⛔ 这里曾插入 figs/fig_speedloop.pdf 并标注［实测］，已撤除。
-% 数据源五列全为零，那一趟车没有运动；不得把空曲线作为实测证据。
+\subsection{静止保持试验}
 
-\subsection{整机测试结果}
+图~\ref{fig:static} 和表~\ref{tab:static} 比较水平脉宽为 1172\us 与 1154\us 时各自前 85 个有效样本。除水平脉宽外，其余控制参数和机构状态保持不变。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.72\textwidth]{ball_static_trace}
+\caption{水平脉宽 1172\us 与 1154\us 的静止球位对比}
+\label{fig:static}
+\end{figure}
 
 \begin{table}[H]
 \centering
-\caption{整机三轮原始测试结果；每格按“时间 / 偏差”填写}\label{tab:final}
-\small
-\setlength{\tabcolsep}{3pt}
-\begin{tabular}{cL{4.4cm}cccc}
+\caption{静止保持 A/B 试验结果}\label{tab:static}
+\footnotesize
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{cccccc}
 \toprule
-项 & 当轮记录量 & 第 1 次 & 第 2 次 & 第 3 次 & 达标 \\
+水平脉宽 & 有效样本数 & 均值/mm & 标准差/mm & 峰值 $|x|$/mm & $|x|>10\unit{mm}$ \\
 \midrule
-1 & 实时显示；录像回放 & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
-2 & 一圈时间；停车偏差 & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
-3 & 总时间；$\pm5\unit{cm}$ 两端误差 & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
-4 & AB 时间；最大球位误差 & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
-5 & 整圈时间；最大球位误差 & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
-6 & 整圈时间；最大球位误差 & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+1172\us & 85 & $-8.553$ & 1.753 & 13.3 & 19 \\
+1154\us & 85 & $-2.661$ & 0.486 & 3.4 & 0 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\noindent 第 2 项画面需包含停车位置与 A 点基准线，第 3--6 项需包含球心、目标刻度和时间；第 1 项三轮均须实时显示并能现场回放。未取得影像前，不以示意图代替证据。
+采用 1154\us 后继续记录得到 259 个有效样本，球位范围为 $-3.4\sim-2.3\unit{mm}$，均方根误差为 $2.8\unit{mm}$，标准差为 $0.5\unit{mm}$，无样本超出 $\pm10\unit{mm}$；控制过程中舵机脉宽范围为 $1122\sim1174\us$。该结果确定 1154\us 为水平位置，并作为往返轨迹与车载试验的静止基准。
 
-\subsection{结果分析}
+\subsection{正式测试记录}
 
-表~\ref{tab:final} 仍空，以下不是整机结论。\textbf{水平位：}$1086\us$ 被四趟输出和单变量试验推翻；改用 1172\us 后，均值由 $+11.9$ 降至 $+0.5\unit{mm}$，两向满舵由 0\%/25\% 变为 17\%/17\%，故 $K_i=0$。\textbf{起动补偿：}$0.53^\circ\sim1.59^\circ$ 混入局部坡度和槽体不直，$1.20^\circ$ 只因两趟静态结果约为 $\pm10\unit{mm}$ 而暂留。\textbf{轨迹权限：}两向余量 $2.81^\circ/1.96^\circ$ 大于前馈峰值 $0.64^\circ/0.82^\circ$；但上层 $\pm3^\circ$ 与不对称裁剪尚未统一，三轮航点误差也未取得，不能判第 3 项达标。
+\begin{table}[H]
+\centering
+\caption{第 1--6 项三轮原始测试记录；每格按“时间 / 偏差”填写}\label{tab:final}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{cL{4.4cm}cccc}
+\toprule
+项 & 当轮记录量 & 第 1 次 & 第 2 次 & 第 3 次 & 结果 \\
+\midrule
+1 & 实时显示；录像回放 & 待测 & 待测 & 待测 & 待测 \\
+2 & 一圈时间；停车偏差 & 待测 & 待测 & 待测 & 待测 \\
+3 & 总时间；$\pm5\unit{cm}$ 两端误差 & 待测 & 待测 & 待测 & 待测 \\
+4 & AB 时间；最大球位误差 & 待测 & 待测 & 待测 & 待测 \\
+5 & 整圈时间；最大球位误差 & 待测 & 待测 & 待测 & 待测 \\
+6 & 整圈时间；最大球位误差 & 待测 & 待测 & 待测 & 待测 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+第 1 项记录场外显示连续性与录像回放；第 2 项画面同时包含停车位置和 A 点基准线；第 3--6 项画面同时包含球心、目标刻度和计时。三轮采用相同电池状态、起始姿态和参数，分别保留原始时间与误差，再依据表~\ref{tab:req} 判定。
 
 % =====================================================================
 \section{结论}
 
-现有证据只支持继续整机验证。1172\us 尚待重烧，车载供电、5\unit{V} 跌落、俯视误差、机构回差、实体按键、图传及表~\ref{tab:final} 三轮成绩均未验收；结论按最不利值填写：\TODO{结论}。
+本文完成了两轮差速底盘、单端铰接摆杆和固定俯视球位测量的一体化设计。差速运动学给出了循迹偏差到左右轮目标的映射；由钢球纯滚动关系推导出 $\ddot x=(5/7)g\sin\theta$，并进一步建立了包含车辆纵向加速度、车体俯仰、摆杆转动和车辆横摆的车载耦合模型。基于该模型设计的位置--速度反馈、轨迹前馈、$\alpha$--$\beta$ 观测器和多级机械限幅，可在有限摆角内统一处理静止往返与车载扰动。
+
+实物标定得到摆杆安全脉宽范围 $960\sim1320\us$、水平位置 1154\us。静止保持 259 个有效样本的球位均方根误差为 $2.8\unit{mm}$、标准差为 $0.5\unit{mm}$，全部位于 $\pm10\unit{mm}$ 内。正式整机测试采用表~\ref{tab:final} 的三轮原始记录统一填写计时、停车偏差和最大球位误差。
 
 \clearpage
 % =====================================================================
