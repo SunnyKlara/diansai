@@ -1,0 +1,540 @@
+% !TEX program = xelatex
+% 2026-H 车载平衡滚球运动控制系统：竞赛提交版设计报告
+% 技术长版保存在同目录下划线前缀文件中，不参与 build.ps1 构建。
+\documentclass[11pt,a4paper]{ctexart}
+
+\usepackage[a4paper,top=2.2cm,bottom=2.2cm,left=2.4cm,right=2.4cm]{geometry}
+\usepackage{setspace}
+\setstretch{1.22}
+\usepackage{indentfirst}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0pt}
+
+\usepackage{amsmath,amssymb,bm}
+\usepackage{graphicx}
+\usepackage{booktabs,array,multirow}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\renewcommand{\arraystretch}{1.12}
+\usepackage{float}
+\usepackage{caption}
+\captionsetup{font=small,labelsep=quad,skip=4pt}
+\captionsetup[figure]{name=图}
+\captionsetup[table]{name=表}
+\usepackage{enumitem}
+\setlist{nosep,leftmargin=2em}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc}
+\tikzset{
+  box/.style={draw,rounded corners=2pt,align=center,minimum height=0.78cm,
+              minimum width=2.2cm,font=\small,inner sep=3pt},
+  pending/.style={box,dashed,fill=yellow!8},
+  done/.style={box,fill=green!7},
+  ctrl/.style={box,fill=blue!6},
+  ar/.style={-{Stealth[length=1.8mm]},semithick}
+}
+\usepackage[hidelinks]{hyperref}
+
+\ctexset{
+  section/number=\chinese{section},
+  section/name={,、},
+  section/format=\large\bfseries\raggedright,
+  section/beforeskip=0.9ex,
+  section/afterskip=0.5ex,
+  subsection/number=\arabic{subsection},
+  subsection/name={,、},
+  subsection/format=\normalsize\bfseries,
+  subsection/beforeskip=0.7ex,
+  subsection/afterskip=0.3ex
+}
+\setcounter{tocdepth}{1}
+\setlength{\textfloatsep}{7pt plus 2pt minus 2pt}
+\setlength{\floatsep}{6pt plus 2pt minus 2pt}
+\setlength{\intextsep}{6pt plus 2pt minus 2pt}
+\graphicspath{{figs/}}
+
+\newcommand{\TODO}[1]{{\color{red!80!black}\bfseries[待填：#1]}}
+\newcommand{\unit}[1]{\ensuremath{\,\mathrm{#1}}}
+% 舵机脉宽单位：全稿只在此处定义，避免 \mathrm{us} 那种错排
+\newcommand{\us}{\ensuremath{\,\mu\mathrm{s}}}
+\newcommand{\Ohm}{\text{Ω}}
+\newcommand{\figplaceholder}[2][0.43\textwidth]{%
+  \fbox{\begin{minipage}[c][3.0cm][c]{#1}\centering\color{gray}#2\end{minipage}}}
+
+\begin{document}
+
+% =====================================================================
+% 封面
+\begin{titlepage}
+  \centering
+  \vspace*{1.5cm}
+  {\zihao{2}\bfseries 2026 年全国大学生电子设计竞赛\par}
+  \vspace{0.35cm}
+  {\zihao{3}\bfseries 赛区赛（TI 杯）设计报告\par}
+  \vspace{1.4cm}
+  {\zihao{1}\bfseries 车载平衡滚球运动控制系统\par}
+  \vspace{0.4cm}
+  {\zihao{3}（H 题）\par}
+  \vspace{1.5cm}
+  \figplaceholder[10cm]{待放：装置整机照片\\（摆杆、相机、循迹阵列与图传发送端均清晰可见）}
+  \vspace{1.2cm}
+  % 🔴 队员姓名与学校两行已删除, 依据 = 官方《2026 年全国大学生电子设计竞赛参赛学生守则》
+  % 第五条原文: "设计封面及每页纸上一律不得出现参赛队学校、队员姓名、代码等文字"; 第六条:
+  % "对违反竞赛守则的参赛队, 一经发现, 取消其评审、测试资格"。原模板留着 \TODO{三位队员姓名}
+  % 与 \TODO{学校} 两个待填项 ⇒ 照着填就直接违规, 属于"指引本身把人带向取消资格"。
+  % 学校/姓名按守则第二条走另附的《登记表》, 不进报告。组别与赛区不在禁列, 保留。
+  % 守则原件已入库: workbench/参赛守则.jpg (广东赛区组委会, 2026 年 7 月)。
+  {\zihao{4}
+  \begin{tabular}{rl}
+    组\quad 别： & \TODO{本科组 / 高职高专组} \\[6pt]
+    赛\quad 区： & \TODO{赛区} \\[6pt]
+    日\quad 期： & 2026 年 8 月 1 日
+  \end{tabular}\par}
+  \vfill
+\end{titlepage}
+
+% =====================================================================
+% 摘要
+\section*{摘要}
+\addcontentsline{toc}{section}{摘要}
+
+针对循线小车行驶过程中车体俯仰和纵向加速度扰动钢球位置的问题，设计了一套车载平衡滚球运动控制系统。系统以 MSPM0G3507 为主控，采用八路红外阵列、霍尔编码器和六轴惯性传感器完成循迹、测速与姿态测量；随摆杆安装的视觉模块测量钢球在 25\unit{cm} 半圆槽内的一维位置，舵机经摇臂拉杆调节摆杆倾角；监测图传独立完成实时显示与录像回放，不参与闭环控制。
+
+在钢球纯滚动假设下建立名义模型：除摆杆倾角、车体俯仰和车辆纵向加速度外，还按题目规定的左端合页构型保留绕铰链的离心项与过弯纵向分量，并逐项给出量级以判断是否需要补偿。滚球控制器采用位置--速度 PD，叠加轨迹加速度、车辆指令加速度和车体俯仰三项前馈；摆杆可用摆角经实体辨识为弱侧 $1.67^\circ$，往返轨迹的时间分配由该权限反推得到而非试凑。底盘采用八路加权质心循迹与 PD 差速控制，以编码器里程和启停线联合判定终点。该结构把球位反馈、车体运动补偿和监测图传分成相互独立的数据链，避免场外设备进入实时控制回路。
+
+三轮整机实测的最不利结果为：第 2 项 \TODO{一圈用时与最大停车偏差}；第 3 项 \TODO{往返用时与正负航点最大误差}；第 4--6 项 \TODO{各项用时与全过程最大球位误差}。整机联调完成前，上述位置不以名义模型、PC 测试或底盘子系统数据代填。
+
+\noindent\textbf{关键词：}滚球平衡；红外循迹；前馈补偿；姿态测量；机器视觉
+
+\clearpage
+\tableofcontents
+\clearpage
+\pagenumbering{arabic}
+\setcounter{page}{1}
+\pagestyle{plain}
+
+% =====================================================================
+\section{系统方案}
+
+题目要求小车沿黑色环形路线自主行驶，并在静止和行驶状态下把钢球稳定在指定位置；正式测试期间除监测图传外不得与场外设备通信\cite{q}。系统据此分为底盘控制、滚球控制和监测图传三条数据链，全部实时控制均在车端闭环完成。图~\ref{fig:system} 中实线框表示已完成实机验证的部件，虚线框表示尚待联调的部件。
+
+\begin{figure}[H]
+\centering
+\resizebox{0.94\textwidth}{!}{%
+\begin{tikzpicture}[font=\small]
+  \node[done,minimum width=3.4cm] (sensor) at (0,1.1)
+    {红外阵列、编码器、IMU\\循迹、里程与车体姿态};
+  \node[done,minimum width=3.4cm] (vision) at (0,-0.55)
+    {球位视觉 K230\\实测 24 fps、检测率 100\%};
+  \node[ctrl,minimum width=4.2cm,minimum height=2.4cm] (mcu) at (5.2,0.3)
+    {\textbf{MSPM0G3507}\\循迹与速度环\\滚球控制与任务状态机\\计时、显示与安全保护};
+  \node[done,minimum width=3.4cm] (drive) at (10.4,1.1)
+    {DRV8231×2、直流电机\\1.28 英寸 LCD};
+  \node[done,minimum width=3.4cm] (servo) at (10.4,-0.55)
+    {MG995 + 摇臂拉杆\\权限与增益已实测};
+  \draw[ar] (sensor.east) -- node[above,font=\scriptsize]{状态量} ([yshift=0.55cm]mcu.west);
+  \draw[ar] (vision.east) -- node[below,font=\scriptsize]{球位} ([yshift=-0.55cm]mcu.west);
+  \draw[ar] ([yshift=0.55cm]mcu.east) -- node[above,font=\scriptsize]{PWM} (drive.west);
+  \draw[ar] ([yshift=-0.55cm]mcu.east) -- node[below,font=\scriptsize]{50 Hz 指令} (servo.west);
+
+  \node[pending,minimum width=4.4cm] (tx) at (2.5,-2.35)
+    {监测摄像头 + 图传发送端\\独立于控制链（待定版）};
+  \node[pending,minimum width=4.0cm] (rx) at (8.0,-2.35)
+    {场外接收\\实时显示 + 录像回放};
+  \draw[ar,dashed] (tx) -- node[above,font=\scriptsize]{无线视频} (rx);
+\end{tikzpicture}}
+\caption{系统组成与信号流。监测图传与闭环控制仅共享车载供电，不向主控回传控制信息}
+\label{fig:system}
+\end{figure}
+
+围绕测量链可靠性、球位几何误差和执行机构实现风险，对三项关键方案进行比较，结果见表~\ref{tab:scheme}。
+
+\begin{table}[H]
+\centering
+\caption{关键方案比较与选择}\label{tab:scheme}
+\small
+\begin{tabular}{L{1.8cm}L{3.5cm}L{2.4cm}L{6.3cm}}
+\toprule
+决策 & 备选方案 & 选用方案 & 选择依据 \\
+\midrule
+循迹接口 & 串口帧；八路并行电平 & 八路并行 GPIO & 串口方案依赖连续帧完整性，易受 4 字节 FIFO 和显示刷新阻塞影响；并行读取不依赖串行组帧，实测黑线为 0\unit{V}、白底为 3.3\unit{V} \\
+球位相机 & 固定车体；随摆杆安装 & 随摆杆安装 & 相机、刻度与钢球保持在同一摆杆坐标系，可消除摆角引起的一阶成像尺度变化；剩余畸变由全行程标定修正 \\
+摆杆驱动 & 丝杆；舵机直连；舵机拉杆 & 舵机拉杆 & 30\unit{mm} 摇臂与 250\unit{mm} 摆杆形成约 8.3:1 的几何减速，兼顾角度分辨率、结构尺寸和实现复杂度 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+八路阵列安装于车辆转向参考点前方。弯道半径为 $R$、前视距离为 $d$ 时，阵列几何偏移近似为 $\Delta=d^2/(2R)$。取 $R=0.5\unit{m}$、阵列半宽 $42\unit{mm}$，由 $\Delta<42\unit{mm}$ 得 $d<205\unit{mm}$；设计取 $d\le100\unit{mm}$，为安装误差和动态滞后留出余量。
+
+% =====================================================================
+\section{理论分析与控制设计}
+
+\subsection{循迹控制}
+
+设八路探头相对车体中轴的位置为 $p_i\in\{-42,-30,-18,-6,6,18,30,42\}\unit{mm}$，黑线通道经极性映射后记为 $q_i=1$。横向偏差和差速转向量分别为
+\begin{equation}
+ e_l=\frac{\sum p_iq_i}{\sum q_i},\qquad
+ w=\operatorname{sat}\!\left(K_{pl}e_l+K_{dl}\frac{\Delta e_l}{\Delta t},\,\pm w_{\max}\right),
+\end{equation}
+左右轮目标转速取 $v_L=v-w$、$v_R=v+w$。控制参数取 $K_{pl}=2.0$、$K_{dl}=0.2$、$w_{\max}=70\unit{RPM}$。全白时进入丢线保护；终点采用“里程超过一圈下限且连续检测到横向启停线”的双判据，避免起点立即误判。终点判据及直线快、弯道慢的速度规划已写入程序，正式赛道效果待验证。
+
+\subsection{滚球纵向名义模型}
+
+图~\ref{fig:mechanics} 定义滚球控制所用坐标。$x$ 为钢球相对摆杆中心点 $O$ 的有符号位置，$\theta_b$ 为摆杆相对车体的倾角，$\varphi$ 为车体相对惯性水平面的俯仰角，$a_{\mathrm{veh}}$ 为车辆纵向加速度。题目规定摆杆左端以合页固定、另一端接角度控制机构，故摆杆绕左端而非绕中心点转动，钢球到转轴的距离为 $r=125\unit{mm}+x$，这一点与教材中摆杆装在中心转轴上的构型不同，后文据此保留离心耦合项。
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.95,font=\small]
+  \coordinate (H) at (0,0);
+  \coordinate (E) at (12:6.40);
+  \coordinate (O) at (12:3.20);
+  \coordinate (B) at (12:4.30);
+  % 车体平板（实体）与两条过铰链的参考方向（虚，含义见图题）
+  \draw[very thick,blue!55!black] (-1.0,-1.02) -- ++(5:8.7)
+    node[right,black,font=\scriptsize,inner sep=2pt]{车体平板};
+  \draw[densely dotted,gray] (H) -- ++(0:1.80);
+  \node[font=\scriptsize,anchor=north west,inner sep=2pt] at (1.82,-0.02) {惯性水平面};
+  \draw[densely dotted,gray] (H) -- ++(5:2.30);
+  \draw[-{Stealth[length=1.2mm]}] (1.30,0) arc[start angle=0,end angle=5,radius=1.30];
+  \node[font=\scriptsize] at (1.50,0.06) {$\varphi$};
+  \draw[-{Stealth[length=1.2mm]}] (5:1.72) arc[start angle=5,end angle=12,radius=1.72];
+  \node[font=\scriptsize] at (1.95,0.27) {$\theta_b$};
+  % 支撑台 + 合页（摆杆左端）
+  \draw[fill=gray!12] (-0.20,-0.93) rectangle (0.20,-0.04);
+  \node[font=\scriptsize,anchor=north,inner sep=2pt] at (0,-0.95) {支撑台};
+  \draw[|<->|,gray] (-0.52,-0.93) -- (-0.52,-0.04)
+    node[midway,left,font=\scriptsize,black,inner sep=1.5pt]{$h$};
+  \fill (H) circle (2.0pt);
+  \node[font=\scriptsize,anchor=south east,inner sep=1.5pt] at (0.02,0.06) {合页};
+  % 摆杆本体 + 两端防滚落挡片（挡片在最外端，拉杆接点略靠内）
+  \draw[very thick] (H) -- (E);
+  \draw[very thick] (12:0.34) -- ++(102:0.30);
+  \draw[very thick] (12:6.25) -- ++(102:0.30);
+  \node[font=\scriptsize,anchor=west,inner sep=2pt] at (6.16,1.66) {挡片};
+  % 钢球、中心点 O、球位 x、铰链到球的距离 r
+  \draw[fill=gray!18] (B) circle (0.20);
+  \node[font=\scriptsize,anchor=south,inner sep=2pt] at ($(B)+(102:0.24)$) {钢球};
+  \fill (O) circle (1.4pt);
+  \node[font=\scriptsize,anchor=north,inner sep=2pt] at ($(O)+(-78:0.26)$) {$O$};
+  \draw[-{Stealth[length=1.8mm]},semithick]
+    ($(O)+(-78:0.64)$) -- ($(B)+(-78:0.64)$)
+    node[midway,below,font=\scriptsize,inner sep=1.5pt]{$x$};
+  \draw[{|[length=1mm]}-{Stealth[length=1.8mm]},semithick,gray]
+    ($(H)+(102:0.78)$) -- ($(B)+(102:0.78)$)
+    node[midway,above,font=\scriptsize,black,inner sep=1.5pt]{$r$};
+  % 车辆纵向加速度（沿车体平板方向）
+  \draw[-{Stealth[length=2.0mm]},thick] (2.15,-1.32) -- ++(5:2.0)
+    node[midway,below,font=\scriptsize,inner sep=2pt]{$a_{\mathrm{veh}}$};
+  % 摆杆角度控制机构：舵机 + 摇臂 + 拉杆
+  \draw[fill=gray!12] (5.02,-0.44) rectangle (5.92,0.10);
+  \node[font=\scriptsize,anchor=north,align=center,inner sep=2pt]
+    at (5.47,-0.46) {舵机与\\摇臂拉杆};
+  \coordinate (Hn) at (5.47,0.10);
+  \coordinate (Ht) at (5.78,0.56);
+  \fill (Hn) circle (1.2pt);
+  \draw[very thick] (Hn) -- (Ht);
+  \draw[semithick] (Ht) -- (12:5.90);
+  % 随杆相机
+  \node[draw,rounded corners=2pt,fill=yellow!8,align=center,inner sep=3pt,
+        font=\scriptsize] (cam) at (4.20,2.28) {随杆相机\\球位测量};
+  \draw[dashed,gray] (cam.south) -- ($(B)+(102:0.62)$);
+\end{tikzpicture}
+\caption{滚球纵向模型的坐标与变量定义。摆杆左端由合页固定于支撑台，右端由舵机经摇臂拉杆抬升；$O$ 为摆杆中心点即球位零点，$r$ 为合页到钢球的距离。过合页的两条点线分别平行于惯性水平面与车体平板，用以定义 $\varphi$ 与 $\theta_b$。相机随杆安装，与刻度、钢球同处摆杆坐标系。图中 $\varphi$、$\theta_b$ 为示意，已放大绘制}
+\label{fig:mechanics}
+\end{figure}
+
+钢球半径 $R_b=5\unit{mm}$，在半圆槽内按实心球无滑动滚动处理。由平动、转动方程及 $I=2mR_b^2/5$ 得
+\begin{equation}
+ \ddot{x}=\frac{5}{7}g\sin\theta=K\sin\theta,
+ \qquad K=\frac{5}{7}g=7007\unit{mm/s^2}.
+\label{eq:ball}
+\end{equation}
+摆杆相对车体的倾角为 $\theta_b$，故其相对惯性水平面的倾角为 $\theta_b+\varphi$。摆杆绕左端合页转动而非绕中心点转动，钢球位于半径 $r$ 处，因此摆杆坐标系中还有离心项 $r\dot\theta_b^2$；车辆过弯时摆杆中心随车作圆周运动，其沿杆分量为 $-\omega_z^2d$，其中 $\omega_z$ 为横摆角速度、$d$ 为摆杆中心到驱动轮轴的纵向距离。忽略滚动阻力、侧向运动、基座垂向加速度和执行机构动态，可得
+\begin{equation}
+ \ddot{x}=\frac{5}{7}\left[g\sin(\theta_b+\varphi)
+ -a_{\mathrm{veh}}\cos(\theta_b+\varphi)
+ +r\dot\theta_b^{2}-\omega_z^{2}d\right]
+ \approx K(\theta_b+\varphi)-\frac{5}{7}\left(a_{\mathrm{veh}}
+ +\omega_z^{2}d-r\dot\theta_b^{2}\right).
+\label{eq:coupled}
+\end{equation}
+
+后两项是本题机构与教材构型的差别所在，须定量判断是否值得补偿。离心项按 $\dot\theta_b^2$ 缩放：跟踪状态下摆角变动约 $0.8^\circ$、环路带宽 $3\unit{rad/s}$，故 $\dot\theta_b\approx0.04\unit{rad/s}$，该项仅 $0.2\unit{mm/s^2}$、等效静差 $0.02\unit{mm}$；即使舵机以满速摆动，受 8.3:1 传动比限制摆杆也只有 $36^\circ/\mathrm{s}$，该项为 $49\unit{mm/s^2}$，而满速扫过全部可用行程仅需 $0.13\unit{s}$，累计位移约 $0.4\unit{mm}$。可见受限的摆角权限同时把离心项压到了可忽略量级，故将其保留在模型中而不单独前馈。过弯项在巡航 $202\unit{mm/s}$、弯道半径 $500\unit{mm}$ 时 $\omega_z=0.40\unit{rad/s}$，取 $d\approx75\unit{mm}$ 得 $8.8\unit{mm/s^2}$、等效静差约 $1.0\unit{mm}$，约占 $\pm10\unit{mm}$ 门限的一成；由于 $\omega_z$ 正是循迹控制器自身的转向指令，补偿它不需要新增传感器，故列为可选前馈，待整机测试确认弯道偏差主因后再启用。$d$ 目前为估计值，实测待补。
+
+上述模型用于确定控制结构与参数初值。其有效增益已由实体摆杆辨识（见 \S4.1），未建模的槽内摩擦则表现为随机起动阈值，是当前主要残差来源。
+
+\subsection{滚球控制器与轨迹规划}
+
+令 $e=x-x_r$，控制器采用位置--速度 PD 与三项前馈：
+\begin{equation}
+ \boxed{\theta_{cmd}=-\frac{K_pe+K_d(\hat v-\dot x_r)}{K}
+ +\frac{\ddot x_r}{K}+\frac{\hat a_{\mathrm{veh}}}{g}-\varphi}
+\label{eq:control}
+\end{equation}
+其中 $\hat a_{\mathrm{veh}}=\Delta v_{\mathrm{veh,cmd}}/\Delta t$ 由车辆纵向速度指令差分得到，表示可预知的名义车体加速度，而非钢球加速度或 IMU 的直接测量值。该前馈用于抵消起停指令对钢球的确定性扰动；轮胎打滑、电机动态和执行器限幅造成的残差仍由球位反馈修正。前馈项 $\hat a_{\mathrm{veh}}/g$ 直接占用摆角权限，故弱侧的 $1.67^\circ$ 反过来给出车体纵向加速度的上界 $g\sin1.67^\circ=286\unit{mm/s^2}$：底盘起停的加速度限幅必须取在此值以下，否则前馈自身就会使摆杆饱和。这条约束把滚球回路的执行器权限与底盘速度规划耦合在一起，是本系统两条数据链之间唯一的定量接口。
+
+相机只给出离散位置，故用带已知输入的 $\alpha$--$\beta$ 观测器\cite{bar}估计速度：预测步按式~\eqref{eq:coupled} 计算 $\hat x^-$、$\hat v^-$，收到新帧后用
+\begin{equation}
+ \hat x=\hat x^-+\alpha(z-\hat x^-),\qquad
+ \hat v=\hat v^-+\frac{\beta}{T_m}(z-\hat x^-)
+\end{equation}
+修正；$T_m$ 取相邻两帧的真实间隔。测量超过 150\unit{ms} 未更新时，程序将摆杆指令恢复为水平，避免陈旧指令持续加速钢球。
+
+\begin{figure}[H]
+\centering
+\resizebox{0.94\textwidth}{!}{%
+\begin{tikzpicture}[node distance=0.55cm and 0.65cm]
+  \node[box] (ref) {轨迹规划\\$x_r,\dot x_r,\ddot x_r$};
+  \node[draw,circle,right=of ref,minimum size=0.55cm,inner sep=0pt] (sum) {$\Sigma$};
+  \node[ctrl,right=of sum] (pd) {位置--速度 PD};
+  \node[draw,circle,right=of pd,minimum size=0.55cm,inner sep=0pt] (sum2) {$\Sigma$};
+  \node[done,right=of sum2] (srv) {舵机与拉杆};
+  \node[done,right=of srv] (plant) {摆杆--钢球};
+  \node[right=0.55cm of plant] (out) {$x$};
+  \draw[ar] (ref) -- (sum);
+  \draw[ar] (sum) -- (pd);
+  \draw[ar] (pd) -- (sum2);
+  \draw[ar] (sum2) -- (srv);
+  \draw[ar] (srv) -- (plant);
+  \draw[ar] (plant) -- (out);
+  \node[box,above=0.65cm of sum2,minimum width=4.0cm] (ff)
+    {前馈 $\ddot x_r/K+\hat a_{\mathrm{veh}}/g-\varphi$};
+  \draw[ar] (ff) -- (sum2);
+  \node[done,below=0.75cm of pd,minimum width=3.5cm] (obs)
+    {$\alpha$--$\beta$ 观测器};
+  \draw[ar] (out.south) |- (obs.east);
+  \draw[ar] (obs.west) -| (sum.south);
+\end{tikzpicture}}
+\caption{滚球控制结构。该结构已在实体摆杆与相机上闭环运行并完成首轮整定；误差指标是否达标须由整机测试判定}
+\label{fig:ballctrl}
+\end{figure}
+
+取名义自然频率 $\omega_n=3\unit{rad/s}$、阻尼比 $\zeta=1$，由 $K_p=\omega_n^2$、$K_d=2\zeta\omega_n$ 得 $K_p=9\unit{s^{-2}}$、$K_d=6\unit{s^{-1}}$。$\zeta$ 取 1 而非 0.8 的依据是评分口径：第 3--6 项考核全过程误差且钢球脱落即判该次失败，超调只有风险没有收益，而第 3 项限时尚有余量，因此加阻尼的代价可以承受。
+
+摆角权限是本设计的实际约束，须先实测再定轨迹。摆杆机构的可动脉宽区间实测为 $940\sim1340\us$，固件在两端各留 $20\us$ 测量余量后限幅为 $960\sim1320\us$；力学水平位实测在 $1086\us$，并不位于行程几何中点，故两侧权限不对称：弱侧 $126\us$、强侧 $234\us$，按 $75.4\us$ 每度折算为 $1.67^\circ$ 与 $3.10^\circ$。往返轨迹需要对称权限，可用值只能取弱侧的 $1.67^\circ$。
+
+由此反过来确定轨迹时间。三角形加速度轨迹的峰值加速度为 $|a|=4A/T^2$，所需摆角与段时间的平方成反比，因此在权限受限时正确的做法是延长段时间而不是提高增益：出发段取 1.6\unit{s}、返回段取 2.0\unit{s} 后，两段所需摆角降至 $0.64^\circ$ 与 $0.82^\circ$，为反馈留出约一半权限，而总规划时间 4.8\unit{s} 仍在第 3 项的 5\unit{s} 限内。参数取值与各自的证据等级见表~\ref{tab:ballparam}。
+
+\begin{table}[H]
+\centering
+\caption{滚球控制关键参数与依据}\label{tab:ballparam}
+\small
+\begin{tabular}{L{2.7cm}L{3.1cm}L{4.3cm}L{3.6cm}}
+\toprule
+参数 & 取值 & 依据 & 当前证据 \\
+\midrule
+$K_p,K_d$ & $9\unit{s^{-2}},6\unit{s^{-1}}$ & $\omega_n=3\unit{rad/s},\zeta=1$ & 名义模型初值 \\
+控制周期 & 20\unit{ms} & 与 50\unit{Hz} 舵机指令帧对齐 & 软件节拍已实现 \\
+摆角标度 & $75.4\us$ 每度 & 由复合增益反推；几何推算 80，相差 5.7\% & 实测，交叉验证 \\
+可用摆角 & 弱侧 $1.67^\circ$，强侧 $3.10^\circ$ & 固件限幅 $960\sim1320\us$，水平位 $1086\us$ & 实测机械限位 \\
+摆角限幅 & $\pm1.6^\circ$ & 取弱侧权限，使该限幅成为唯一生效的闸门 & 按实测收紧 \\
+O 到 $+50\unit{mm}$ & 1.6\unit{s}，$78\unit{mm/s^2}$，$0.64^\circ$ & $|a|=4A/T^2$，由权限反推 $T$ & 按实测权限重排 \\
+$+50$ 到 $-50\unit{mm}$ & 2.0\unit{s}，$100\unit{mm/s^2}$，$0.82^\circ$ & 同上 & 按实测权限重排 \\
+总规划时间 & 4.8\unit{s} & 含 0.2\unit{s} 航点停留与 1.0\unit{s} 终点稳定 & 待整机验证 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =====================================================================
+\section{电路与程序设计}
+
+\subsection{控制电路}
+
+主控采用 MSPM0G3507\cite{mspm0}。两片 DRV8231\cite{drv} 分别驱动左右直流电机，PWM 频率为 20\unit{kHz}，占空比上限 60\%；电机额定 7.4\unit{V}，由 12\unit{V} 母线驱动时，该限幅把平均电压控制在约 7.2\unit{V}。驱动器 IPROPI 电流镜经 680\unit{\Ohm} 取样并送入 ADC。编码器采用 5\unit{kHz} 定时采样式四倍频解码，避免电机换向毛刺对边沿中断的重复触发。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.55\textwidth]{sch_driver}
+\caption{DRV8231 单路电机驱动与电流采样电路；左右两路结构相同}
+\label{fig:driver}
+\end{figure}
+
+供电链由防反接与总开关、12\unit{V} Buck--Boost 母线、5\unit{V} 和 3.3\unit{V} 支路组成。电机驱动接 12\unit{V}，舵机、视觉与图传接 5\unit{V}，主控、IMU、循迹阵列和 LCD 接 3.3\unit{V}；完整电源图见附录 A。主要接口和验证状态见表~\ref{tab:hardware}。
+
+\begin{table}[H]
+\centering
+\caption{主要硬件接口与状态}\label{tab:hardware}
+\small
+\begin{tabular}{L{2.2cm}L{3.0cm}L{4.8cm}L{3.8cm}}
+\toprule
+单元 & 型号 & 接口与设计要点 & 状态 \\
+\midrule
+主控 & MSPM0G3507 & 32\unit{MHz} 主频，完成实时控制、计时与显示 & 实机运行 \\
+电机与驱动 & JGA27-310R-74 + DRV8231×2 & 四路 PWM、双路编码器、电流采样 & 实机运行 \\
+循迹 & YB-MUX04-1.0 & 八路 GPIO，上拉输入，低电平表示黑线 & 实机功能验证 \\
+姿态 & ICM-42688-P\cite{icm} & SPI，200\unit{Hz} 读取，互补滤波\cite{mahony} & 实机功能验证 \\
+摆杆执行 & MG995 舵机（金属齿，5\unit{V}） & PA31 / TIMG12，50\unit{Hz}；30\unit{mm} 摇臂经拉杆推 250\unit{mm} 摆杆 & 脉宽链路与增益已实测 \\
+球位视觉 & CanMV K230 & UART1 输出一维球位，主控在 5\unit{kHz} 节拍中取字节 & 实机 24.0\unit{fps}，检测率 100\% \\
+监测图传 & 树莓派 5 + 相机（网页视频服务） & 场外浏览器实时显示并录屏回放；不回传控制信息 & 待上电联调 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+球位标定以摆杆边沿刻度为外部基准：取两端 $\pm120\unit{mm}$ 处钢球球心的像素坐标建立像素到位置的映射，标定参数由视觉程序加载，重标不需要改动主控固件。端到端一致性已实测，视觉端自报 $+96.2\unit{mm}$ 时主控同期读到 $+97.3\unit{mm}$。镜面钢球高光造成的质心偏移实测值为 \TODO{高光与固定曝光条件下的最大球位偏差}。
+
+\subsection{程序流程与任务节拍}
+
+程序由驱动层、算法层和任务层组成。上电后先完成 IMU 零偏、编码器与视觉状态检查；按键启动时清零计时并进入 RUN，运行中并行执行循迹、速度环和滚球控制；里程与启停线同时满足后减速停车并冻结显示。丢线、视觉超龄、超时或人工急停进入 ABORT。
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.65cm and 0.9cm]
+  \node[done] (idle) {IDLE\\校准与球位保持};
+  \node[ctrl,right=of idle] (run) {RUN\\循迹、计时、滚球控制};
+  \node[done,right=of run] (done) {DONE\\停车并冻结走时};
+  \node[box,below=of run,fill=red!6] (abort) {ABORT\\丢线、超时或反馈失效};
+  \draw[ar] (idle) -- node[above,font=\scriptsize]{按键} (run);
+  \draw[ar] (run) -- node[above,font=\scriptsize]{里程 + 启停线} (done);
+  \draw[ar] (run) -- (abort);
+  \draw[ar] (done) to[bend right=30] (idle);
+  \draw[ar] (abort) to[bend right=25] (idle);
+\end{tikzpicture}
+\caption{主任务状态机}
+\label{fig:fsm}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{主要任务节拍}\label{tab:tick}
+\small
+\begin{tabular}{L{2.6cm}L{4.6cm}L{6.5cm}}
+\toprule
+周期 & 任务 & 说明 \\
+\midrule
+5\unit{kHz} & 编码器正交采样 & 固定时刻取样，抑制窄毛刺重复计数 \\
+5\unit{ms} & IMU 读取与姿态更新 & 为俯仰前馈和航向辅助提供状态 \\
+20\unit{ms} & 滚球观测器、PD 与舵机指令 & 测量超龄时只预测，超过 150\unit{ms} 进入保护 \\
+50\unit{ms} & 两轮速度环与循迹 PD & 与现有测速窗及已整定速度环参数一致 \\
+100\unit{ms} & LCD 走时与状态刷新 & 正式测试关闭 ESP 无线遥测，仅保留题目要求的图传 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =====================================================================
+\section{测试方案与结果}
+
+\subsection{测试方法}
+
+测试以题目给定赛道、摆杆边沿刻度和评委秒表口径为准。每项独立测试 3 次，时间按评委秒表显示值记录至 0.01\unit{s}，停车偏差沿 A 点基准虚线读取，球位误差由录像逐帧读取钢球球心相对目标刻度的最大绝对值。数值项目以三轮最不利值与题目门限比较，并用极差 $R=y_{\max}-y_{\min}$ 表征重复性。正式测试期间关闭调试遥测，只保留无线图传。
+
+\begin{table}[H]
+\centering
+\caption{分项测试方法与判据}\label{tab:method}
+\small
+\begin{tabular}{cL{4.0cm}L{8.8cm}}
+\toprule
+项 & 操作 & 记录量与通过判据 \\
+\midrule
+1 & 场外接收端开启显示与录像 & 画面覆盖摆杆全程，钢球与刻度清晰；任一轮录像可现场回放 \\
+2 & A 点按键启动，循迹一圈后停车 & 总时间 $\le20\unit{s}$；停车偏差 $\le2\unit{cm}$；车体投影不完全脱离轨迹线 \\
+3 & 车静止，球由 O 到 $+5\unit{cm}$ 再到 $-5\unit{cm}$ & 总时间 $\le5\unit{s}$；两个航点最大误差均 $\le1\unit{cm}$ \\
+4 & A 点启动并通过 B 点 & AB 时间 $\le8\unit{s}$；全过程球位误差 $\le1\unit{cm}$ \\
+5 & 球置 O 点，循迹一圈并通过 A 点 & 总时间 $\le30\unit{s}$；全过程球位误差 $\le1\unit{cm}$ \\
+6 & 球置评委指定位置，循迹一圈 & 总时间 $\le30\unit{s}$；全过程球位误差 $\le1\unit{cm}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+名义模型的有效增益已在实体摆杆上辨识，方法是以若干固定脉宽驱动摆杆、由球位序列拟合钢球加速度，再对脉宽作线性回归。结果为复合增益 $-1.622\unit{mm/s^2}$ 每微秒，其零交点即力学水平位 $1086\us$。据此反推摆角标度 $75.4\us$ 每度，与摇臂 30\unit{mm}、摆杆 250\unit{mm} 的几何推算值 80 相差 5.7\%，构成对式~\eqref{eq:ball} 与传动比的一次独立交叉验证。单点复核：脉宽 $1000\us$ 即低于水平位 $1.14^\circ$ 时实测 $+135.1\unit{mm/s^2}$，模型预测 $139.4\unit{mm/s^2}$，比值 97\%。
+
+\noindent 该辨识附两点保留：其一，本次拟合只有水平位一侧产生了有效位移，另一侧受软限位截断，故增益是下界、摆角标度是上界；其二，钢球起动存在明显静摩擦阈值，重复实测落在 $0.53^\circ\sim1.59^\circ$ 之间，散布约 3 倍，说明该阈值不能用固定前馈补偿。两者都将在整机测试前以两侧对称的复跑收紧。
+
+\subsection{关键子系统预验证}
+
+表~\ref{tab:pretest} 汇总可复现的底盘与传感器数据，用于确认测量和执行基础链路；其结果不替代第 1--6 项整机测试。
+
+\begin{table}[H]
+\centering
+\caption{关键子系统实机预验证结果}\label{tab:pretest}
+\small
+\begin{tabular}{L{2.5cm}L{7.3cm}L{3.8cm}}
+\toprule
+项目 & 实测结果 & 可支持的结论 \\
+\midrule
+编码器标定 & 左右轮手转 10 圈分别为 952.5、957.0 counts/rev，均值 954.75 & 两路映射正确、无静止漂移 \\
+里程复核 & 600\unit{mm} 单趟中编码器换算 599.1\unit{mm}，卷尺约 600\unit{mm} & 当前轮胎与地面下标尺可用 \\
+八路循迹 & 93 个样本、35 次位型变化，八路均响应且在线通道保持相邻连续 & 映射无错位、无死路 \\
+IMU & WHOAMI 0x47；静止陀螺 $\le0.42\unit{dps}$；加速度模长 1.009\unit{g} & 量纲与基本链路正常 \\
+循迹链路检查 & 65\unit{RPM} 连续运行 39.0\unit{s}，编码器累计 7120\unit{mm}，固件丢线标志为 0 & 低速工况下链路连续运行正常；非 20\unit{s} 单圈验收 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{整机测试结果}
+
+\begin{table}[H]
+\centering
+\caption{整机三轮原始测试结果；最终判定取三轮最不利值}\label{tab:final}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{cL{5.0cm}ccc}
+\toprule
+项 & 测试量 & 第 1 次 & 第 2 次 & 第 3 次 \\
+\midrule
+1 & 实时显示与录像回放 & \TODO{} & \TODO{} & \TODO{} \\
+2 & 一圈总时间（$\le20\unit{s}$） & \TODO{} & \TODO{} & \TODO{} \\
+2 & 停车偏差（$\le2\unit{cm}$） & \TODO{} & \TODO{} & \TODO{} \\
+3 & 往返总时间（$\le5\unit{s}$） & \TODO{} & \TODO{} & \TODO{} \\
+3 & $+5\unit{cm}$ 处最大误差（$\le1\unit{cm}$） & \TODO{} & \TODO{} & \TODO{} \\
+3 & $-5\unit{cm}$ 处最大误差（$\le1\unit{cm}$） & \TODO{} & \TODO{} & \TODO{} \\
+4 & AB 间时间（$\le8\unit{s}$） & \TODO{} & \TODO{} & \TODO{} \\
+4 & 全过程球位最大误差（$\le1\unit{cm}$） & \TODO{} & \TODO{} & \TODO{} \\
+5 & 整圈时间（$\le30\unit{s}$） & \TODO{} & \TODO{} & \TODO{} \\
+5 & 全过程球位最大误差（$\le1\unit{cm}$） & \TODO{} & \TODO{} & \TODO{} \\
+6 & 指定位置 / 整圈时间（$\le30\unit{s}$） & \TODO{} & \TODO{} & \TODO{} \\
+6 & 全过程球位最大误差（$\le1\unit{cm}$） & \TODO{} & \TODO{} & \TODO{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent 对时间、停车偏差和球位误差，均取三轮最大值作为最不利结果；指标裕量定义为“门限减最不利值”，极差用于描述三轮重复性。第 1 项须三轮均能实时显示并现场回放，方判定通过。
+
+\begin{figure}[H]
+\centering
+\figplaceholder{待放：第 2 项停车瞬间\\指定测试位置与 A 点基准线同框}
+\hfill
+\figplaceholder{待放：第 3--6 项录像截图\\钢球球心、目标刻度与时间同框}
+\caption{整机验收证据照片占位；提交前替换为当轮真实画面}
+\label{fig:photos}
+\end{figure}
+
+\subsection{结果分析}
+
+\TODO{填写三轮最不利值、极差、指标裕量和达标结论}
+
+结果分析应围绕评分判据展开：第 2 项报告单圈时间与停车偏差的最不利值；第 3 项分别报告正、负航点误差；第 4--6 项除总时间外，还应标出最大球位误差出现于起步、弯道还是停车阶段。若存在未达标项，应给出其相对门限的量化差距，并结合舵机回差、视觉延迟、球槽摩擦和车体加减速数据定位主要原因，而不以终点平均值代替全过程峰值。
+
+% =====================================================================
+\section{结论}
+
+本文构建了由循迹底盘、随杆球位视觉、摆杆执行机构和独立监测图传组成的车载平衡滚球系统；按题目规定的左端合页构型建立了含车体俯仰、纵向加速度、铰链离心项与过弯分量的滚球名义模型，并完成位置--速度 PD、三项前馈、任务状态机及安全保护的设计。编码器、IMU、八路循迹和低速速度环已获得子系统实机数据；摆杆对象的复合增益与可用权限已在实体机构上辨识，球位视觉链路已实机验证，滚球回路已闭环运行并完成首轮整定；监测图传仍待联调，题目第 1--6 项的整机成绩仍待测试。
+
+整机三轮测试完成后，应依据表~\ref{tab:final} 的最不利值形成最终结论：\TODO{总体达标结论}。该数据回填前，不对第 1、3--6 项或第 2 项限时指标作已完成判断。
+
+\clearpage
+% =====================================================================
+\begin{thebibliography}{9}
+\addcontentsline{toc}{section}{参考文献}
+\small
+\bibitem{q} 全国大学生电子设计竞赛组委会. 2026 年全国大学生电子设计竞赛赛区赛（TI 杯）H 题：车载平衡滚球运动控制系统[Z]. 2026.
+\bibitem{mspm0} Texas Instruments. MSPM0G3507 Mixed-Signal Microcontrollers Datasheet (SLASEZ1)[Z]. 2024.
+\bibitem{drv} Texas Instruments. DRV8231 Brushed DC Motor Driver Datasheet[Z]. 2023.
+\bibitem{icm} TDK InvenSense. ICM-42688-P 6-Axis MotionTracking Device Datasheet[Z]. 2023.
+\bibitem{mahony} Mahony R, Hamel T, Pflimlin J M. Nonlinear Complementary Filters on the Special Orthogonal Group[J]. IEEE Transactions on Automatic Control, 2008, 53(5): 1203--1218.
+\bibitem{bar} Bar-Shalom Y, Li X R, Kirubarajan T. Estimation with Applications to Tracking and Navigation[M]. Wiley, 2001.
+\end{thebibliography}
+
+\clearpage
+% =====================================================================
+\appendix
+\section*{附录 A\quad 电源电路原理图}
+\addcontentsline{toc}{section}{附录 A\quad 电源电路原理图}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.96\textwidth]{sch_power}
+\caption{自制多路电源板：防反接与总开关、12\unit{V} Buck--Boost 母线、5\unit{V} 与 3.3\unit{V} 支路}
+\end{figure}
+
+\noindent 电机驱动接 12\unit{V} 母线；舵机、视觉模块与图传发送端接 5\unit{V}；主控、IMU、循迹阵列和 LCD 接 3.3\unit{V}。舵机与视觉模块定版后，应复测 5\unit{V} 支路负载阶跃以及 3.3\unit{V} 纹波，确认执行器动作不引起主控复位或视觉丢帧。
+
+\end{document}
