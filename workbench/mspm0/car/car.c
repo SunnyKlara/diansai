@@ -128,6 +128,15 @@ static int      g_vs_slow   = CFG_LINE_VSEG_V_SLOW;
  * 但实际能盖到几路取决于探头离地高度与胶带宽度 —— 而这两样只能在真板上量。
  * 若只能改 config.h, 台架上一发现"on_max 只到 3"就得重烧 142s 再试, 一轮试错半小时。 */
 static int      g_cross_min = CFG_LINE_CROSS_MIN_ON;
+/* 启停线**直行门**的运行时副本(命令 `O<x10>`, 如 `O200` = 20.0)。
+ * 🔴 为什么必须能在线改(2026-08-01 真机逼出来的): `CFG_LINE_CROSS_W_MAX` 原值 12.0 是
+ *   **照抄 `CFG_LINE_VSEG_W_LO` 的估计值、从未实测**, 而后来的提速把 `CFG_LINE_W_MAX` 70->120、
+ *   `CFG_KP_LINE` 2.0->2.6 —— 两者都直接放大 `|w|` ⇒ `g_w_lp` 整体抬升, 而这道门没跟着抬。
+ *   实测: 跑动中 `wlp` 到 18 > 12 ⇒ **车一跑起来这道门几乎永久关闭**, 1.7 圈只在 t=0
+ *   (车停着、w=0) 数到 1 次压线, 经过真启停线时被静默挡掉、永不自停。
+ *   这个门限的正确值只能由"直道 wlp 分布 vs 弯道 wlp 分布"实测决定 ⇒ 必须在线可调,
+ *   否则每试一个值赔 145s 重烧。 */
+static float    g_cross_wmax = CFG_LINE_CROSS_W_MAX;
 /* 模块装车朝向: 1 = X1 在车左(pos[0] 取正) / 0 = X1 在车右。命令 `R<0|1>` 在线翻。
  * 为什么必须能在线翻: 搞反了车会**朝反方向跑飞**(越偏越往外打舵), 而判据只要"压 x1 看 err 符号"
  * 30 秒就能验完 —— 若只能改 config.h, 一次验错要赔 142s 重烧, 且极可能是在车已经跑飞之后。 */
@@ -367,7 +376,10 @@ static void print_vseg(void)
     uart_dbg_puts(" lo(x10)=");    uart_dbg_put_int((int)(g_vs_lo * 10.0f));
     uart_dbg_puts(" hi(x10)=");    uart_dbg_put_int((int)(g_vs_hi * 10.0f));
     uart_dbg_puts(" slow(RPM)=");  uart_dbg_put_int(g_vs_slow);
-    uart_dbg_puts(" xmin=");       uart_dbg_put_int(g_cross_min);   /* 启停线门限(命令 N) */
+    uart_dbg_puts(" xmin=");       uart_dbg_put_int(g_cross_min);   /* 启停线路数门(命令 N) */
+    /* 直行门也必须能回读: 它和 xmin 是**同时成立**才判压线的两个条件, 只看一个会误判
+     * "探头/胶带有问题"而其实是被这道门挡的(2026-08-01 就这么绕了一大圈)。 */
+    uart_dbg_puts(" xwmax(x10)="); uart_dbg_put_int((int)(g_cross_wmax * 10.0f));
     /* 朝向连 pos[0] 一起打: 光看 x1left= 还要脑内换算符号, 直接把生效的 pos[0] 摊出来最省事。
      * 判据 —— 压住 x1 那一路时 `err` 的符号必须与 pos0 同号。 */
     uart_dbg_puts(" x1left=");     uart_dbg_put_int(g_x1_left);
@@ -399,6 +411,11 @@ static int vseg_cmd(char c, int v)
     /* 夹到 1..8: 0 会让判据恒成立(每拍都"压在启停线上"), >8 则永不成立 —— 两头都是静默失效,
      * 现场很难看出来, 所以在入口就夹死而不是信任手输。 */
     else if (c == 'N') { g_cross_min = (v > 0) ? clampi(v, 1, 8) : CFG_LINE_CROSS_MIN_ON; }
+    /* `O<x10>` = 启停线直行门 |w_lp| 上限。与 A/H 同一 x10 标度(它们是同一族阈值)。
+     * 上限 200.0 而不是 w_max: 允许设一个"实际上关掉这道门"的值, 用于单变量实验
+     * ——先证"路数门能不能独立认出启停线", 再决定直行门该收到多紧。 */
+    else if (c == 'O') { g_cross_wmax = (v > 0) ? (float)v / 10.0f : CFG_LINE_CROSS_W_MAX;
+                         if (g_cross_wmax > 200.0f) g_cross_wmax = 200.0f; }
     /* R<0|1>: 装车朝向。⚠ 这一条**不能沿用"0=回默认"的约定** —— 0 在这里是一个合法值
      * (X1 在右), 若把它当"回默认"就永远发不出"X1 在右"这个指令。故 R 直接取 0/1 字面值。 */
     else if (c == 'R') { g_x1_left = (v != 0) ? 1 : 0; line_pos_apply(); }
@@ -972,7 +989,7 @@ static void run_cmd(const char *s, int n)
      * 已有的模式相关分支容易把这层语义搞乱。
      * ⚠ **代价**: 拦在前面 ⇒ 一旦选的字母与 switch 里已有的 case 撞了, 那条老命令会被
      *   **静默吃掉**(没有报错、没有回显)。所以加新字母前必须查一次占用表, 查法见 vseg_cmd 注释。 */
-    if (c == 'A' || c == 'H' || c == 'D' || c == 'N' || c == 'R') { if (vseg_cmd(c, v)) return; }
+    if (c == 'A' || c == 'H' || c == 'D' || c == 'N' || c == 'O' || c == 'R') { if (vseg_cmd(c, v)) return; }
 #endif
     /* 滚球层先看一眼: m12 下 t/p/d/i/M/F 归它(同 m11 的路由约定), `P` 任何模式都收。
      * 放在 switch 前而不是加 case, 理由同上面那三条: 免得和 switch 里已有的模式分支纠缠。
@@ -2341,7 +2358,7 @@ int main(void)
                      * 的起点(题目图 1) ⇒ 压线时车必然直行, `|w_lp|` 很小; 而所有误触发都发生在
                      * `wlp` 大的斜穿/过弯时刻(实测 ABORT 那次 wlp=44)。
                      * 用上一拍的 g_w_lp: 它在本函数后面才更新, 差一拍对低通值无影响。 */
-                    if (n_on >= g_cross_min && g_w_lp <= (float)CFG_LINE_CROSS_W_MAX) {
+                    if (n_on >= g_cross_min && g_w_lp <= g_cross_wmax) {
                         if (g_cross_run < 1000) g_cross_run++;
                     } else {
                         g_cross_run = 0;
